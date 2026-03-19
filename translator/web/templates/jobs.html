@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% block title %}Jobs{% endblock %}
+{% block page_title %}<i class="bi bi-activity me-2 text-accent"></i>Translation Jobs{% endblock %}
+
+{% block content %}
+<!-- Controls -->
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div class="d-flex gap-2">
+    <button class="btn btn-sm btn-outline-secondary" onclick="clearFinished()">
+      <i class="bi bi-trash me-1"></i>Clear Finished
+    </button>
+    <button class="btn btn-sm btn-outline-secondary" id="refresh-btn" onclick="location.reload()">
+      <i class="bi bi-arrow-repeat me-1"></i>Refresh
+    </button>
+  </div>
+  <div>
+    <button class="btn btn-primary"
+            onclick="startTranslateAll({resume:true}).then(id => id && location.assign('/jobs/'+id))">
+      <i class="bi bi-play-fill me-2"></i>Start Translate All
+    </button>
+  </div>
+</div>
+
+<!-- Live job cards -->
+<div id="live-jobs" class="mb-4"></div>
+
+<!-- Historical jobs table -->
+<div class="card">
+  <div class="card-header d-flex align-items-center justify-content-between">
+    <span><i class="bi bi-clock-history me-2"></i>All Jobs ({{ jobs | length }})</span>
+    <input type="text" class="form-control form-control-sm" style="width:200px"
+           placeholder="Filter..." oninput="filterTable('job-filter','jobs-hist-table')" id="job-filter">
+  </div>
+  <div class="card-body p-0">
+    <table class="table table-dark mb-0" id="jobs-hist-table">
+      <thead>
+        <tr>
+          <th>Job Name</th>
+          <th>Type</th>
+          <th>Status</th>
+          <th style="min-width:140px">Progress</th>
+          <th>Elapsed</th>
+          <th>Created</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for j in jobs %}
+        <tr id="job-row-{{ j.id }}">
+          <td>
+            <a href="{{ url_for('jobs.job_detail', job_id=j.id) }}" class="text-decoration-none">
+              {{ j.name }}
+            </a>
+          </td>
+          <td class="text-muted" style="font-size:11px">{{ j.job_type }}</td>
+          <td>
+            <span class="badge-status {{ j.status.value }}">
+              {% if j.status.value == 'running' %}<i class="bi bi-arrow-repeat"></i>
+              {% elif j.status.value == 'done' %}<i class="bi bi-check-circle-fill"></i>
+              {% elif j.status.value == 'failed' %}<i class="bi bi-x-circle-fill"></i>
+              {% elif j.status.value == 'cancelled' %}<i class="bi bi-slash-circle"></i>
+              {% else %}<i class="bi bi-clock-fill"></i>{% endif %}
+              {{ j.status.value }}
+            </span>
+          </td>
+          <td>
+            <div class="progress" style="height:6px">
+              <div class="progress-bar
+                {% if j.status.value == 'done' %}bg-success
+                {% elif j.status.value == 'failed' %}bg-danger
+                {% elif j.status.value == 'running' %}bg-primary progress-bar-striped progress-bar-animated
+                {% else %}bg-secondary{% endif %}"
+                   style="width:{{ (j.progress.current / [j.progress.total,1]|max * 100) | round(1) }}%">
+              </div>
+            </div>
+            {% if j.progress.message %}
+            <div class="text-muted mt-1" style="font-size:10px">{{ j.progress.message[:50] }}</div>
+            {% endif %}
+          </td>
+          <td class="text-muted">{{ j._elapsed() }}s</td>
+          <td class="text-muted" style="font-size:11px">{{ j.created_at | timeago }}</td>
+          <td>
+            {% if j.status.value in ['running', 'pending'] %}
+            <button class="btn btn-sm btn-outline-danger"
+                    onclick="cancelJob('{{ j.id }}')">Cancel</button>
+            {% else %}
+            <a href="{{ url_for('jobs.job_detail', job_id=j.id) }}"
+               class="btn btn-sm btn-outline-secondary">Logs</a>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="text-center text-muted py-5">No jobs yet</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Subscribe to all job events for live updates
+const es = new EventSource('/jobs/stream-all');
+es.onmessage = function(e) {
+  const job = JSON.parse(e.data);
+  updateJobRow(job);
+  updateLiveCard(job);
+};
+
+function updateJobRow(job) {
+  const row = document.getElementById('job-row-' + job.id);
+  if (!row) return;
+  // Update progress bar
+  const bar = row.querySelector('.progress-bar');
+  if (bar) bar.style.width = job.pct + '%';
+  // Update status badge
+  const badge = row.querySelector('.badge-status');
+  if (badge) {
+    badge.className = 'badge-status ' + job.status;
+    badge.textContent = job.status;
+  }
+}
+
+const liveCards = {};
+function updateLiveCard(job) {
+  if (!['running','pending'].includes(job.status)) {
+    if (liveCards[job.id]) {
+      liveCards[job.id].remove();
+      delete liveCards[job.id];
+    }
+    return;
+  }
+  if (!liveCards[job.id]) {
+    const el = document.createElement('div');
+    el.className = 'card mb-2';
+    el.id = 'live-' + job.id;
+    document.getElementById('live-jobs').appendChild(el);
+    liveCards[job.id] = el;
+  }
+  const pct = job.pct || 0;
+  liveCards[job.id].innerHTML = `
+    <div class="card-body py-2">
+      <div class="d-flex align-items-center justify-content-between mb-1">
+        <a href="/jobs/${job.id}" class="fw-semibold text-decoration-none">${job.name}</a>
+        <span class="badge-status ${job.status}">${job.status}</span>
+      </div>
+      <div class="d-flex justify-content-between mb-1">
+        <small class="text-muted">${job.progress?.message || ''}</small>
+        <small class="text-accent">${pct.toFixed(1)}%</small>
+      </div>
+      <div class="progress" style="height:8px">
+        <div class="progress-bar bg-primary progress-bar-striped progress-bar-animated"
+             style="width:${pct}%"></div>
+      </div>
+      ${job.progress?.sub_step ? `<small class="text-muted">${job.progress.sub_step}</small>` : ''}
+    </div>`;
+}
+
+async function clearFinished() {
+  await POST('/jobs/clear');
+  location.reload();
+}
+</script>
+{% endblock %}

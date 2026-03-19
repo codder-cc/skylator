@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Hash Manager{% endblock %}
+{% block page_title %}<i class="bi bi-shield-check-fill me-2 text-accent"></i>Hash Manager{% endblock %}
+
+{% block content %}
+<div class="card mb-3">
+  <div class="card-body py-2">
+    <div class="d-flex gap-2 align-items-center">
+      <input type="text" class="form-control form-control-sm" style="width:250px"
+             placeholder="Filter by mod/file..." oninput="filterTable('hash-filter','hash-table')" id="hash-filter">
+      <button class="btn btn-sm btn-outline-secondary" onclick="refreshHashes()">
+        <i class="bi bi-arrow-repeat me-1"></i>Recompute All
+      </button>
+      <span class="text-muted ms-auto">{{ hashes | length }} files</span>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-body p-0">
+    <table class="table table-dark mb-0" id="hash-table">
+      <thead>
+        <tr>
+          <th>Mod</th>
+          <th>File</th>
+          <th>Type</th>
+          <th>Size</th>
+          <th>SHA256 (16 chars)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for h in hashes %}
+        <tr>
+          <td>{{ h.mod }}</td>
+          <td class="mono" style="font-size:11px">{{ h.file }}</td>
+          <td class="text-accent" style="font-size:11px">{{ h.ext }}</td>
+          <td class="text-muted">{{ h.size | humansize }}</td>
+          <td>
+            {% if h.hash %}
+            <code>{{ h.hash }}</code>
+            <button class="btn btn-sm btn-link p-0 ms-1" onclick="copyText('{{ h.hash }}')">
+              <i class="bi bi-copy text-muted"></i>
+            </button>
+            {% else %}
+            <span class="text-muted">—</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="text-center text-muted py-4">No files found. Scan mods first.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function refreshHashes() {
+  toast('Computing hashes...', 'info');
+  const r = await POST('/tools/hashes/compute');
+  if (Array.isArray(r)) {
+    toast(`Computed ${r.length} hashes`, 'success');
+    setTimeout(() => location.reload(), 500);
+  }
+}
+</script>
+{% endblock %}

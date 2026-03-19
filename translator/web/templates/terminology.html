@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %}Terminology{% endblock %}
+{% block page_title %}<i class="bi bi-book-fill me-2 text-accent"></i>Terminology Manager{% endblock %}
+
+{% block content %}
+<div class="row g-3">
+  <div class="col-md-8">
+    <div class="card">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <span><i class="bi bi-translate me-2"></i>Skyrim EN → RU Terms ({{ terms | length }})</span>
+        <div class="d-flex gap-2">
+          <input type="text" class="form-control form-control-sm" style="width:180px"
+                 placeholder="Search..." oninput="filterTable('term-search','terms-table')" id="term-search">
+          <button class="btn btn-sm btn-primary" onclick="saveAll()">
+            <i class="bi bi-save me-1"></i>Save All
+          </button>
+        </div>
+      </div>
+      <div class="card-body p-0">
+        <table class="table table-dark mb-0" id="terms-table">
+          <thead>
+            <tr>
+              <th>English (source)</th>
+              <th>Russian (translation)</th>
+              <th style="width:80px">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="terms-body">
+            {% for en, ru in terms.items() | sort %}
+            <tr data-en="{{ en }}">
+              <td class="text-accent mono" style="font-size:12px">{{ en }}</td>
+              <td>
+                <input type="text" class="form-control form-control-sm bg-transparent border-0 term-input"
+                       value="{{ ru }}" style="color:var(--text-main)">
+              </td>
+              <td>
+                <button class="btn btn-sm btn-outline-danger"
+                        onclick="deleteTerm('{{ en }}', this)">
+                  <i class="bi bi-trash"></i>
+                </button>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-md-4">
+    <!-- Add new term -->
+    <div class="card mb-3">
+      <div class="card-header"><i class="bi bi-plus-circle me-2"></i>Add Term</div>
+      <div class="card-body">
+        <div class="mb-2">
+          <label class="form-label">English</label>
+          <input type="text" class="form-control" id="new-en" placeholder="Dragonborn">
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Russian</label>
+          <input type="text" class="form-control" id="new-ru" placeholder="Довакин">
+        </div>
+        <button class="btn btn-primary w-100" onclick="addTerm()">
+          <i class="bi bi-plus me-2"></i>Add Term
+        </button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><i class="bi bi-info-circle me-2"></i>About</div>
+      <div class="card-body text-muted" style="font-size:12px">
+        <p>These terms override AI translation when specific English words or phrases appear in source strings.</p>
+        <p>Examples:</p>
+        <ul class="ps-3">
+          <li><code>Dragonborn</code> → <code>Довакин</code></li>
+          <li><code>Thieves Guild</code> → <code>Гильдия воров</code></li>
+        </ul>
+        <p>Stored in <code>data/skyrim_terms.json</code></p>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function addTerm() {
+  const en = document.getElementById('new-en').value.trim();
+  const ru = document.getElementById('new-ru').value.trim();
+  if (!en || !ru) return toast('Both fields required', 'warning');
+
+  const r = await POST('/terminology/add', { en, ru });
+  if (r.ok) {
+    // Add row to table
+    const tbody = document.getElementById('terms-body');
+    const tr    = document.createElement('tr');
+    tr.setAttribute('data-en', en);
+    tr.innerHTML = `
+      <td class="text-accent mono" style="font-size:12px">${en}</td>
+      <td><input type="text" class="form-control form-control-sm bg-transparent border-0 term-input"
+           value="${ru}" style="color:var(--text-main)"></td>
+      <td><button class="btn btn-sm btn-outline-danger" onclick="deleteTerm('${en}', this)">
+        <i class="bi bi-trash"></i></button></td>`;
+    tbody.appendChild(tr);
+    document.getElementById('new-en').value = '';
+    document.getElementById('new-ru').value = '';
+    toast('Term added', 'success');
+  } else {
+    toast('Error: ' + r.error, 'danger');
+  }
+}
+
+async function deleteTerm(en, btn) {
+  const r = await POST('/terminology/delete', { en });
+  if (r.ok) {
+    btn.closest('tr').remove();
+    toast('Deleted', 'warning');
+  }
+}
+
+async function saveAll() {
+  const terms = {};
+  document.querySelectorAll('#terms-body tr').forEach(tr => {
+    const en = tr.getAttribute('data-en');
+    const ru = tr.querySelector('.term-input')?.value;
+    if (en && ru) terms[en] = ru;
+  });
+  const r = await POST('/terminology/save', { terms });
+  if (r.ok) toast(`Saved ${r.count} terms`, 'success');
+  else toast('Error: ' + r.error, 'danger');
+}
+</script>
+{% endblock %}

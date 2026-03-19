@@ -1,0 +1,337 @@
+{% extends "base.html" %}
+{% block title %}Pipeline Tools{% endblock %}
+{% block page_title %}<i class="bi bi-wrench-adjustable-circle-fill me-2 text-accent"></i>Pipeline Tools{% endblock %}
+
+{% block content %}
+<div class="row g-3">
+
+  <!-- ESP Tools -->
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header"><i class="bi bi-file-earmark-binary me-2"></i>ESP Tools</div>
+      <div class="card-body">
+        <div class="mb-3">
+          <label class="form-label">ESP/ESM/ESL File Path</label>
+          <input type="text" class="form-control" id="esp-path"
+                 placeholder="H:\...\ModName\Plugin.esp">
+        </div>
+        <div class="d-flex gap-2 flex-wrap">
+          <button class="btn btn-outline-secondary" onclick="espParse()">
+            <i class="bi bi-search me-1"></i>Parse & Extract
+          </button>
+          <button class="btn btn-outline-secondary" onclick="espApply()">
+            <i class="bi bi-file-earmark-check me-1"></i>Apply Translation
+          </button>
+          <button class="btn btn-outline-secondary" onclick="espApplyDry()">
+            <i class="bi bi-eye me-1"></i>Dry Run Apply
+          </button>
+        </div>
+
+        <!-- Parse results -->
+        <div id="esp-parse-result" class="mt-3" style="display:none">
+          <div class="d-flex justify-content-between mb-1">
+            <span class="text-muted">Extracted strings</span>
+            <span class="text-accent" id="esp-count">0</span>
+          </div>
+          <div class="log-terminal" id="esp-strings" style="max-height:300px"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- BSA Tools -->
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header"><i class="bi bi-archive me-2"></i>BSA Tools</div>
+      <div class="card-body">
+        <div class="mb-2">
+          <label class="form-label">BSA File Path</label>
+          <input type="text" class="form-control" id="bsa-path"
+                 placeholder="H:\...\ModName\Archive.bsa">
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Output Directory (optional)</label>
+          <input type="text" class="form-control" id="bsa-outdir"
+                 placeholder="auto: same folder + _unpacked">
+        </div>
+        <div class="d-flex gap-2 flex-wrap">
+          <button class="btn btn-outline-secondary" onclick="bsaUnpack()">
+            <i class="bi bi-box-arrow-up me-1"></i>Unpack BSA
+          </button>
+          <button class="btn btn-outline-secondary" onclick="bsaPack()">
+            <i class="bi bi-box-arrow-in-down me-1"></i>Pack to BSA
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SWF Tools -->
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header">
+        <i class="bi bi-filetype-swf me-2"></i>SWF Flash Tools
+        <small class="text-muted ms-2">(JPEXS FFDec required)</small>
+      </div>
+      <div class="card-body">
+        <div class="mb-2">
+          <label class="form-label">FFDec JAR Path</label>
+          <input type="text" class="form-control" id="ffdec-jar"
+                 placeholder="C:\...\ffdec.jar">
+        </div>
+        <div class="mb-2">
+          <label class="form-label">SWF File Path</label>
+          <input type="text" class="form-control" id="swf-path"
+                 placeholder="H:\...\interface\SkyUI_SE.swf">
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Output/Source Directory</label>
+          <input type="text" class="form-control" id="swf-outdir"
+                 placeholder="auto: same folder + _decompiled">
+        </div>
+        <div class="d-flex gap-2 flex-wrap">
+          <button class="btn btn-outline-secondary" onclick="swfDecompile()">
+            <i class="bi bi-code-slash me-1"></i>Decompile
+          </button>
+          <button class="btn btn-outline-secondary" onclick="swfCompile()">
+            <i class="bi bi-hammer me-1"></i>Compile
+          </button>
+        </div>
+        <div class="mt-2 text-muted" style="font-size:11px">
+          Decompile: SWF → ActionScript / XML / images<br>
+          Compile: modified files → SWF (inject scripts)
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- xTranslate Tools -->
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header"><i class="bi bi-filetype-xml me-2"></i>xTranslate / xEdit</div>
+      <div class="card-body">
+        <p class="text-muted" style="font-size:12px">
+          Import from SST/xTranslate <code>.t3dict</code> (text format) or export current
+          cache back. SST format: <code>[PluginName.esp]</code> → <code>[FormID]</code> →
+          <code>FULL=Translation</code>.
+        </p>
+        <div class="mb-2">
+          <label class="form-label">t3dict File Path</label>
+          <input type="text" class="form-control" id="t3dict-path"
+                 placeholder="C:\...\MyMod.t3dict">
+        </div>
+        <div class="d-flex gap-2 flex-wrap">
+          <button class="btn btn-outline-secondary" onclick="importT3dict()">
+            <i class="bi bi-upload me-1"></i>Import t3dict
+          </button>
+          <button class="btn btn-outline-secondary" onclick="exportT3dict('sst')">
+            <i class="bi bi-download me-1"></i>Export .t3dict (SST)
+          </button>
+          <button class="btn btn-outline-secondary" onclick="exportT3dict('xml')">
+            <i class="bi bi-filetype-xml me-1"></i>Export XML
+          </button>
+        </div>
+        <hr class="border-subtle my-3">
+        <p class="text-muted" style="font-size:12px">
+          <i class="bi bi-info-circle me-1"></i>
+          <strong>xEdit workflow:</strong> Use SSEEdit with the <em>xTranslator</em> script to extract strings,
+          then import into this tool, translate, and export back. Or use our ESP engine directly.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Nexus Tools -->
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header"><i class="bi bi-cloud me-2"></i>Nexus Context</div>
+      <div class="card-body">
+        <div class="mb-2">
+          <label class="form-label">Mod Name (folder name)</label>
+          <input type="text" class="form-control" id="nexus-mod-name"
+                 placeholder="A Cat's Life">
+        </div>
+        <div class="d-flex gap-2 mb-3">
+          <button class="btn btn-outline-secondary" onclick="fetchNexusContext()">
+            <i class="bi bi-cloud-download me-1"></i>Fetch Description
+          </button>
+          <button class="btn btn-outline-secondary" onclick="testNexus()">
+            <i class="bi bi-plug me-1"></i>Test API Key
+          </button>
+        </div>
+        <div id="nexus-result" class="text-muted" style="font-size:12px"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Validation Tools -->
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header"><i class="bi bi-shield-check me-2"></i>Validation</div>
+      <div class="card-body">
+        <div class="mb-2">
+          <label class="form-label">Mod Name to Validate</label>
+          <input type="text" class="form-control" id="validate-mod"
+                 placeholder="ModName">
+        </div>
+        <button class="btn btn-outline-secondary" onclick="validateMod()">
+          <i class="bi bi-shield-check me-1"></i>Run Validation
+        </button>
+        <hr class="border-subtle my-3">
+        <div class="text-muted" style="font-size:11px">
+          Checks: token preservation (<code>&lt;Alias=</code> <code>&lt;mag&gt;</code> etc.),
+          encoding artifacts, string length limits (512 chars max for UI strings),
+          Cyrillic ratio, missing translations.
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Job result modal -->
+<div class="modal fade" id="job-modal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title" id="job-modal-title">Job Started</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="job-modal-body"></div>
+      <div class="modal-footer">
+        <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+        <a class="btn btn-sm btn-primary" id="job-modal-link" href="#">View Job</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function showJobModal(jobId, name) {
+  document.getElementById('job-modal-title').textContent = 'Job: ' + name;
+  document.getElementById('job-modal-body').textContent = 'Job ID: ' + jobId;
+  document.getElementById('job-modal-link').href = '/jobs/' + jobId;
+  new bootstrap.Modal(document.getElementById('job-modal')).show();
+}
+
+async function espParse() {
+  const path = document.getElementById('esp-path').value.trim();
+  if (!path) return toast('Enter ESP path', 'warning');
+  const r = await POST('/tools/esp/parse', { path });
+  if (r.error) { toast('Error: ' + r.error, 'danger'); return; }
+  document.getElementById('esp-parse-result').style.display = '';
+  document.getElementById('esp-count').textContent = r.count;
+  const el = document.getElementById('esp-strings');
+  el.innerHTML = '';
+  r.strings.slice(0,100).forEach(s => {
+    const d = document.createElement('div');
+    d.textContent = s.key + '  →  ' + s.text.substring(0,80);
+    el.appendChild(d);
+  });
+  toast(`Extracted ${r.count} strings`, 'success');
+}
+
+async function espApply(dry = false) {
+  const path = document.getElementById('esp-path').value.trim();
+  if (!path) return toast('Enter ESP path', 'warning');
+  const r = await POST('/tools/esp/apply', { esp_path: path, dry_run: dry });
+  if (r.job_id) showJobModal(r.job_id, 'Apply ESP');
+  else toast('Error: ' + r.error, 'danger');
+}
+
+function espApplyDry() { espApply(true); }
+
+async function bsaUnpack() {
+  const bsa = document.getElementById('bsa-path').value.trim();
+  const out  = document.getElementById('bsa-outdir').value.trim();
+  if (!bsa) return toast('Enter BSA path', 'warning');
+  const r = await POST('/tools/bsa/unpack', { bsa_path: bsa, out_dir: out || undefined });
+  if (r.job_id) showJobModal(r.job_id, 'BSA Unpack');
+  else toast('Error: ' + r.error, 'danger');
+}
+
+async function bsaPack() {
+  const bsa = document.getElementById('bsa-path').value.trim();
+  const src  = document.getElementById('bsa-outdir').value.trim();
+  if (!bsa || !src) return toast('BSA path and source dir required', 'warning');
+  const r = await POST('/tools/bsa/pack', { bsa_path: bsa, src_dir: src });
+  if (r.job_id) showJobModal(r.job_id, 'BSA Pack');
+  else toast('Error: ' + r.error, 'danger');
+}
+
+async function swfDecompile() {
+  const swf   = document.getElementById('swf-path').value.trim();
+  const ffdec = document.getElementById('ffdec-jar').value.trim();
+  const out   = document.getElementById('swf-outdir').value.trim();
+  if (!swf || !ffdec) return toast('SWF path and FFDec jar required', 'warning');
+  const r = await POST('/tools/swf/decompile', { swf_path: swf, ffdec_jar: ffdec, out_dir: out || undefined });
+  if (r.job_id) showJobModal(r.job_id, 'SWF Decompile');
+  else toast('Error: ' + r.error, 'danger');
+}
+
+async function swfCompile() {
+  const swf   = document.getElementById('swf-path').value.trim();
+  const ffdec = document.getElementById('ffdec-jar').value.trim();
+  const src   = document.getElementById('swf-outdir').value.trim();
+  if (!swf || !ffdec || !src) return toast('All 3 fields required for compile', 'warning');
+  const r = await POST('/tools/swf/compile', { swf_path: swf, ffdec_jar: ffdec, src_dir: src });
+  if (r.job_id) showJobModal(r.job_id, 'SWF Compile');
+  else toast('Error: ' + r.error, 'danger');
+}
+
+async function importT3dict() {
+  const path = document.getElementById('t3dict-path').value.trim();
+  if (!path) return toast('Enter t3dict path', 'warning');
+  const r = await POST('/tools/xtranslate/import', { t3dict_path: path });
+  if (r.ok) toast(`Imported ${r.imported} strings`, 'success');
+  else toast('Error: ' + r.error, 'danger');
+}
+
+async function exportT3dict(fmt = 'sst') {
+  const r = await POST('/tools/xtranslate/export', { format: fmt });
+  if (r.ok) toast('Exported to ' + r.path, 'success');
+  else if (r.error) toast('Error: ' + r.error, 'danger');
+  else {
+    // Direct download — fetch as blob
+    const resp = await fetch('/tools/xtranslate/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ format: fmt }),
+    });
+    const blob = await resp.blob();
+    const a    = document.createElement('a');
+    a.href     = URL.createObjectURL(blob);
+    a.download = fmt === 'xml' ? 'translations.xml' : 'translations.t3dict';
+    a.click();
+  }
+}
+
+async function fetchNexusContext() {
+  const mod = document.getElementById('nexus-mod-name').value.trim();
+  if (!mod) return toast('Enter mod name', 'warning');
+  const r = await POST('/tools/nexus/fetch', { mod_name: mod });
+  if (r.ok) {
+    document.getElementById('nexus-result').textContent = r.description;
+    toast('Fetched', 'success');
+  } else {
+    toast('Error: ' + r.error, 'danger');
+  }
+}
+
+async function testNexus() {
+  const r = await GET('/api/nexus/test');
+  if (r.ok) toast('Nexus API: OK', 'success');
+  else toast('Nexus API failed: ' + r.error, 'danger');
+}
+
+async function validateMod() {
+  const mod = document.getElementById('validate-mod').value.trim();
+  if (!mod) return toast('Enter mod name', 'warning');
+  const r = await POST('/tools/esp/validate', { mod_name: mod });
+  if (r.job_id) showJobModal(r.job_id, 'Validate');
+  else toast('Error: ' + r.error, 'danger');
+}
+</script>
+{% endblock %}

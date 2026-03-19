@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Nolvus Translator{% endblock %}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+  {% block head %}{% endblock %}
+</head>
+<body>
+
+<!-- Sidebar -->
+<div class="sidebar d-flex flex-column">
+  <div class="sidebar-brand">
+    <i class="bi bi-translate me-2"></i>
+    <span>Nolvus Translator</span>
+  </div>
+
+  <nav class="sidebar-nav flex-grow-1">
+    <div class="nav-section">MAIN</div>
+    <a href="{{ url_for('dashboard.index') }}"
+       class="nav-link {% if request.endpoint == 'dashboard.index' %}active{% endif %}">
+      <i class="bi bi-grid-1x2-fill"></i> Dashboard
+    </a>
+    <a href="{{ url_for('mods.mod_list') }}"
+       class="nav-link {% if request.endpoint and request.endpoint.startswith('mods.') %}active{% endif %}">
+      <i class="bi bi-collection-fill"></i> Mod Manager
+    </a>
+    <a href="{{ url_for('jobs.job_list') }}"
+       class="nav-link {% if request.endpoint and request.endpoint.startswith('jobs.') %}active{% endif %}">
+      <i class="bi bi-activity"></i> Jobs
+      <span id="nav-running-badge" class="badge bg-primary ms-auto" style="display:none">0</span>
+    </a>
+
+    <div class="nav-section mt-3">TOOLS</div>
+    <a href="{{ url_for('tools.tools_page') }}"
+       class="nav-link {% if request.endpoint and request.endpoint.startswith('tools.') %}active{% endif %}">
+      <i class="bi bi-wrench-adjustable-circle-fill"></i> Pipeline Tools
+    </a>
+    <a href="{{ url_for('tools.hash_manager') }}"
+       class="nav-link {% if request.endpoint == 'tools.hash_manager' %}active{% endif %}">
+      <i class="bi bi-shield-check-fill"></i> Hash Manager
+    </a>
+    <a href="{{ url_for('backups.backup_list') }}"
+       class="nav-link {% if request.endpoint and request.endpoint.startswith('backups.') %}active{% endif %}">
+      <i class="bi bi-archive-fill"></i> Backups
+    </a>
+
+    <div class="nav-section mt-3">CONFIG</div>
+    <a href="{{ url_for('terms_rt.terms_page') }}"
+       class="nav-link {% if request.endpoint and request.endpoint.startswith('terms_rt.') %}active{% endif %}">
+      <i class="bi bi-book-fill"></i> Terminology
+    </a>
+    <a href="{{ url_for('config_rt.config_page') }}"
+       class="nav-link {% if request.endpoint and request.endpoint.startswith('config_rt.') %}active{% endif %}">
+      <i class="bi bi-gear-fill"></i> Config
+    </a>
+    <a href="{{ url_for('logs_rt.logs_page') }}"
+       class="nav-link {% if request.endpoint and request.endpoint.startswith('logs_rt.') %}active{% endif %}">
+      <i class="bi bi-terminal-fill"></i> Logs
+    </a>
+  </nav>
+
+  <!-- GPU widget -->
+  <div class="sidebar-gpu" id="gpu-widget">
+    <div class="gpu-label"><i class="bi bi-gpu-card me-1"></i><span id="gpu-name">GPU</span></div>
+    <div class="progress mt-1" style="height:6px">
+      <div class="progress-bar bg-accent" id="gpu-bar" style="width:0%"></div>
+    </div>
+    <div class="gpu-stats mt-1" id="gpu-stats">—</div>
+  </div>
+</div>
+
+<!-- Main content -->
+<div class="main-content">
+  <!-- Top bar -->
+  <div class="topbar d-flex align-items-center justify-content-between px-4">
+    <div class="topbar-title">{% block page_title %}{% endblock %}</div>
+    <div class="d-flex align-items-center gap-3">
+      <span class="badge bg-secondary" id="topbar-status">Ready</span>
+      <a href="{{ url_for('jobs.job_list') }}" class="btn btn-sm btn-outline-secondary">
+        <i class="bi bi-activity"></i> Jobs
+      </a>
+    </div>
+  </div>
+
+  <!-- Flash messages -->
+  {% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+  <div class="px-4 pt-3">
+    {% for cat, msg in messages %}
+    <div class="alert alert-{{ cat }} alert-dismissible fade show" role="alert">
+      {{ msg }}
+      <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% endwith %}
+
+  <!-- Page content -->
+  <div class="content-area px-4 py-3">
+    {% block content %}{% endblock %}
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+<script>
+// GPU polling
+function pollGpu() {
+  fetch('/api/gpu').then(r => r.json()).then(d => {
+    if (d.available) {
+      document.getElementById('gpu-name').textContent = d.name.replace('NVIDIA ', '');
+      document.getElementById('gpu-bar').style.width = d.pct + '%';
+      document.getElementById('gpu-stats').textContent =
+        d.used_mb + ' / ' + d.total_mb + ' MB (' + d.pct + '%)';
+    }
+  }).catch(() => {});
+}
+pollGpu();
+setInterval(pollGpu, 5000);
+
+// Running jobs badge
+function pollJobs() {
+  fetch('/api/jobs').then(r => r.json()).then(jobs => {
+    const running = jobs.filter(j => j.status === 'running' || j.status === 'pending').length;
+    const badge = document.getElementById('nav-running-badge');
+    if (running > 0) {
+      badge.textContent = running;
+      badge.style.display = 'inline';
+      document.getElementById('topbar-status').textContent = running + ' running';
+      document.getElementById('topbar-status').className = 'badge bg-warning text-dark';
+    } else {
+      badge.style.display = 'none';
+      document.getElementById('topbar-status').textContent = 'Ready';
+      document.getElementById('topbar-status').className = 'badge bg-secondary';
+    }
+  }).catch(() => {});
+}
+pollJobs();
+setInterval(pollJobs, 3000);
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

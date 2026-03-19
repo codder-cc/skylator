@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nolvus-translator"
+version = "2.0.0"
+description = "Skyrim mod localization engine with multi-model ensemble translation"
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0.2",
+    "click>=8.1.8",
+    "requests>=2.32.0",
+    "flask>=3.0.0",
+]
+
+[project.scripts]
+nolvus-translate = "translator.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["translator*", "scripts*"]

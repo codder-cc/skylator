@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}Backups{% endblock %}
+{% block page_title %}<i class="bi bi-archive-fill me-2 text-accent"></i>Backup Manager{% endblock %}
+
+{% block content %}
+<!-- Create backup -->
+<div class="card mb-4">
+  <div class="card-header"><i class="bi bi-plus-circle me-2"></i>Create Backup</div>
+  <div class="card-body">
+    <div class="row g-3 align-items-end">
+      <div class="col-md-4">
+        <label class="form-label">Mod Name (leave blank for cache-only)</label>
+        <input type="text" class="form-control" id="backup-mod" placeholder="optional: ModName">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">Label</label>
+        <input type="text" class="form-control" id="backup-label" value="manual">
+      </div>
+      <div class="col-auto">
+        <button class="btn btn-primary" onclick="createBackup()">
+          <i class="bi bi-archive me-2"></i>Create Backup
+        </button>
+        <button class="btn btn-outline-secondary ms-2" onclick="backupCache()">
+          <i class="bi bi-file-earmark-code me-2"></i>Backup Cache Only
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Backups list -->
+<div class="card">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span>Backups ({{ backups | length }})</span>
+    <input type="text" class="form-control form-control-sm" style="width:200px"
+           placeholder="Filter..." oninput="filterTable('bak-filter','bak-table')" id="bak-filter">
+  </div>
+  <div class="card-body p-0">
+    <table class="table table-dark mb-0" id="bak-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Mod</th>
+          <th>Label</th>
+          <th>Date</th>
+          <th>Size</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in backups %}
+        <tr>
+          <td class="mono" style="font-size:11px">{{ b.id }}</td>
+          <td>{{ b.mod_name }}</td>
+          <td class="text-muted">{{ b.label }}</td>
+          <td class="text-muted">{{ b.mtime | timeago }}</td>
+          <td class="text-muted">{{ b.size | humansize }}</td>
+          <td>
+            <div class="btn-group btn-group-sm">
+              <button class="btn btn-outline-secondary" title="Restore"
+                      onclick="restoreBackup('{{ b.id }}', '{{ b.mod_name }}')">
+                <i class="bi bi-arrow-counterclockwise"></i>
+              </button>
+              <button class="btn btn-outline-danger" title="Delete"
+                      onclick="deleteBackup('{{ b.id }}')">
+                <i class="bi bi-trash"></i>
+              </button>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="text-center text-muted py-4">No backups yet</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function createBackup() {
+  const mod   = document.getElementById('backup-mod').value.trim();
+  const label = document.getElementById('backup-label').value.trim() || 'manual';
+  const r = await POST('/backups/create', { mod_name: mod || undefined, label });
+  if (r.ok) { toast('Backup created', 'success'); location.reload(); }
+  else toast('Error: ' + r.error, 'danger');
+}
+
+async function backupCache() {
+  const r = await POST('/backups/create', { label: 'cache' });
+  if (r.ok) { toast('Cache backup created', 'success'); location.reload(); }
+  else toast('Error: ' + r.error, 'danger');
+}
+
+async function restoreBackup(id, modName) {
+  confirmAction(`Restore backup "${id}"?<br><small>This will overwrite: ${modName}</small>`, async () => {
+    const r = await POST(`/backups/${id}/restore`);
+    if (r.ok) toast('Restored to ' + r.restored_to, 'success');
+    else toast('Error: ' + r.error, 'danger');
+  });
+}
+
+async function deleteBackup(id) {
+  confirmAction(`Delete backup "${id}"? This cannot be undone.`, async () => {
+    const r = await POST(`/backups/${id}/delete`);
+    if (r.ok) { toast('Deleted', 'warning'); location.reload(); }
+    else toast('Error: ' + r.error, 'danger');
+  });
+}
+</script>
+{% endblock %}

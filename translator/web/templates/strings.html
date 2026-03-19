@@ -1,0 +1,238 @@
+{% extends "base.html" %}
+{% block title %}Strings — {{ mod.folder_name }}{% endblock %}
+{% block page_title %}
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb mb-0">
+    <li class="breadcrumb-item"><a href="{{ url_for('mods.mod_list') }}" class="text-muted">Mods</a></li>
+    <li class="breadcrumb-item"><a href="{{ url_for('mods.mod_detail', mod_name=mod.folder_name) }}" class="text-muted">{{ mod.folder_name }}</a></li>
+    <li class="breadcrumb-item active text-accent">Strings</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+<!-- Stats bar -->
+<div class="row g-2 mb-3">
+  <div class="col-auto">
+    <div class="stat-card" style="padding:8px 16px">
+      <div class="stat-value" style="font-size:1.2rem">{{ total }}</div>
+      <div class="stat-label">Filtered</div>
+    </div>
+  </div>
+  <div class="col-auto">
+    <div class="stat-card success" style="padding:8px 16px">
+      <div class="stat-value" style="font-size:1.2rem">{{ mod.translated_strings }}</div>
+      <div class="stat-label">Translated</div>
+    </div>
+  </div>
+  <div class="col-auto">
+    <div class="stat-card warning" style="padding:8px 16px">
+      <div class="stat-value" style="font-size:1.2rem">{{ mod.pending_strings }}</div>
+      <div class="stat-label">Pending</div>
+    </div>
+  </div>
+  <div class="col-auto">
+    <div class="stat-card" style="padding:8px 16px">
+      <div class="stat-value" style="font-size:1.2rem">{{ mod.pct() }}%</div>
+      <div class="stat-label">Complete</div>
+    </div>
+  </div>
+  <div class="col-auto ms-auto d-flex align-items-center gap-2">
+    <a href="{{ url_for('mods.mod_detail', mod_name=mod.folder_name) }}"
+       class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-arrow-left me-1"></i>Back to Mod
+    </a>
+    <button class="btn btn-sm btn-primary"
+            onclick="startTranslateMod('{{ mod.folder_name }}', {only_esp:true}).then(id => id && location.assign('/jobs/'+id))">
+      <i class="bi bi-play-fill me-1"></i>Translate
+    </button>
+  </div>
+</div>
+
+<!-- Filter bar -->
+<div class="card mb-3">
+  <div class="card-body py-2">
+    <form method="get" class="row g-2 align-items-center">
+      <div class="col-auto">
+        <input type="text" class="form-control form-control-sm" name="q"
+               value="{{ search }}" placeholder="Search strings..." style="width:250px">
+      </div>
+      <div class="col-auto">
+        <select class="form-select form-select-sm" name="status" onchange="this.form.submit()">
+          <option value="all"        {% if filter_status=='all' %}selected{% endif %}>All</option>
+          <option value="pending"    {% if filter_status=='pending' %}selected{% endif %}>Pending</option>
+          <option value="translated" {% if filter_status=='translated' %}selected{% endif %}>Translated</option>
+        </select>
+      </div>
+      <div class="col-auto">
+        <select class="form-select form-select-sm" name="per" onchange="this.form.submit()">
+          <option value="25"  {% if per_page==25  %}selected{% endif %}>25/page</option>
+          <option value="50"  {% if per_page==50  %}selected{% endif %}>50/page</option>
+          <option value="100" {% if per_page==100 %}selected{% endif %}>100/page</option>
+        </select>
+      </div>
+      <button type="submit" class="btn btn-sm btn-outline-secondary">Filter</button>
+      <div class="col-auto ms-auto text-muted" style="font-size:12px">
+        {{ total }} strings &nbsp;·&nbsp; page {{ page }} / {{ total_pages }}
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Strings table -->
+<div class="card">
+  <div class="card-body p-0">
+    <table class="table table-dark mb-0" id="strings-table">
+      <thead>
+        <tr>
+          <th style="width:110px">FormID / ESP</th>
+          <th style="width:55px">Rec</th>
+          <th style="width:55px">Field</th>
+          <th>Original (EN)</th>
+          <th>Translation</th>
+          <th style="width:80px">Status</th>
+          <th style="width:55px">Score</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in strings %}
+        <tr class="{% if s.status == 'pending' %}table-warning-subtle{% endif %}">
+          <td style="font-size:11px">
+            <div class="mono text-muted">{{ s.form_id }}</div>
+            <div class="text-accent" style="font-size:10px">{{ s.esp }}</div>
+          </td>
+          <td class="text-muted" style="font-size:11px">{{ s.rec_type }}</td>
+          <td class="text-accent" style="font-size:11px">{{ s.field }}</td>
+          <td>
+            <div class="string-row-orig" style="max-height:80px;overflow:auto">
+              {{ s.original[:400] }}{% if s.original|length > 400 %}…{% endif %}
+            </div>
+          </td>
+          <td id="trans-{{ loop.index }}">
+            {% if s.translation %}
+            <span class="string-row-trans"
+                  title="Double-click to edit"
+                  ondblclick="makeStringEditable(this,'{{ s.key }}','{{ s.esp }}','{{ mod.folder_name }}')">
+              {{ s.translation[:400] }}{% if s.translation|length > 400 %}…{% endif %}
+            </span>
+            {% else %}
+            <span class="text-muted" style="font-size:11px">
+              <em>not translated</em>
+              <button class="btn btn-sm btn-link text-accent p-0 ms-1"
+                      onclick="editEmpty(this,'{{ s.key }}','{{ s.esp }}','{{ mod.folder_name }}')">
+                <i class="bi bi-pencil-fill"></i>
+              </button>
+            </span>
+            {% endif %}
+          </td>
+          <td>
+            <span class="badge-status {{ s.status }}">{{ s.status }}</span>
+          </td>
+          <td>
+            {% if s.get('quality_score') is not none %}
+              {% set qs = s.get('quality_score', 100) %}
+              <span class="badge {% if qs >= 80 %}bg-success{% elif qs >= 50 %}bg-warning text-dark{% else %}bg-danger{% endif %}"
+                    title="Quality score: {{ qs }}/100">{{ qs }}</span>
+            {% else %}
+              <span class="text-muted">—</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="7" class="text-center text-muted py-5">
+            {% if total == 0 %}
+            No strings found. Run translation first to extract strings.
+            {% else %}
+            No strings match the current filter.
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Pagination -->
+{% if total_pages > 1 %}
+<nav class="mt-3">
+  <ul class="pagination pagination-sm justify-content-center">
+    {% if page > 1 %}
+    <li class="page-item">
+      <a class="page-link" href="?page={{ page-1 }}&per={{ per_page }}&status={{ filter_status }}&q={{ search }}">
+        <i class="bi bi-chevron-left"></i>
+      </a>
+    </li>
+    {% endif %}
+
+    {% for p in range([1, page-3]|max, [total_pages+1, page+4]|min) %}
+    <li class="page-item {% if p == page %}active{% endif %}">
+      <a class="page-link" href="?page={{ p }}&per={{ per_page }}&status={{ filter_status }}&q={{ search }}">{{ p }}</a>
+    </li>
+    {% endfor %}
+
+    {% if page < total_pages %}
+    <li class="page-item">
+      <a class="page-link" href="?page={{ page+1 }}&per={{ per_page }}&status={{ filter_status }}&q={{ search }}">
+        <i class="bi bi-chevron-right"></i>
+      </a>
+    </li>
+    {% endif %}
+  </ul>
+</nav>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+const MOD_NAME = {{ mod.folder_name | tojson }};
+
+function makeStringEditable(span, key, esp, modName) {
+  const cell = span.closest('td');
+  const orig = span.textContent;
+  cell.innerHTML = `<textarea class="string-edit-area" rows="3" style="width:100%">${orig}</textarea>
+    <div class="mt-1 d-flex gap-1">
+      <button class="btn btn-sm btn-primary" onclick="saveString(this,'${key}','${esp}','${modName}')">Save</button>
+      <button class="btn btn-sm btn-outline-secondary" onclick="cancelEdit(this,${JSON.stringify(orig)})">Cancel</button>
+    </div>`;
+  cell.querySelector('textarea').focus();
+}
+
+function editEmpty(btn, key, esp, modName) {
+  const cell = btn.closest('td');
+  cell.innerHTML = `<textarea class="string-edit-area" rows="3" style="width:100%"></textarea>
+    <div class="mt-1 d-flex gap-1">
+      <button class="btn btn-sm btn-primary" onclick="saveString(this,'${key}','${esp}','${modName}')">Save</button>
+      <button class="btn btn-sm btn-outline-secondary" onclick="cancelEdit(this,'')">Cancel</button>
+    </div>`;
+  cell.querySelector('textarea').focus();
+}
+
+function cancelEdit(btn, orig) {
+  const cell = btn.closest('td');
+  if (orig) {
+    cell.innerHTML = `<span class="string-row-trans" ondblclick="makeStringEditable(this,'','','')">
+      ${orig}</span>`;
+  } else {
+    cell.innerHTML = `<span class="text-muted"><em>not translated</em></span>`;
+  }
+}
+
+async function saveString(btn, key, esp, modName) {
+  const cell = btn.closest('td');
+  const text = cell.querySelector('textarea').value.trim();
+  if (!text) return;
+  const r = await POST(`/mods/${encodeURIComponent(modName)}/strings/update`,
+    { key, esp, translation: text });
+  if (r.ok) {
+    cell.innerHTML = `<span class="string-row-trans"
+      ondblclick="makeStringEditable(this,${JSON.stringify(key)},${JSON.stringify(esp)},${JSON.stringify(modName)})">
+      ${text}</span>`;
+    toast('Saved', 'success');
+  } else {
+    toast('Save failed: ' + (r.error || 'unknown error'), 'danger');
+  }
+}
+</script>
+{% endblock %}

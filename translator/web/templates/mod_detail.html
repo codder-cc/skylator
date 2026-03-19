@@ -1,0 +1,567 @@
+{% extends "base.html" %}
+{% block title %}{{ mod.folder_name }}{% endblock %}
+{% block page_title %}
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb mb-0">
+    <li class="breadcrumb-item"><a href="{{ url_for('mods.mod_list') }}" class="text-muted">Mods</a></li>
+    <li class="breadcrumb-item active text-accent">{{ mod.folder_name }}</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+<!-- Header -->
+<div class="d-flex align-items-start justify-content-between mb-4">
+  <div>
+    <h4 class="mb-1">{{ mod.folder_name }}</h4>
+    {% if mod.nexus_mod_id %}
+    <span class="text-muted">Nexus ID: {{ mod.nexus_mod_id }}</span>
+    {% endif %}
+    <span class="badge-status {{ mod.status }} ms-3">
+      {{ mod.status }}
+    </span>
+  </div>
+  <div class="d-flex gap-2">
+    <button class="btn btn-primary"
+            onclick="startTranslateMod('{{ mod.folder_name }}').then(id => id && location.assign('/jobs/'+id))">
+      <i class="bi bi-play-fill me-2"></i>Translate
+    </button>
+    <div class="dropdown">
+      <button class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown">
+        <i class="bi bi-three-dots"></i>
+      </button>
+      <ul class="dropdown-menu dropdown-menu-dark">
+        <li><a class="dropdown-item" href="{{ url_for('mods.mod_strings', mod_name=mod.folder_name) }}">
+          <i class="bi bi-type me-2"></i>View / Edit Strings</a></li>
+        <li><a class="dropdown-item" href="{{ url_for('mods.mod_context', mod_name=mod.folder_name) }}">
+          <i class="bi bi-info-circle me-2"></i>Nexus Context</a></li>
+        <li><hr class="dropdown-divider border-subtle"></li>
+        <li><a class="dropdown-item" href="#" onclick="createBackup()">
+          <i class="bi bi-archive me-2"></i>Create Backup</a></li>
+        <li><a class="dropdown-item text-warning" href="#" onclick="restoreOriginal()">
+          <i class="bi bi-arrow-counterclockwise me-2"></i>Restore Original (ESP + BSA + SWF)</a></li>
+        <li><a class="dropdown-item" href="#" onclick="validateMod()">
+          <i class="bi bi-shield-check me-2"></i>Validate Translations</a></li>
+        <li><hr class="dropdown-divider border-subtle"></li>
+        <li><a class="dropdown-item" href="#"
+               onclick="startTranslateMod('{{ mod.folder_name }}', {only_mcm:true}).then(id => id && location.assign('/jobs/'+id))">
+          <i class="bi bi-translate me-2"></i>MCM only</a></li>
+        <li><a class="dropdown-item" href="#"
+               onclick="startTranslateMod('{{ mod.folder_name }}', {only_esp:true}).then(id => id && location.assign('/jobs/'+id))">
+          <i class="bi bi-file-earmark-binary me-2"></i>ESP only</a></li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- Stats row -->
+<div class="row g-3 mb-4">
+  <div class="col">
+    <div class="stat-card {% if mod.status == 'done' %}success{% elif mod.status == 'partial' %}warning{% else %}{% endif %}">
+      <div class="stat-value">{{ mod.pct() }}%</div>
+      <div class="stat-label">Translated</div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="stat-card">
+      <div class="stat-value">{{ mod.total_strings }}</div>
+      <div class="stat-label">Total Strings</div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="stat-card success">
+      <div class="stat-value">{{ mod.translated_strings }}</div>
+      <div class="stat-label">Translated</div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="stat-card warning">
+      <div class="stat-value">{{ mod.pending_strings }}</div>
+      <div class="stat-label">Pending</div>
+    </div>
+  </div>
+</div>
+
+<!-- Tabs -->
+<ul class="nav nav-tabs border-subtle mb-3" id="modTabs">
+  <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#tab-files">
+    <i class="bi bi-files me-1"></i>Files</a></li>
+  <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-pipeline">
+    <i class="bi bi-diagram-3 me-1"></i>Pipeline</a></li>
+  <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-nexus">
+    <i class="bi bi-cloud me-1"></i>Nexus</a></li>
+  <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-jobs">
+    <i class="bi bi-activity me-1"></i>Jobs</a></li>
+</ul>
+
+<div class="tab-content">
+  <!-- Files tab -->
+  <div class="tab-pane fade show active" id="tab-files">
+    <div class="row g-3">
+      <!-- ESP files -->
+      <div class="col-md-6">
+        <div class="card">
+          <div class="card-header"><i class="bi bi-file-earmark-binary me-2"></i>ESP / ESM / ESL Files</div>
+          <div class="card-body p-0">
+            <table class="table table-dark mb-0">
+              <thead><tr><th>File</th><th>Size</th><th>Flags</th><th>Action</th></tr></thead>
+              <tbody>
+                {% for f in mod.esp_files %}
+                <tr>
+                  <td class="mono" style="font-size:12px">{{ f.name }}</td>
+                  <td class="text-muted">{{ f.size_bytes | humansize }}</td>
+                  <td>
+                    {% if f.is_localized %}
+                    <span class="badge bg-warning text-dark">Localized</span>
+                    {% endif %}
+                  </td>
+                  <td>
+                    <button class="btn btn-sm btn-outline-secondary"
+                            onclick='applyEsp({{ f.path | tojson }})'>
+                      <i class="bi bi-play-fill"></i>
+                    </button>
+                  </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4" class="text-muted text-center">No ESP files</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- BSA files -->
+      <div class="col-md-6">
+        <div class="card">
+          <div class="card-header"><i class="bi bi-archive me-2"></i>BSA Archives</div>
+          <div class="card-body p-0">
+            <table class="table table-dark mb-0">
+              <thead><tr><th>File</th><th>Size</th><th>Actions</th></tr></thead>
+              <tbody>
+                {% for f in mod.bsa_files %}
+                <tr>
+                  <td class="mono" style="font-size:12px">{{ f.name }}</td>
+                  <td class="text-muted">{{ f.size_bytes | humansize }}</td>
+                  <td>
+                    <div class="btn-group btn-group-sm">
+                      <button class="btn btn-outline-secondary" title="Unpack"
+                              onclick='bsaUnpack({{ f.path | tojson }})'>
+                        <i class="bi bi-box-arrow-up"></i>
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="3" class="text-muted text-center">No BSA files</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- MCM loose files -->
+      {% if mod.mcm_loose %}
+      <div class="col-12">
+        <div class="card">
+          <div class="card-header"><i class="bi bi-translate me-2"></i>MCM Loose Translation Files</div>
+          <div class="card-body p-0">
+            <table class="table table-dark mb-0">
+              <thead><tr><th>File</th><th>Size</th></tr></thead>
+              <tbody>
+                {% for f in mod.mcm_loose %}
+                <tr>
+                  <td class="mono" style="font-size:12px">{{ f.path }}</td>
+                  <td class="text-muted">{{ f.size_bytes | humansize }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Pipeline tab -->
+  <div class="tab-pane fade" id="tab-pipeline">
+    <div class="card">
+      <div class="card-header"><i class="bi bi-diagram-3 me-2"></i>Translation Pipeline</div>
+      <div class="card-body">
+        <p class="text-muted mb-3">Run individual pipeline steps for this mod:</p>
+        {% macro step_badge(state) %}
+          {% if state == 'done' %}
+            <span class="badge bg-success"><i class="bi bi-check-lg me-1"></i>Done</span>
+          {% elif state == 'partial' %}
+            <span class="badge bg-warning text-dark"><i class="bi bi-circle-half me-1"></i>Partial</span>
+          {% else %}
+            <span class="badge bg-secondary">Pending</span>
+          {% endif %}
+        {% endmacro %}
+
+        <div id="pipeline-steps">
+          <div class="pipeline-step" id="step-scan">
+            <div class="pipeline-icon"><i class="bi bi-search"></i></div>
+            <div class="flex-grow-1">
+              <div class="fw-semibold">1. Scan & Count Strings</div>
+              <div class="text-muted" style="font-size:12px">
+                Parse ESP/ESM to count translatable strings
+                {% if mod.total_strings > 0 %}<span class="ms-2 text-accent">{{ mod.total_strings }} strings found</span>{% endif %}
+              </div>
+            </div>
+            <span class="step-status me-2" id="status-scan">{{ step_badge(pipeline_states.scan) }}</span>
+            <button class="btn btn-sm btn-outline-secondary" id="btn-scan" onclick="runStep('scan', this)">Run</button>
+          </div>
+
+          <div class="pipeline-step" id="step-context">
+            <div class="pipeline-icon"><i class="bi bi-cloud-download"></i></div>
+            <div class="flex-grow-1">
+              <div class="fw-semibold">2. Fetch Nexus Context</div>
+              <div class="text-muted" style="font-size:12px">
+                Download mod description from Nexus Mods for AI context
+                {% if nexus_data and nexus_data.get('name') %}<span class="ms-2 text-accent">{{ nexus_data.get('name') }}</span>{% endif %}
+              </div>
+            </div>
+            <span class="step-status me-2" id="status-context">{{ step_badge(pipeline_states.context) }}</span>
+            <button class="btn btn-sm btn-outline-secondary" id="btn-context" onclick="runStep('context', this)">Run</button>
+          </div>
+
+          <div class="pipeline-step" id="step-translate">
+            <div class="pipeline-icon"><i class="bi bi-translate"></i></div>
+            <div class="flex-grow-1">
+              <div class="fw-semibold">3. Neural Translation</div>
+              <div class="text-muted" style="font-size:12px">
+                Translate strings using Qwen adaptive models (14B / 32B)
+                {% if mod.translated_strings > 0 %}
+                  <span class="ms-2 text-accent">
+                    {{ mod.translated_strings }} translated
+                    {% if mod.total_strings > 0 %}/ {{ mod.total_strings }} total{% endif %}
+                  </span>
+                {% endif %}
+              </div>
+            </div>
+            <span class="step-status me-2" id="status-translate">{{ step_badge(pipeline_states.translate) }}</span>
+            <button class="btn btn-sm btn-primary" id="btn-translate" onclick="runStep('translate', this)">Run</button>
+          </div>
+
+          <div class="pipeline-step" id="step-validate">
+            <div class="pipeline-icon"><i class="bi bi-shield-check"></i></div>
+            <div class="flex-grow-1">
+              <div class="fw-semibold">4. Validate Translations</div>
+              <div class="text-muted" style="font-size:12px">
+                Check token preservation, encoding, length limits
+                {% if validation_data %}
+                  <span class="ms-2 {% if validation_data.get('ok') %}text-success{% else %}text-warning{% endif %}">
+                    {{ validation_data.get('issues_count', 0) }} issues / {{ validation_data.get('checked', 0) }} checked
+                  </span>
+                {% endif %}
+              </div>
+            </div>
+            <span class="step-status me-2" id="status-validate">{{ step_badge(pipeline_states.validate) }}</span>
+            <button class="btn btn-sm btn-outline-secondary" id="btn-validate" onclick="runStep('validate', this)">Run</button>
+          </div>
+
+          <div class="pipeline-step" id="step-apply">
+            <div class="pipeline-icon"><i class="bi bi-file-earmark-check"></i></div>
+            <div class="flex-grow-1">
+              <div class="fw-semibold">5. Apply & Write ESP</div>
+              <div class="text-muted" style="font-size:12px">Write translated strings back into ESP binary</div>
+            </div>
+            <span class="step-status me-2" id="status-apply">{{ step_badge(pipeline_states.apply) }}</span>
+            <button class="btn btn-sm btn-outline-secondary" id="btn-apply" onclick="runStep('apply', this)">Run</button>
+          </div>
+
+          {% if mod.bsa_files %}
+          <div class="pipeline-step" id="step-bsa">
+            <div class="pipeline-icon"><i class="bi bi-archive"></i></div>
+            <div class="flex-grow-1">
+              <div class="fw-semibold">6. BSA Translation</div>
+              <div class="text-muted" style="font-size:12px">
+                Unpack BSA archives, translate MCM/SWF content, repack
+                <span class="ms-2 text-accent">{{ mod.bsa_files | length }} BSA file(s)</span>
+              </div>
+            </div>
+            <span class="step-status me-2"><span class="badge bg-secondary">Pending</span></span>
+            <button class="btn btn-sm btn-outline-secondary" onclick="runStep('bsa', this)">Run</button>
+          </div>
+          {% endif %}
+        </div>
+
+        <!-- Run all pipeline button -->
+        <div class="mt-3 d-flex gap-2">
+          <button class="btn btn-primary"
+                  onclick="startTranslateMod('{{ mod.folder_name }}').then(id => id && location.assign('/jobs/'+id))">
+            <i class="bi bi-play-fill me-2"></i>Run Full Pipeline
+          </button>
+          <button class="btn btn-outline-secondary"
+                  onclick="startTranslateMod('{{ mod.folder_name }}', {dry_run:true}).then(id => id && location.assign('/jobs/'+id))">
+            <i class="bi bi-eye me-2"></i>Dry Run
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Nexus tab -->
+  <div class="tab-pane fade" id="tab-nexus">
+    <div class="row g-3">
+      <!-- Raw Nexus data -->
+      <div class="col-md-6">
+        <div class="card h-100">
+          <div class="card-header d-flex align-items-center justify-content-between">
+            <span><i class="bi bi-cloud me-2"></i>Nexus Mods Data</span>
+            <button class="btn btn-sm btn-outline-secondary" id="btn-nexus-fetch" onclick="fetchNexus()">
+              <i class="bi bi-arrow-repeat me-1"></i>Fetch
+            </button>
+          </div>
+          <div class="card-body" id="nexus-content">
+            {% if nexus_data %}
+            <div><strong>Name:</strong> {{ nexus_data.get('name', '—') }}</div>
+            <div class="mt-2"><strong>Author:</strong> {{ nexus_data.get('author', '—') }}</div>
+            <div class="mt-2"><strong>Version:</strong> {{ nexus_data.get('version', '—') }}</div>
+            <div class="mt-3"><strong>Description:</strong></div>
+            <div class="text-muted mt-1" style="white-space:pre-wrap;max-height:300px;overflow-y:auto">{{ nexus_data.get('summary', '—') }}</div>
+            {% else %}
+            <div class="text-muted">No Nexus data cached. Click Fetch to download.</div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
+      <!-- AI context summary -->
+      <div class="col-md-6">
+        <div class="card h-100">
+          <div class="card-header d-flex align-items-center justify-content-between">
+            <span><i class="bi bi-cpu me-2"></i>AI Context Summary</span>
+            <button class="btn btn-sm btn-outline-secondary" id="btn-summarize" onclick="loadContext()">
+              <i class="bi bi-stars me-1"></i>Generate
+            </button>
+          </div>
+          <div class="card-body" id="context-content">
+            <div class="text-muted" style="font-size:12px">
+              This is the condensed context string injected into every translation prompt for this mod.
+              Click Generate to build it from the cached Nexus description.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Jobs tab -->
+  <div class="tab-pane fade" id="tab-jobs">
+    <div class="card">
+      <div class="card-header"><i class="bi bi-activity me-2"></i>Translation Jobs for This Mod</div>
+      <div class="card-body p-0">
+        <table class="table table-dark mb-0">
+          <thead><tr><th>Job</th><th>Status</th><th>Progress</th><th>Created</th></tr></thead>
+          <tbody>
+            {% for j in mod_jobs %}
+            <tr>
+              <td><a href="{{ url_for('jobs.job_detail', job_id=j.id) }}" class="text-decoration-none">{{ j.name }}</a></td>
+              <td>{{ j.status.value }}</td>
+              <td>{{ j.progress.current }} / {{ j.progress.total }}</td>
+              <td class="text-muted">{{ j.created_at | timeago }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4" class="text-muted text-center py-3">No jobs for this mod</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const MOD_NAME = {{ mod.folder_name | tojson }};
+
+async function createBackup() {
+  const r = await POST('/backups/create', { mod_name: MOD_NAME, label: 'manual' });
+  if (r.ok) toast('Backup created', 'success');
+  else toast('Backup failed: ' + r.error, 'danger');
+}
+
+async function restoreOriginal() {
+  if (!confirm(`Restore original (pre-translation) ESP files for "${MOD_NAME}"?\n\nThis will overwrite translated ESPs and clear translation data. The current state will be saved as a safety backup.`))
+    return;
+  const r = await POST('/backups/restore-mod-esp', { mod_name: MOD_NAME });
+  if (r.ok) {
+    toast(`Restored: ${r.restored.join(', ')}`, 'success');
+    setTimeout(() => location.reload(), 1500);
+  } else {
+    toast('Restore failed: ' + r.error, 'danger');
+  }
+}
+
+async function validateMod() {
+  const r = await POST('/tools/esp/validate', { mod_name: MOD_NAME });
+  if (r.job_id) location.assign('/jobs/' + r.job_id);
+}
+
+async function bsaUnpack(path) {
+  const r = await POST('/tools/bsa/unpack', { bsa_path: path });
+  if (r.job_id) location.assign('/jobs/' + r.job_id);
+}
+
+async function applyEsp(path) {
+  const r = await POST('/tools/esp/apply', { esp_path: path });
+  if (r.job_id) location.assign('/jobs/' + r.job_id);
+}
+
+// ── Pipeline step helpers ────────────────────────────────────────────────────
+
+function stepBusy(btn) {
+  btn.disabled = true;
+  btn.dataset.orig = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+}
+
+function stepDone(btn, statusId, ok, msg) {
+  btn.disabled = false;
+  btn.innerHTML = btn.dataset.orig || 'Run';
+  const el = document.getElementById(statusId);
+  if (el) {
+    el.innerHTML = ok
+      ? `<span class="badge bg-success"><i class="bi bi-check-lg me-1"></i>Done</span>`
+      : `<span class="badge bg-danger" title="${msg}"><i class="bi bi-x-lg me-1"></i>Error</span>`;
+  }
+}
+
+async function fetchNexus() {
+  const btn = document.getElementById('btn-nexus-fetch');
+  stepBusy(btn);
+  const r = await POST('/tools/nexus/fetch', { mod_name: MOD_NAME });
+  stepDone(btn, null, r.ok, r.error);
+  if (r.ok) {
+    toast('Nexus data fetched', 'success');
+    const d = r.data || {};
+    document.getElementById('nexus-content').innerHTML =
+      `<div><strong>Name:</strong> ${d.name || '—'}</div>
+       <div class="mt-2"><strong>Author:</strong> ${d.author || '—'}</div>
+       <div class="mt-2"><strong>Version:</strong> ${d.version || '—'}</div>
+       <div class="mt-3"><strong>Description:</strong></div>
+       <div class="text-muted mt-1" style="white-space:pre-wrap;max-height:300px;overflow-y:auto">${d.summary || r.description || '—'}</div>`;
+  } else {
+    toast('Fetch failed: ' + r.error, 'danger');
+  }
+}
+
+async function loadContext() {
+  const btn = document.getElementById('btn-summarize');
+  stepBusy(btn);
+  const r = await fetch(`/api/mods/${encodeURIComponent(MOD_NAME)}/context`).then(x => x.json());
+  stepDone(btn, null, r.ok, r.error);
+  const el = document.getElementById('context-content');
+  if (r.ok && r.context) {
+    el.innerHTML =
+      `<div class="text-muted mb-2" style="font-size:11px">Injected into every prompt for this mod:</div>
+       <div class="log-terminal" style="font-size:12px;white-space:pre-wrap">${r.context}</div>`;
+  } else if (r.ok) {
+    el.innerHTML = '<div class="text-muted">No context available — fetch Nexus data first.</div>';
+  } else {
+    el.innerHTML = `<div class="text-danger">${r.error}</div>`;
+  }
+}
+
+async function runStep(step, btn) {
+  if (step === 'scan') {
+    stepBusy(btn);
+    const r = await POST('/jobs/create', { type: 'scan_mods' });
+    if (r.job_id) location.assign('/jobs/' + r.job_id);
+    else { stepDone(btn, 'status-scan', false, r.error); toast('Scan failed: ' + r.error, 'danger'); }
+    return;
+  }
+
+  if (step === 'context') {
+    stepBusy(btn);
+    const r = await POST('/tools/nexus/fetch', { mod_name: MOD_NAME });
+    stepDone(btn, 'status-context', r.ok, r.error);
+    if (r.ok) toast('Nexus context fetched', 'success');
+    else toast('Failed: ' + r.error, 'danger');
+    return;
+  }
+
+  if (step === 'validate') {
+    stepBusy(btn);
+    const r = await POST('/tools/esp/validate', { mod_name: MOD_NAME });
+    if (r.job_id) {
+      // Track the job and update status when done
+      const tracker = new JobTracker(r.job_id, {
+        onDone: (d) => stepDone(btn, 'status-validate', d.status === 'done', d.error)
+      });
+      tracker.start();
+      location.assign('/jobs/' + r.job_id);
+    } else {
+      stepDone(btn, 'status-validate', false, r.error);
+    }
+    return;
+  }
+
+  if (step === 'translate') {
+    // Step 3: AI translation only — saves .trans.json, does NOT write ESP binary
+    stepBusy(btn);
+    const r = await POST('/jobs/create', {
+      type: 'translate_mod',
+      mods: [MOD_NAME],
+      options: { only_esp: true, translate_only: true }
+    });
+    if (r.job_id) location.assign('/jobs/' + r.job_id);
+    else stepDone(btn, 'status-translate', false, r.error);
+    return;
+  }
+
+  if (step === 'apply') {
+    // Step 5: Write .trans.json translations into ESP binary (no AI)
+    stepBusy(btn);
+    const r = await POST('/jobs/create', {
+      type: 'apply_mod',
+      mods: [MOD_NAME]
+    });
+    if (r.job_id) location.assign('/jobs/' + r.job_id);
+    else stepDone(btn, 'status-apply', false, r.error);
+    return;
+  }
+
+  if (step === 'bsa') {
+    // Unpack first BSA for this mod
+    {% if mod.bsa_files %}
+    const bsaPath = {{ mod.bsa_files[0].path | tojson }};
+    const r = await POST('/tools/bsa/unpack', { bsa_path: bsaPath });
+    if (r.job_id) location.assign('/jobs/' + r.job_id);
+    else toast('BSA unpack failed: ' + r.error, 'danger');
+    {% else %}
+    toast('No BSA files found', 'info');
+    {% endif %}
+    return;
+  }
+
+  toast('Step "' + step + '" — use full pipeline', 'info');
+}
+
+// Auto-refresh page when any job for this mod completes.
+// Only reload when a job we saw as running/pending transitions to done/failed.
+(function() {
+  const seenActive = new Set();
+  const es = new EventSource('/jobs/stream-all');
+  es.onmessage = function(e) {
+    try {
+      const d = JSON.parse(e.data);
+      const forThisMod = d.params && (d.params.mod_name === MOD_NAME || d.params.mods?.includes(MOD_NAME));
+      if (!forThisMod) return;
+      if (['running', 'pending'].includes(d.status)) {
+        seenActive.add(d.id);
+      } else if (['done', 'failed', 'cancelled'].includes(d.status) && seenActive.has(d.id)) {
+        es.close();
+        location.reload();
+      }
+    } catch (_) {}
+  };
+  es.onerror = function() { es.close(); };
+})();
+</script>
+{% endblock %}

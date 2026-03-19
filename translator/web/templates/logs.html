@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Logs{% endblock %}
+{% block page_title %}<i class="bi bi-terminal-fill me-2 text-accent"></i>Log Viewer{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="card-header d-flex align-items-center justify-content-between">
+    <div class="d-flex align-items-center gap-3">
+      <span><i class="bi bi-terminal me-2"></i>{{ log_path }}</span>
+      <div class="form-check form-switch mb-0">
+        <input class="form-check-input" type="checkbox" id="live-tail" onchange="toggleTail(this)">
+        <label class="form-check-label text-muted" style="font-size:12px">Live Tail</label>
+      </div>
+    </div>
+    <div class="d-flex gap-2">
+      <select class="form-select form-select-sm" style="width:120px" id="level-filter" onchange="filterLevel()">
+        <option value="">All levels</option>
+        <option value="ERROR">ERROR</option>
+        <option value="WARNING">WARNING</option>
+        <option value="INFO">INFO</option>
+        <option value="DEBUG">DEBUG</option>
+      </select>
+      <input type="text" class="form-control form-control-sm" style="width:180px"
+             id="log-search" placeholder="Search..." oninput="filterLogs()">
+      <button class="btn btn-sm btn-outline-secondary" onclick="clearDisplay()">
+        <i class="bi bi-x-lg"></i>
+      </button>
+      <button class="btn btn-sm btn-outline-secondary" onclick="copyLog()">
+        <i class="bi bi-copy"></i>
+      </button>
+    </div>
+  </div>
+  <div class="card-body p-0">
+    <div class="log-terminal" id="log-output" style="max-height:calc(100vh - 200px); min-height:400px">
+      {% for line in lines %}
+      <div class="{{ line | log_class }}">{{ line }}</div>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="card-footer text-muted" style="font-size:11px">
+    <span id="line-count">{{ lines | length }} lines</span> loaded |
+    <span id="tail-status">static</span>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let tailES    = null;
+let allLines  = [];
+const logEl   = document.getElementById('log-output');
+
+// Collect initial lines
+logEl.querySelectorAll('div').forEach(d => allLines.push(d.textContent));
+
+function scrollBottom() {
+  logEl.scrollTop = logEl.scrollHeight;
+}
+scrollBottom();
+
+function toggleTail(cb) {
+  if (cb.checked) {
+    tailES = new EventSource('/logs/stream');
+    tailES.onmessage = e => {
+      appendLine(e.data);
+      allLines.push(e.data);
+      document.getElementById('line-count').textContent = allLines.length + ' lines';
+    };
+    document.getElementById('tail-status').textContent = '🔴 live';
+    document.getElementById('tail-status').style.color = 'var(--danger)';
+  } else {
+    if (tailES) { tailES.close(); tailES = null; }
+    document.getElementById('tail-status').textContent = 'static';
+    document.getElementById('tail-status').style.color = '';
+  }
+}
+
+function appendLine(text) {
+  const div = document.createElement('div');
+  div.className = lineClass(text);
+  div.textContent = text;
+  logEl.appendChild(div);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function lineClass(text) {
+  if (text.includes('[ERROR]') || text.includes(' ERROR ')) return 'log-error';
+  if (text.includes('[WARNING]') || text.includes(' WARNING ')) return 'log-warn';
+  if (text.includes('[INFO]')) return 'log-info';
+  if (text.includes('[DEBUG]')) return 'log-debug';
+  return '';
+}
+
+function filterLevel() {
+  const level = document.getElementById('level-filter').value;
+  filterLogs(level);
+}
+
+function filterLogs(level) {
+  level = level || document.getElementById('level-filter').value;
+  const search = document.getElementById('log-search').value.toLowerCase();
+  logEl.querySelectorAll('div').forEach(d => {
+    const text = d.textContent;
+    const matchLevel  = !level  || text.includes('[' + level + ']') || text.includes(' ' + level + ' ');
+    const matchSearch = !search || text.toLowerCase().includes(search);
+    d.style.display   = matchLevel && matchSearch ? '' : 'none';
+  });
+}
+
+function clearDisplay() {
+  logEl.innerHTML = '';
+  allLines = [];
+}
+
+function copyLog() {
+  copyText(logEl.innerText);
+}
+</script>
+{% endblock %}

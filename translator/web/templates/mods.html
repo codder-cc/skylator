@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% block title %}Mod Manager{% endblock %}
+{% block page_title %}<i class="bi bi-collection-fill me-2 text-accent"></i>Mod Manager{% endblock %}
+
+{% block content %}
+<!-- Filters -->
+<div class="card mb-3">
+  <div class="card-body py-2">
+    <form method="get" class="row g-2 align-items-center">
+      <div class="col-auto">
+        <input type="text" class="form-control form-control-sm" name="q"
+               value="{{ search }}" placeholder="Search mods..." style="width:220px"
+               oninput="filterTable('search-input','mods-table')">
+      </div>
+      <div class="col-auto">
+        <select class="form-select form-select-sm" name="status" onchange="this.form.submit()">
+          <option value="all" {% if status_filter=='all' %}selected{% endif %}>All statuses</option>
+          <option value="pending"    {% if status_filter=='pending' %}selected{% endif %}>Pending</option>
+          <option value="partial"    {% if status_filter=='partial' %}selected{% endif %}>Partial</option>
+          <option value="done"       {% if status_filter=='done' %}selected{% endif %}>Done</option>
+          <option value="no_strings" {% if status_filter=='no_strings' %}selected{% endif %}>No strings</option>
+          <option value="unknown"    {% if status_filter=='unknown' %}selected{% endif %}>Not scanned</option>
+        </select>
+      </div>
+      <div class="col-auto ms-auto">
+        <span class="text-muted me-3">{{ total_count }} mods</span>
+        <button type="button" class="btn btn-sm btn-primary"
+                onclick="confirmAction('Start translating ALL pending mods?', () => startTranslateAll({resume:true}).then(id => id && location.assign('/jobs/'+id)))">
+          <i class="bi bi-play-fill me-1"></i>Translate All
+        </button>
+        <button type="button" class="btn btn-sm btn-outline-secondary ms-1"
+                onclick="startScan().then(id => id && location.assign('/jobs/'+id))"
+                title="Scan &amp; Count Strings">
+          <i class="bi bi-arrow-repeat"></i>
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Mod table -->
+<div class="card">
+  <div class="card-body p-0">
+    <table class="table table-dark mb-0" id="mods-table">
+      <thead>
+        <tr>
+          <th>Mod Name</th>
+          <th>Status</th>
+          <th style="width:160px">Progress</th>
+          <th>Strings</th>
+          <th>ESP / BSA</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for mod in mods %}
+        <tr>
+          <td>
+            <a href="{{ url_for('mods.mod_detail', mod_name=mod.folder_name) }}"
+               class="text-decoration-none fw-semibold">
+              {{ mod.folder_name }}
+            </a>
+            {% if mod.has_meta_ini and mod.nexus_mod_id %}
+            <small class="text-muted ms-1">#{{ mod.nexus_mod_id }}</small>
+            {% endif %}
+          </td>
+          <td>
+            <span class="badge-status {{ mod.status }}">
+              {% if mod.status == 'done' %}<i class="bi bi-check-circle-fill"></i>
+              {% elif mod.status == 'partial' %}<i class="bi bi-circle-half"></i>
+              {% elif mod.status == 'pending' %}<i class="bi bi-clock-fill"></i>
+              {% else %}<i class="bi bi-dash-circle"></i>{% endif %}
+              {{ mod.status }}
+            </span>
+          </td>
+          <td>
+            {% if mod.total_strings > 0 %}
+            <div class="progress" style="height:6px">
+              <div class="progress-bar
+                {% if mod.status == 'done' %}bg-success
+                {% elif mod.status == 'partial' %}bg-warning
+                {% else %}bg-primary{% endif %}"
+                   style="width:{{ mod.pct() }}%"></div>
+            </div>
+            <div class="text-muted" style="font-size:10px">{{ mod.pct() }}%</div>
+            {% else %}
+            <span class="text-muted">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if mod.total_strings > 0 %}
+            <span class="text-success">{{ mod.translated_strings }}</span>
+            <span class="text-muted">/ {{ mod.total_strings }}</span>
+            {% else %}
+            <span class="text-muted">—</span>
+            {% endif %}
+          </td>
+          <td class="text-muted" style="font-size:12px">
+            {% if mod.esp_files %}<i class="bi bi-file-earmark-binary me-1"></i>{{ mod.esp_files|length }} ESP{% endif %}
+            {% if mod.bsa_files %}<span class="ms-2"><i class="bi bi-archive me-1"></i>{{ mod.bsa_files|length }} BSA</span>{% endif %}
+            {% if mod.mcm_loose %}<span class="ms-2"><i class="bi bi-translate me-1"></i>MCM</span>{% endif %}
+          </td>
+          <td>
+            <div class="btn-group btn-group-sm">
+              <a href="{{ url_for('mods.mod_detail', mod_name=mod.folder_name) }}"
+                 class="btn btn-outline-secondary" title="Details">
+                <i class="bi bi-info-circle"></i>
+              </a>
+              <a href="{{ url_for('mods.mod_strings', mod_name=mod.folder_name) }}"
+                 class="btn btn-outline-secondary" title="Strings">
+                <i class="bi bi-type"></i>
+              </a>
+              <button class="btn btn-outline-secondary" title="Translate"
+                      onclick="startTranslateMod('{{ mod.folder_name }}').then(id => id && location.assign('/jobs/'+id))">
+                <i class="bi bi-play-fill"></i>
+              </button>
+              <button class="btn btn-outline-secondary" title="Backup"
+                      onclick="createBackup('{{ mod.folder_name }}')">
+                <i class="bi bi-archive-fill"></i>
+              </button>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="text-center text-muted py-4">No mods found</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Batch translate selected - todo: checkbox selection -->
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function createBackup(modName) {
+  const r = await POST('/backups/create', { mod_name: modName, label: 'manual' });
+  if (r.ok) toast('Backup created', 'success');
+  else toast('Backup failed: ' + r.error, 'danger');
+}
+
+// Client-side filter
+document.querySelector('input[name="q"]')?.addEventListener('input', function() {
+  const q = this.value.toLowerCase();
+  document.querySelectorAll('#mods-table tbody tr').forEach(tr => {
+    tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+});
+</script>
+{% endblock %}

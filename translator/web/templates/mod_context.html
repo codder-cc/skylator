@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Nexus Context — {{ mod.folder_name }}{% endblock %}
+{% block page_title %}
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb mb-0">
+    <li class="breadcrumb-item"><a href="{{ url_for('mods.mod_list') }}" class="text-muted">Mods</a></li>
+    <li class="breadcrumb-item"><a href="{{ url_for('mods.mod_detail', mod_name=mod.folder_name) }}" class="text-muted">{{ mod.folder_name }}</a></li>
+    <li class="breadcrumb-item active text-accent">Nexus Context</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="card-header">
+    <i class="bi bi-cloud me-2"></i>Nexus Context for <strong>{{ mod.folder_name }}</strong>
+  </div>
+  <div class="card-body">
+    {% if error %}
+    <div class="alert alert-warning">
+      <i class="bi bi-exclamation-triangle me-2"></i>{{ error }}
+    </div>
+    {% endif %}
+
+    {% if context_text %}
+    <div class="mb-2 text-muted" style="font-size:12px">Context string injected into AI prompts:</div>
+    <div class="log-terminal">{{ context_text }}</div>
+    {% else %}
+    <div class="text-muted">No context available.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

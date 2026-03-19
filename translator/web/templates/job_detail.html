@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% block title %}Job: {{ job.name }}{% endblock %}
+{% block page_title %}
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb mb-0">
+    <li class="breadcrumb-item"><a href="{{ url_for('jobs.job_list') }}" class="text-muted">Jobs</a></li>
+    <li class="breadcrumb-item active text-accent">{{ job.name }}</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="row g-3">
+  <!-- Job info -->
+  <div class="col-md-4">
+    <div class="card mb-3">
+      <div class="card-header"><i class="bi bi-info-circle me-2"></i>Job Info</div>
+      <div class="card-body">
+        <dl class="row mb-0" style="font-size:13px">
+          <dt class="col-5 text-muted">Status</dt>
+          <dd class="col-7"><span class="badge-status {{ job.status.value }}" id="job-status">{{ job.status.value }}</span></dd>
+
+          <dt class="col-5 text-muted">Type</dt>
+          <dd class="col-7">{{ job.job_type }}</dd>
+
+          <dt class="col-5 text-muted">Created</dt>
+          <dd class="col-7">{{ job.created_at | timeago }}</dd>
+
+          {% if job.started_at %}
+          <dt class="col-5 text-muted">Started</dt>
+          <dd class="col-7">{{ job.started_at | timeago }}</dd>
+          {% endif %}
+
+          {% if job.finished_at %}
+          <dt class="col-5 text-muted">Finished</dt>
+          <dd class="col-7">{{ job.finished_at | timeago }}</dd>
+          {% endif %}
+
+          <dt class="col-5 text-muted">Elapsed</dt>
+          <dd class="col-7" id="job-elapsed">{{ job._elapsed() }}s</dd>
+        </dl>
+
+        {% if job.params %}
+        <hr class="border-subtle">
+        <div class="text-muted" style="font-size:11px">Params:</div>
+        <pre class="mono mt-1" style="font-size:11px; color:var(--text-muted)">{{ job.params | tojson(indent=2) }}</pre>
+        {% endif %}
+
+        {% if job.error %}
+        <div class="alert alert-danger mt-2 py-2 px-3" style="font-size:12px">
+          <i class="bi bi-x-circle me-1"></i>{{ job.error }}
+        </div>
+        {% endif %}
+
+        {% if job.result %}
+        <div class="alert alert-success mt-2 py-2 px-3" style="font-size:12px">
+          <i class="bi bi-check-circle me-1"></i>{{ job.result }}
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Progress -->
+    <div class="card mb-3">
+      <div class="card-header"><i class="bi bi-speedometer me-2"></i>Progress</div>
+      <div class="card-body" id="progress-area">
+        <div class="d-flex justify-content-between mb-1">
+          <span class="text-muted" id="prog-message">{{ job.progress.message or 'Waiting...' }}</span>
+          <span class="text-accent" id="prog-pct">{{ (job.progress.current / [job.progress.total,1]|max * 100) | round(1) }}%</span>
+        </div>
+        <div class="progress mb-2" style="height:12px">
+          <div class="progress-bar
+            {% if job.status.value == 'done' %}bg-success
+            {% elif job.status.value == 'failed' %}bg-danger
+            {% elif job.status.value == 'running' %}bg-primary progress-bar-striped progress-bar-animated
+            {% else %}bg-secondary{% endif %}"
+            id="prog-bar"
+            style="width:{{ (job.progress.current / [job.progress.total,1]|max * 100) | round(1) }}%">
+          </div>
+        </div>
+        {% if job.progress.sub_step %}
+        <div class="text-muted" style="font-size:11px" id="prog-sub">{{ job.progress.sub_step }}</div>
+        {% endif %}
+        <div class="text-muted mt-1" style="font-size:11px">
+          <span id="prog-cur">{{ job.progress.current }}</span> / <span id="prog-total">{{ job.progress.total }}</span>
+          <span id="prog-eta" class="ms-3 text-accent"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    {% if job.status.value in ['running', 'pending'] %}
+    <button class="btn btn-danger btn-sm w-100" onclick="cancelJob('{{ job.id }}').then(() => location.reload())">
+      <i class="bi bi-x-circle me-2"></i>Cancel Job
+    </button>
+    {% endif %}
+  </div>
+
+  <!-- Log output -->
+  <div class="col-md-8">
+    <div class="card">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <span><i class="bi bi-terminal me-2"></i>Job Log</span>
+        <div class="d-flex gap-2 align-items-center">
+          <div class="form-check form-switch mb-0">
+            <input class="form-check-input" type="checkbox" id="auto-scroll" checked>
+            <label class="form-check-label text-muted" style="font-size:12px">Auto-scroll</label>
+          </div>
+          <button class="btn btn-sm btn-outline-secondary" onclick="copyLog()">
+            <i class="bi bi-copy"></i>
+          </button>
+        </div>
+      </div>
+      <div class="card-body p-0">
+        <div class="log-terminal" id="log-output" style="max-height:600px">
+{% for line in job.log_lines %}
+{{ line }}
+{% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const JOB_ID     = {{ job.id | tojson }};
+const IS_RUNNING = {{ (job.status.value in ['running', 'pending']) | tojson }};
+let logSince     = {{ job.log_lines | length }};
+
+const logEl  = document.getElementById('log-output');
+const autoScrollEl = document.getElementById('auto-scroll');
+
+function scrollBottom() {
+  if (autoScrollEl.checked) logEl.scrollTop = logEl.scrollHeight;
+}
+
+function appendLog(lines) {
+  lines.forEach(line => {
+    const div = document.createElement('div');
+    const lower = line.toLowerCase();
+    div.className = lower.includes('error') ? 'log-error'
+                  : lower.includes('warn')  ? 'log-warn'
+                  : lower.includes('debug') ? 'log-debug'
+                  : '';
+    div.textContent = line;
+    logEl.appendChild(div);
+  });
+  scrollBottom();
+}
+
+function copyLog() {
+  copyText(logEl.innerText);
+}
+
+if (IS_RUNNING) {
+  const es = new EventSource(`/jobs/${JOB_ID}/stream`);
+  es.onmessage = function(e) {
+    const d = JSON.parse(e.data);
+
+    // Update status badge
+    document.getElementById('job-status').className = 'badge-status ' + d.status;
+    document.getElementById('job-status').textContent = d.status;
+
+    // Update progress
+    const pct = d.pct || 0;
+    document.getElementById('prog-bar').style.width = pct + '%';
+    document.getElementById('prog-pct').textContent = pct.toFixed(1) + '%';
+    document.getElementById('prog-message').textContent = d.progress?.message || '';
+    if (d.progress?.sub_step) document.getElementById('prog-sub') && (document.getElementById('prog-sub').textContent = d.progress.sub_step);
+    document.getElementById('prog-cur').textContent = d.progress?.current || 0;
+    document.getElementById('prog-total').textContent = d.progress?.total || 0;
+    // ETA
+    const etaEl = document.getElementById('prog-eta');
+    if (etaEl && d.eta_seconds != null && d.eta_seconds > 0) {
+      const m = Math.floor(d.eta_seconds / 60), s = Math.floor(d.eta_seconds % 60);
+      etaEl.textContent = `ETA: ${m}m ${s}s`;
+    } else if (etaEl) { etaEl.textContent = ''; }
+
+    if (['done', 'failed', 'cancelled'].includes(d.status)) {
+      es.close();
+      // Reload to show final state
+      setTimeout(() => location.reload(), 1000);
+    }
+  };
+}
+
+// Poll log lines
+if (IS_RUNNING) {
+  setInterval(() => {
+    fetch(`/api/jobs/${JOB_ID}/logs?since=${logSince}`)
+      .then(r => r.json())
+      .then(d => {
+        if (d.lines && d.lines.length > 0) {
+          appendLog(d.lines);
+          logSince = d.total;
+        }
+      });
+  }, 1500);
+}
+
+scrollBottom();
+</script>
+{% endblock %}

@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %}Config{% endblock %}
+{% block page_title %}<i class="bi bi-gear-fill me-2 text-accent"></i>Configuration{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/monokai.min.css">
+{% endblock %}
+
+{% block content %}
+<div class="row g-3">
+  <div class="col-md-8">
+    <div class="card">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <span><i class="bi bi-file-code me-2"></i>config.yaml</span>
+        <div class="d-flex gap-2">
+          <button class="btn btn-sm btn-outline-secondary" onclick="validateYaml()">
+            <i class="bi bi-check-circle me-1"></i>Validate
+          </button>
+          <button class="btn btn-sm btn-primary" onclick="saveConfig()">
+            <i class="bi bi-save me-1"></i>Save
+          </button>
+        </div>
+      </div>
+      <div class="card-body p-0">
+        <textarea id="yaml-editor" style="display:none">{{ raw_yaml }}</textarea>
+      </div>
+    </div>
+    <div id="save-status" class="mt-2" style="display:none"></div>
+  </div>
+
+  <div class="col-md-4">
+    <!-- Quick config panel -->
+    <div class="card mb-3">
+      <div class="card-header"><i class="bi bi-lightning me-2"></i>Quick Settings</div>
+      <div class="card-body">
+        {% if cfg %}
+        <div class="mb-2">
+          <label class="form-label">Mods Directory</label>
+          <div class="mono text-accent" style="font-size:11px;word-break:break-all">{{ cfg.paths.mods_dir }}</div>
+        </div>
+        <div class="mb-2">
+          <label class="form-label">Backup Directory</label>
+          <div class="mono text-accent" style="font-size:11px;word-break:break-all">{{ cfg.paths.backup_dir }}</div>
+        </div>
+        <div class="mb-2">
+          <label class="form-label">Model Cache</label>
+          <div class="mono text-accent" style="font-size:11px;word-break:break-all">{{ cfg.paths.model_cache_dir }}</div>
+        </div>
+        <hr class="border-subtle">
+        <div class="mb-2">
+          <label class="form-label">Nexus API Key</label>
+          <div class="text-muted" style="font-size:12px">
+            {% if cfg.nexus.api_key and cfg.nexus.api_key != 'YOUR_NEXUS_API_KEY_HERE' %}
+            <span class="badge bg-success">Configured</span>
+            {% else %}
+            <span class="badge bg-warning text-dark">Not set</span>
+            {% endif %}
+            <button class="btn btn-sm btn-outline-secondary ms-2" onclick="testNexus()">Test</button>
+          </div>
+        </div>
+        <div class="mb-2">
+          <label class="form-label">Models</label>
+          <div style="font-size:12px">
+            <div>Model A: {{ cfg.ensemble.model_a.local_dir_name }}</div>
+            <div>Model B: {{ cfg.ensemble.model_b.local_dir_name }}</div>
+          </div>
+        </div>
+        {% else %}
+        <div class="text-muted">Config not loaded</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><i class="bi bi-info-circle me-2"></i>Notes</div>
+      <div class="card-body text-muted" style="font-size:12px">
+        <ul class="ps-3 mb-0">
+          <li><code>config.yaml</code> is never committed to git</li>
+          <li>After saving, the config will reload automatically</li>
+          <li>Set <code>nexus.api_key</code> to enable Nexus context</li>
+          <li>Models must be in <code>paths.model_cache_dir</code></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/yaml/yaml.min.js"></script>
+<script>
+const editor = CodeMirror.fromTextArea(document.getElementById('yaml-editor'), {
+  mode:         'yaml',
+  theme:        'monokai',
+  lineNumbers:  true,
+  indentUnit:   2,
+  tabSize:      2,
+  lineWrapping: false,
+  extraKeys:    { 'Ctrl-S': saveConfig },
+});
+editor.setSize('100%', '600px');
+
+async function saveConfig() {
+  const yaml = editor.getValue();
+  const r = await POST('/config/save', { yaml });
+  const el = document.getElementById('save-status');
+  el.style.display = '';
+  if (r.ok) {
+    el.className = 'alert alert-success py-2';
+    el.innerHTML = '<i class="bi bi-check-circle me-2"></i>Config saved successfully';
+    toast('Config saved', 'success');
+  } else {
+    el.className = 'alert alert-danger py-2';
+    el.innerHTML = '<i class="bi bi-x-circle me-2"></i>' + r.error;
+    toast('Save failed', 'danger');
+  }
+}
+
+async function validateYaml() {
+  const r = await POST('/config/validate', { yaml: editor.getValue() });
+  if (r.ok) toast('YAML is valid', 'success');
+  else toast('YAML error: ' + r.error, 'danger');
+}
+
+async function testNexus() {
+  const r = await GET('/api/nexus/test');
+  if (r.ok) toast('Nexus API: Connected', 'success');
+  else toast('Nexus: ' + r.error, 'danger');
+}
+</script>
+{% endblock %}

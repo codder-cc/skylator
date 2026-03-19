@@ -1,0 +1,102 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Nolvus Translator v2 — config.yaml.example
+# Copy this to config.yaml and fill in your own values.
+# config.yaml is in .gitignore so secrets never end up in git.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+paths:
+  model_cache_dir:  "D:/DevSpace/AI"
+  mods_dir:         "H:/Nolvus/Instances/Nolvus Awakening/MODS/mods"
+  backup_dir:       "H:/Nolvus/Instances/Nolvus Awakening/MODS/mods_backup"
+  bsarch_exe:       "H:/Nolvus/Instances/Nolvus Awakening/TOOLS/BSArch/BSArch.exe"
+  temp_dir:         "H:/Nolvus/Temp/bsa_extract"
+  nexus_cache:      "cache/nexus_cache.json"
+  translation_cache: "cache/translation_cache.json"
+  skyrim_terms:     "data/skyrim_terms.json"
+  log_file:         "logs/translator.log"
+
+# ── Nexus Mods API ────────────────────────────────────────────────────────────
+nexus:
+  api_key:              "YOUR_NEXUS_API_KEY_HERE"
+  game:                 "skyrimspecialedition"
+  request_timeout_sec:  10
+  cache_ttl_days:       30
+
+# ── Ensemble Pipeline ─────────────────────────────────────────────────────────
+ensemble:
+  # Model A — MT specialist (fast, WMT25 champion)
+  model_a:
+    repo_id:            "tencent/HY-MT1.5-7B-GPTQ-Int4"
+    local_dir_name:     "HY-MT1.5-7B-GPTQ-Int4"
+    device:             "cuda:0"
+    max_new_tokens:     2048
+    temperature:        0.7
+    top_k:              20
+    top_p:              0.6
+    repetition_penalty: 1.05
+    batch_size:         20
+
+  # Model B — powerful LLM (context-rich, used for long strings + arbiter)
+  model_b:
+    repo_id:            "Qwen/Qwen2.5-14B-Instruct-GPTQ-Int4"
+    local_dir_name:     "Qwen2.5-14B-Instruct-GPTQ-Int4"
+    device:             "cuda:0"
+    max_new_tokens:     3000
+    temperature:        0.3
+    top_p:              0.9
+    repetition_penalty: 1.05
+    batch_size:         15
+    cpu_offload:        false
+    max_memory:
+      "cuda:0":  "14GiB"
+      cpu:       "28GiB"
+
+  consensus:
+    similarity_threshold:  0.82
+    arbiter_uses_model_b:  true
+    long_string_chars:     250
+
+  use_translation_cache:   true
+
+# ── Context Pipeline ──────────────────────────────────────────────────────────
+context:
+  max_desc_chars:           200
+  summarize_threshold_chars: 400
+  use_neural_summarizer:    true
+  use_esp_record_context:   true
+  max_related_records:      3
+
+# ── Translation Behavior ──────────────────────────────────────────────────────
+translation:
+  source_lang:    "English"
+  target_lang:    "Russian"
+  preserve_tokens:
+    - "<Alias="
+    - "<mag>"
+    - "<dur>"
+    - "<Global="
+    - "<ActorValue="
+    - "<br>"
+    - "\\n"
+    - "%d"
+    - "%s"
+    - "%i"
+    - "%f"
+    - "MCM"
+    - "SKSE"
+    - "SkyUI"
+    - "DPAD"
+    - "HUD"
+    - "ENB"
+    - "MO2"
+  min_latin_ratio:    0.15
+  max_cyrillic_ratio: 0.30
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging:
+  level:          "INFO"
+  log_to_file:    true
+  log_to_console: true
+  max_log_size_mb: 10
+  backup_count:   3

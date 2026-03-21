@@ -101,7 +101,10 @@ def nexus_test():
 
 @bp.route("/mods/<path:mod_name>/context")
 def mod_context_api(mod_name: str):
-    """Return the summarized AI context string for a mod (what gets injected into prompts)."""
+    """Return the summarized AI context string for a mod (what gets injected into prompts).
+    Runs in a background thread so Flask is never blocked by LLM/network timeouts.
+    """
+    import concurrent.futures
     cfg     = current_app.config.get("TRANSLATOR_CFG")
     scanner = current_app.config["SCANNER"]
     if not cfg:
@@ -109,12 +112,27 @@ def mod_context_api(mod_name: str):
     mod = scanner.get_mod(mod_name)
     if mod is None:
         return jsonify({"ok": False, "error": "Mod not found"}), 404
-    try:
+
+    folder = cfg.paths.mods_dir / mod_name
+
+    def _build():
         from translator.context.builder import ContextBuilder
-        builder = ContextBuilder()
-        folder  = cfg.paths.mods_dir / mod_name
-        context = builder.get_mod_context(folder)
+        return ContextBuilder().get_mod_context(folder)
+
+    # Cap wait time: remote.timeout_sec + 30s buffer, max 150s
+    wait_sec = min(max(getattr(cfg.remote, "timeout_sec", 30.0) + 30, 60), 150)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_build)
+            context = future.result(timeout=wait_sec)
         return jsonify({"ok": True, "context": context or ""})
+    except concurrent.futures.TimeoutError:
+        return jsonify({
+            "ok":    False,
+            "error": f"Context generation timed out after {wait_sec:.0f}s — "
+                     "check that the remote server is running and reachable, "
+                     "or switch to Local mode in the Servers page.",
+        }), 504
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 

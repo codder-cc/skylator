@@ -69,9 +69,11 @@ class NeuralSummarizer:
             remote = cfg.remote
             if remote.mode in ("remote", "auto") and remote.server_url:
                 from translator.remote.client import TranslationClient
-                client = TranslationClient(remote.server_url, timeout=remote.timeout_sec)
+                # Summarize can take longer than a typical translate batch on a 27B model
+                chat_timeout = max(remote.timeout_sec, 120.0)
+                client = TranslationClient(remote.server_url, timeout=chat_timeout)
                 try:
-                    log.info("Summarizing via remote server: %s", remote.server_url)
+                    log.info("Summarizing via remote server: %s (timeout=%.0fs)", remote.server_url, chat_timeout)
                     result = client.chat(prompt, temperature=0.2)
                     client.close()
                     if result:

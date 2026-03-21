@@ -142,24 +142,21 @@ def mod_strings(mod_name: str):
 
 @bp.route("/<path:mod_name>/strings/update", methods=["POST"])
 def update_string(mod_name: str):
-    """Update a single translation in the cache."""
+    """Update a single translation in the cache (ESP) or russian txt (MCM)."""
     cfg     = current_app.config.get("TRANSLATOR_CFG")
     if cfg is None:
         return jsonify({"error": "No config"}), 500
 
-    data = request.get_json()
+    data     = request.get_json()
     key_str  = data.get("key")
     new_text = data.get("translation", "")
 
-    cache_path = cfg.paths.translation_cache
     try:
-        cache = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path.exists() else {}
-        esp_name = data.get("esp", "").replace(".esp", "").replace(".esm", "").replace(".esl", "")
-        if esp_name not in cache:
-            cache[esp_name] = {}
-        cache[esp_name][key_str] = new_text
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+        from translator.web.workers import save_translation
+        esp_name = data.get("esp", "")
+        save_translation(cfg.paths.mods_dir, mod_name,
+                         cfg.paths.translation_cache,
+                         esp_name, key_str, new_text)
         return jsonify({"ok": True})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500

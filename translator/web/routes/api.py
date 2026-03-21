@@ -351,9 +351,10 @@ def translate_one_string(mod_name: str):
         if gd:
             existing = gd.get(original)
             if existing:
-                from translator.web.workers import _save_single_to_cache
-                _save_single_to_cache(cfg.paths.translation_cache,
-                                      esp_name, key_str, existing)
+                from translator.web.workers import save_translation
+                save_translation(cfg.paths.mods_dir, mod_name,
+                                 cfg.paths.translation_cache,
+                                 esp_name, key_str, existing)
                 return jsonify({"ok": True, "translation": existing,
                                 "quality_score": None, "from_dict": True})
 
@@ -361,7 +362,7 @@ def translate_one_string(mod_name: str):
         from scripts.esp_engine import translate_batch, quality_score
         from translator.context.builder import ContextBuilder
         from translator.prompt.builder import build_tm_block, enrich_context
-        from translator.web.workers import _save_single_to_cache
+        from translator.web.workers import save_translation
         import json as _json
 
         mod_folder = cfg.paths.mods_dir / mod_name
@@ -390,7 +391,9 @@ def translate_one_string(mod_name: str):
         if not translated or translated == original:
             return jsonify({"ok": False, "error": "Translation failed — server returned original text unchanged"}), 500
         qs         = quality_score(original, translated)
-        _save_single_to_cache(cfg.paths.translation_cache, esp_name, key_str, translated)
+        save_translation(cfg.paths.mods_dir, mod_name,
+                         cfg.paths.translation_cache,
+                         esp_name, key_str, translated)
         # Add to global dict so future identical strings skip AI
         gd = current_app.config.get("GLOBAL_DICT")
         if gd:

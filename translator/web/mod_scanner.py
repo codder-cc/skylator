@@ -208,6 +208,53 @@ class ModScanner:
                 except Exception as exc:
                     log.warning(f"String extract failed for {esp_path}: {exc}")
 
+        # ── MCM loose files (interface/translations/*_english.txt) ────────────
+        try:
+            from scripts.translate_mcm import read_trans_file, needs_translation
+        except Exception:
+            read_trans_file = None  # type: ignore
+
+        if read_trans_file:
+            for en_txt in folder.rglob("interface/translations/*_english.txt"):
+                stem   = en_txt.stem.replace("_english", "")
+                ru_txt = en_txt.parent / f"{stem}_russian.txt"
+                try:
+                    en_pairs, _ = read_trans_file(en_txt)
+                except Exception as exc:
+                    log.warning(f"MCM read failed for {en_txt}: {exc}")
+                    continue
+
+                ru_dict: dict[str, str] = {}
+                if ru_txt.exists():
+                    try:
+                        ru_pairs, _ = read_trans_file(ru_txt)
+                        ru_dict = {k: v for k, v in ru_pairs if k and v}
+                    except Exception:
+                        pass
+
+                rel_txt = str(en_txt.relative_to(folder)).replace("\\", "/")
+                for line_idx, (mcm_key, en_text) in enumerate(en_pairs):
+                    if not en_text or not needs_translation(en_text):
+                        continue
+                    translation = ru_dict.get(mcm_key, "")
+                    # key encodes file + line index + MCM key for unambiguous save
+                    key_str = f"mcm:{rel_txt}:{line_idx}:{mcm_key}"
+                    strings.append({
+                        "esp":           en_txt.name,
+                        "form_id":       mcm_key or f"line{line_idx}",
+                        "rec_type":      "MCM",
+                        "field":         "TEXT",
+                        "idx":           line_idx,
+                        "original":      en_text,
+                        "translation":   translation,
+                        "status":        "translated" if translation else "pending",
+                        "key":           key_str,
+                        "quality_score": None,
+                        "dict_match":    (global_dict.get(en_text)
+                                          if global_dict and not translation
+                                          else ""),
+                    })
+
         return strings
 
     def get_stats(self) -> dict:

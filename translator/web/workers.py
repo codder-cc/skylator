@@ -17,7 +17,7 @@ _CACHE_LOCK = threading.Lock()
 
 def _save_single_to_cache(cache_path: Path, esp_name: str,
                           key_str: str, translation: str) -> None:
-    """Thread-safe write of a single translation entry to the cache file."""
+    """Thread-safe write of a single ESP translation entry to the cache file."""
     with _CACHE_LOCK:
         cache = (json.loads(cache_path.read_text(encoding="utf-8"))
                  if cache_path.exists() else {})
@@ -27,6 +27,74 @@ def _save_single_to_cache(cache_path: Path, esp_name: str,
         cache_path.write_text(
             json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+
+
+def _save_mcm_translation(mods_dir: Path, mod_name: str,
+                           key_str: str, translation: str) -> None:
+    """
+    Write a single MCM string translation back to the *_russian.txt file.
+
+    key_str format: "mcm:{rel_txt_path}:{line_idx}:{mcm_key}"
+    e.g. "mcm:interface/translations/SkyUI_english.txt:3:sSomeKey"
+    """
+    try:
+        # Parse the key
+        parts     = key_str.split(":", 3)   # ["mcm", rel_txt, line_idx, mcm_key]
+        rel_txt   = parts[1]
+        line_idx  = int(parts[2])
+        mcm_key   = parts[3] if len(parts) > 3 else ""
+
+        mod_folder = mods_dir / mod_name
+        en_path    = mod_folder / rel_txt
+        if not en_path.exists():
+            log.warning("MCM save: english file not found: %s", en_path)
+            return
+
+        stem    = en_path.stem.replace("_english", "")
+        ru_path = en_path.parent / f"{stem}_russian.txt"
+
+        from scripts.translate_mcm import read_trans_file
+        en_pairs, bom = read_trans_file(en_path)
+
+        # Load or seed the Russian file from the English one
+        if ru_path.exists():
+            try:
+                ru_pairs, bom = read_trans_file(ru_path)
+            except Exception:
+                ru_pairs = list(en_pairs)
+        else:
+            ru_pairs = list(en_pairs)
+
+        # Update by line index (most reliable) — also fall back to key match
+        with _CACHE_LOCK:
+            result = list(ru_pairs)
+            if line_idx < len(result):
+                key_in_file = result[line_idx][0]
+                result[line_idx] = (key_in_file, translation)
+            elif mcm_key:
+                # Fall back: find by key string
+                for i, (k, _) in enumerate(result):
+                    if k == mcm_key:
+                        result[i] = (k, translation)
+                        break
+
+            ru_path.parent.mkdir(parents=True, exist_ok=True)
+            # Write without calling backup_if_exists (per-string saves don't need
+            # individual backups — the whole file is backed up by cmd_translate_mcm)
+            lines   = [f"{k}\t{v}" if v else k for k, v in result]
+            content = '\r\n'.join(lines) + '\r\n'
+            ru_path.write_bytes(bom + content.encode('utf-16-le'))
+    except Exception as exc:
+        log.warning("_save_mcm_translation failed for %s: %s", key_str, exc)
+
+
+def save_translation(mods_dir: Path, mod_name: str, cache_path: Path,
+                     esp_name: str, key_str: str, translation: str) -> None:
+    """Unified dispatcher: routes to MCM or ESP save based on key prefix."""
+    if key_str.startswith("mcm:"):
+        _save_mcm_translation(mods_dir, mod_name, key_str, translation)
+    else:
+        _save_single_to_cache(cache_path, esp_name, key_str, translation)
 
 
 def translate_mod_worker(job, cfg, mod_name: str,
@@ -320,9 +388,26 @@ def _translate_swf_texts(job, swf_path: Path, ffdec_jar: str, cfg, dry_run: bool
 
         if originals and not dry_run:
             translated = translate_batch(originals, context)
-            for (i, offset), trans in zip(indices, translated):
+            swf_pairs: list[tuple[str, str]] = []
+            for (i, offset), orig, trans in zip(indices, originals, translated):
                 new_lines[i] = f"{offset} | {trans}"
                 changed = True
+                if trans and trans != orig:
+                    swf_pairs.append((orig, trans))
+            # Feed global dict with SWF translations
+            if swf_pairs:
+                try:
+                    from translator.web.global_dict import GlobalTextDict
+                    gd_swf = GlobalTextDict(
+                        mods_dir   = cfg.paths.mods_dir,
+                        cache_path = cfg.paths.translation_cache.parent / "_global_text_dict.json",
+                    )
+                    gd_swf.load()
+                    for orig, trans in swf_pairs:
+                        gd_swf.add(orig, trans)
+                    gd_swf.save()
+                except Exception:
+                    pass
 
         if changed:
             tf.write_text('\n'.join(new_lines), encoding='utf-8')
@@ -591,8 +676,9 @@ def translate_strings_worker(job, cfg, mod_name: str,
         for s in strings:
             existing = gd.get(s["original"])
             if existing:
-                _save_single_to_cache(cfg.paths.translation_cache,
-                                      s["esp"], s["key"], existing)
+                save_translation(cfg.paths.mods_dir, mod_name,
+                                 cfg.paths.translation_cache,
+                                 s["esp"], s["key"], existing)
                 jm.add_string_update(job, s["key"], s["esp"],
                                      existing, "translated", None)
                 tm_pairs[s["original"]] = existing
@@ -637,8 +723,9 @@ def translate_strings_worker(job, cfg, mod_name: str,
             if not translation or translation == s["original"]:
                 continue
             qs = quality_score(s["original"], translation)
-            _save_single_to_cache(cfg.paths.translation_cache,
-                                  s["esp"], s["key"], translation)
+            save_translation(cfg.paths.mods_dir, mod_name,
+                             cfg.paths.translation_cache,
+                             s["esp"], s["key"], translation)
             jm.add_string_update(job, s["key"], s["esp"],
                                  translation, "translated", qs)
             # Add to TM and global dict so subsequent chunks + future mods benefit

@@ -122,6 +122,31 @@ class GlobalTextDict:
             except Exception:
                 pass
 
+        # Also scan MCM translation pairs (*_english.txt + *_russian.txt)
+        all_en_mcm = list(self.mods_dir.rglob("interface/translations/*_english.txt"))
+        log.info("GlobalTextDict: scanning %d MCM english files", len(all_en_mcm))
+        for en_path in all_en_mcm:
+            stem   = en_path.stem.replace("_english", "")
+            ru_path = en_path.parent / f"{stem}_russian.txt"
+            if not ru_path.exists():
+                continue
+            try:
+                from scripts.translate_mcm import read_trans_file
+                en_pairs, _ = read_trans_file(en_path)
+                ru_pairs, _ = read_trans_file(ru_path)
+                ru_dict = {k: v for k, v in ru_pairs if k and v}
+                for key, en_text in en_pairs:
+                    if not en_text:
+                        continue
+                    # For keyed format: value is the text; for text-only: key IS text
+                    ru_text = ru_dict.get(key, "")
+                    if not ru_text or ru_text == en_text:
+                        continue
+                    bucket = counts.setdefault(en_text, {})
+                    bucket[ru_text] = bucket.get(ru_text, 0) + 1
+            except Exception:
+                pass
+
         # For each original, pick the most frequently used translation
         new_dict: dict[str, str] = {
             orig: max(trans_counts, key=lambda t: trans_counts[t])

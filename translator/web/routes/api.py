@@ -386,16 +386,16 @@ def translate_one_string(mod_name: str):
                 pass
         context = enrich_context(context, build_tm_block(tm_pairs, [original]), [original])
 
-        from scripts.esp_engine import strip_html_for_ai, reinsert_html
-        plain_list, templates = strip_html_for_ai([original])
-        plain_original = plain_list[0]
-        results    = translate_batch(plain_list, context)
-        translated = results[0] if results else plain_original
-        if not translated or translated == plain_original:
+        from scripts.esp_engine import prepare_for_ai, restore_from_ai, validate_tokens
+        ai_texts, ai_meta = prepare_for_ai([original])
+        results       = translate_batch(ai_texts, context)
+        translated_r  = results[0] if results else ai_texts[0]
+        if not translated_r or translated_r == ai_texts[0]:
             return jsonify({"ok": False, "error": "Translation failed — server returned original text unchanged"}), 500
-        if templates[0] is not None:
-            translated = reinsert_html(templates[0], translated)
-        qs         = quality_score(original, translated)
+        translated    = restore_from_ai([translated_r], ai_meta)[0]
+        tok_ok, tok_issues = validate_tokens(original, translated)
+        status = "translated" if tok_ok else "needs_review"
+        qs     = quality_score(original, translated)
         save_translation(cfg.paths.mods_dir, mod_name,
                          cfg.paths.translation_cache,
                          esp_name, key_str, translated, cfg=cfg)
@@ -405,7 +405,7 @@ def translate_one_string(mod_name: str):
             gd.add(original, translated)
             gd.save()
         return jsonify({"ok": True, "translation": translated, "quality_score": qs,
-                        "from_dict": False})
+                        "status": status, "token_issues": tok_issues, "from_dict": False})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 

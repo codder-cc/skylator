@@ -144,6 +144,7 @@ _HYMT_TMPL = """\
 You are a professional video game translator specializing in The Elder Scrolls V: Skyrim.
 Translate each numbered item from {src} to {tgt}. Preserve formatting tokens, variable \
 placeholders (like <Alias=...>, %1, [PlayerName]), and newlines exactly.
+Copy {T0}, {T1}... token placeholders verbatim — they are runtime-substituted game values.
 Output ONLY the numbered translations — no commentary, no explanations.
 {terms}{preserve}{context_block}
 Strings to translate:
@@ -191,6 +192,7 @@ _QWEN_USER_TMPL = """\
 Translate each numbered string from {src} to {tgt}.
 Rules:
 - Preserve ALL formatting tokens: <Alias=...>, %1, [PlayerName], \\n, etc.
+- Copy {T0}, {T1}... token placeholders exactly — they are runtime game values.
 - Do not add or remove newlines.
 - Output ONLY numbered translations, one per line.
 {terms}{preserve}{context_block}

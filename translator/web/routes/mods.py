@@ -99,6 +99,8 @@ def _filter_by_scope(strings: list, scope: str) -> list:
     if scope == "esp":
         non_esp = ("mcm:", "bsa-mcm:", "swf:")
         return [s for s in strings if not any(s["key"].startswith(p) for p in non_esp)]
+    if scope == "review":
+        return [s for s in strings if s["status"] == "needs_review"]
     prefixes = _SCOPE_PREFIXES.get(scope)
     if prefixes:
         return [s for s in strings if any(s["key"].startswith(p) for p in prefixes)]
@@ -108,11 +110,12 @@ def _filter_by_scope(strings: list, scope: str) -> list:
 def _scope_counts(strings: list) -> dict:
     non_esp = ("mcm:", "bsa-mcm:", "swf:")
     return {
-        "all": len(strings),
-        "esp": sum(1 for s in strings if not any(s["key"].startswith(p) for p in non_esp)),
-        "mcm": sum(1 for s in strings if s["key"].startswith("mcm:")),
-        "bsa": sum(1 for s in strings if s["key"].startswith("bsa-mcm:")),
-        "swf": sum(1 for s in strings if s["key"].startswith("swf:")),
+        "all":    len(strings),
+        "esp":    sum(1 for s in strings if not any(s["key"].startswith(p) for p in non_esp)),
+        "mcm":    sum(1 for s in strings if s["key"].startswith("mcm:")),
+        "bsa":    sum(1 for s in strings if s["key"].startswith("bsa-mcm:")),
+        "swf":    sum(1 for s in strings if s["key"].startswith("swf:")),
+        "review": sum(1 for s in strings if s["status"] == "needs_review"),
     }
 
 

@@ -184,10 +184,13 @@ body {
   font-weight: 600;
 }
 
-.badge-status.done     { background: rgba(63, 185, 80, 0.15);  color: var(--success); }
-.badge-status.partial  { background: rgba(227, 179, 65, 0.15); color: var(--warning); }
-.badge-status.pending  { background: rgba(88, 166, 255, 0.15); color: var(--accent);  }
-.badge-status.no_strings { background: rgba(139, 148, 158, 0.15); color: var(--text-muted); }
+.badge-status.done        { background: rgba(63, 185, 80, 0.15);  color: var(--success); }
+.badge-status.partial     { background: rgba(227, 179, 65, 0.15); color: var(--warning); }
+.badge-status.pending     { background: rgba(88, 166, 255, 0.15); color: var(--accent);  }
+.badge-status.translated  { background: rgba(63, 185, 80, 0.15);  color: var(--success); }
+.badge-status.review,
+.badge-status.needs_review { background: rgba(255, 193, 7, 0.2);   color: #e6a817; }
+.badge-status.no_strings  { background: rgba(139, 148, 158, 0.15); color: var(--text-muted); }
 .badge-status.running  { background: rgba(88, 166, 255, 0.15); color: var(--accent); animation: pulse 1.5s infinite; }
 .badge-status.failed   { background: rgba(248, 81, 73, 0.15); color: var(--danger); }
 .badge-status.cancelled { background: rgba(139, 148, 158, 0.15); color: var(--text-muted); }

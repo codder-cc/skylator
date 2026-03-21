@@ -148,6 +148,17 @@ class ModScanner:
         trans_cache = self._load_translation_cache()
         strings: list[dict] = []
 
+        from scripts.esp_engine import validate_tokens as _validate_tokens
+
+        def _str_status(orig: str, trans: str, qs=None) -> str:
+            """Compute translation status: pending / translated / needs_review."""
+            if not trans:
+                return "pending"
+            tok_ok, _ = _validate_tokens(orig, trans)
+            if not tok_ok or (qs is not None and qs < 40):
+                return "needs_review"
+            return "translated"
+
         for ext in ("*.esp", "*.esm", "*.esl"):
             for esp_path in folder.rglob(ext):
                 try:
@@ -166,8 +177,8 @@ class ModScanner:
                             # Prefer .trans.json translation; fall back to cache
                             translation = (s.get("translation") or
                                            mod_cache.get(key_str, ""))
-                            status = "translated" if translation else "pending"
                             orig = s["text"]
+                            status = _str_status(orig, translation, s.get("quality_score"))
                             strings.append({
                                 "esp":           esp_path.name,
                                 "form_id":       s["form_id"],
@@ -192,8 +203,8 @@ class ModScanner:
                                        entry["field_type"], entry["field_index"])
                             key_str = str(key)
                             translated = mod_cache.get(key_str, "")
-                            status = "translated" if translated else "pending"
                             orig = entry["text"]
+                            status = _str_status(orig, translated)
                             strings.append({
                                 "esp":           esp_path.name,
                                 "form_id":       entry["form_id"],
@@ -251,7 +262,7 @@ class ModScanner:
                         "idx":           line_idx,
                         "original":      en_text,
                         "translation":   translation,
-                        "status":        "translated" if translation else "pending",
+                        "status":        _str_status(en_text, translation),
                         "key":           key_str,
                         "quality_score": None,
                         "dict_match":    (global_dict.get(en_text)
@@ -303,7 +314,7 @@ class ModScanner:
                             "idx":           line_idx,
                             "original":      en_text,
                             "translation":   translation,
-                            "status":        "translated" if translation else "pending",
+                            "status":        _str_status(en_text, translation),
                             "key":           key_str,
                             "quality_score": None,
                             "dict_match":    (global_dict.get(en_text)
@@ -350,7 +361,7 @@ class ModScanner:
                         "idx":           0,
                         "original":      orig,
                         "translation":   trans,
-                        "status":        "translated" if trans else "pending",
+                        "status":        _str_status(orig, trans),
                         "key":           key_str,
                         "quality_score": None,
                         "dict_match":    (global_dict.get(orig)

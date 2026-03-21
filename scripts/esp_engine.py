@@ -475,63 +475,95 @@ def rewrite_esp(esp_path: Path, trans_map: dict, out_path: Path):
     print(f"Written: {out_path}  ({len(new_data):,} bytes, was {len(data):,})")
 
 
-# ── HTML tag helpers (Skyrim BOOK strings) ────────────────────────────────────
+# ── Token helpers (Skyrim strings: format tags + game tokens) ─────────────────
 
-_HTML_TAG_RE = re.compile(r'<[^>]+>')
+# HTML display-only markup: strip before AI, reinsert after
+_FORMAT_TAG_RE = re.compile(
+    r'</?(?:font|p|br|img|div|span|b|i|u|s|a|h[1-6]|center)\b[^>]*/?>',
+    re.IGNORECASE,
+)
+
+# Inline game tokens + printf: mask as {T0},{T1}... before AI, unmask after
+_INLINE_TOKEN_RE = re.compile(
+    r'<[^>]+>'                                      # <Alias=...>, <mag>, <Global=...>, <10>
+    r'|%[-+0 #]*\d*\.?\d*[diouxXeEfFgGcsSp%]'     # printf: %.0f, %d, %s, %%
+    r'|\[PageBreak\]|\[CRLF\]',                     # bracket tokens
+    re.IGNORECASE,
+)
 
 
-def strip_html_for_ai(texts: list) -> tuple:
+def prepare_for_ai(texts: list) -> tuple:
     """
-    Strip HTML/font tags from a list of strings before sending to AI.
-    Returns (plain_texts, templates) where templates[i] is the original
-    full string if it had HTML tags, or None otherwise.
-    plain_texts[i] is the plain text content only.
+    Prepare texts for AI translation:
+    1. Strip HTML formatting tags (font/p/br/img) — saved for reinsert
+    2. Mask inline game tokens (<Alias=...>, <mag>, %.0f etc.) as {T0}, {T1}...
+    Returns (ai_texts, metadata) where metadata[i] = {"fmt": orig_or_None, "tokens": [...]}
+    fmt is None if no format tags; tokens is [] if no inline tokens.
     """
-    plain, templates = [], []
-    for t in texts:
-        if _HTML_TAG_RE.search(t):
-            templates.append(t)
-            plain.append(_HTML_TAG_RE.sub('', t).strip())
-        else:
-            templates.append(None)
-            plain.append(t)
-    return plain, templates
+    ai_texts, metadata = [], []
+    for text in texts:
+        has_fmt = bool(_FORMAT_TAG_RE.search(text))
+        fmt     = text if has_fmt else None
+        stripped = _FORMAT_TAG_RE.sub('', text).strip() if has_fmt else text.strip()
+        tokens   = _INLINE_TOKEN_RE.findall(stripped)
+        masked   = stripped
+        for i, tok in enumerate(tokens):
+            masked = masked.replace(tok, f'{{T{i}}}', 1)
+        ai_texts.append(masked)
+        metadata.append({"fmt": fmt, "tokens": tokens})
+    return ai_texts, metadata
 
 
-def reinsert_html(original: str, translated_plain: str) -> str:
-    """
-    Put translated_plain back into the HTML structure of original.
-    All <tag> markup is preserved verbatim; only visible text is replaced.
-    Handles single and multi-segment text nodes.
-    """
-    segments = _HTML_TAG_RE.split(original)   # text nodes
-    tags     = _HTML_TAG_RE.findall(original)  # tag nodes
+def restore_from_ai(translations: list, metadata: list) -> list:
+    """Reverse prepare_for_ai: unmask {T0},{T1}... then reinsert format structure."""
+    result = []
+    for trans, meta in zip(translations, metadata):
+        for i, tok in enumerate(meta["tokens"]):
+            trans = trans.replace(f'{{T{i}}}', tok)
+        if meta["fmt"] is not None:
+            trans = _reinsert_format(meta["fmt"], trans)
+        result.append(trans)
+    return result
 
-    # Find text segments that have actual content (non-whitespace)
-    text_seg_idx = [i for i, s in enumerate(segments) if s.strip()]
 
-    if not text_seg_idx:
-        return original  # nothing to replace
-
+def _reinsert_format(original: str, translated: str) -> str:
+    """Put translated into the HTML format structure of original.
+    Uses _FORMAT_TAG_RE (not all <...>) so game tokens in text segments are preserved."""
+    segments = _FORMAT_TAG_RE.split(original)
+    tags     = _FORMAT_TAG_RE.findall(original)
+    text_idx = [i for i, s in enumerate(segments) if s.strip()]
+    if not text_idx:
+        return original
     result = list(segments)
-    for j, i in enumerate(text_seg_idx):
-        orig_seg = segments[i]
-        lead  = orig_seg[:len(orig_seg) - len(orig_seg.lstrip())]
-        trail = orig_seg[len(orig_seg.rstrip()):]
-        if j == 0:
-            # Put all translation in first text segment
-            result[i] = lead + translated_plain + trail
-        else:
-            # Clear subsequent text segments but keep surrounding whitespace
-            result[i] = lead + trail
-
-    # Interleave text nodes and tags back
+    for j, i in enumerate(text_idx):
+        lead  = segments[i][:len(segments[i]) - len(segments[i].lstrip())]
+        trail = segments[i][len(segments[i].rstrip()):]
+        result[i] = (lead + translated + trail) if j == 0 else (lead + trail)
     parts = []
     for i, seg in enumerate(result):
         parts.append(seg)
         if i < len(tags):
             parts.append(tags[i])
     return ''.join(parts)
+
+
+def extract_game_tokens(text: str) -> list:
+    """Extract inline game tokens from text (after stripping format tags)."""
+    return _INLINE_TOKEN_RE.findall(_FORMAT_TAG_RE.sub('', text))
+
+
+def validate_tokens(original: str, translation: str) -> tuple:
+    """Check all game tokens from original appear in translation.
+    Returns (ok: bool, issues: list[str])."""
+    from collections import Counter
+    orig_counts  = Counter(extract_game_tokens(original))
+    trans_counts = Counter(extract_game_tokens(translation))
+    issues = [
+        f"missing {cnt - trans_counts.get(tok, 0)}x {tok!r}"
+        for tok, cnt in orig_counts.items()
+        if trans_counts.get(tok, 0) < cnt
+    ]
+    return len(issues) == 0, issues
 
 
 # ── Translation ───────────────────────────────────────────────────────────────
@@ -550,10 +582,11 @@ def needs_translation(text: str) -> bool:
     if not text or not text.strip():
         return False
     t = text.strip()
-    # For HTML-tagged strings (Skyrim BOOK DESC etc.) check the plain text content
-    if _HTML_TAG_RE.search(t):
-        plain = _HTML_TAG_RE.sub('', t).strip()
-        return needs_translation(plain) if plain else False
+    # Strip ALL structural tokens (format tags + inline game tokens) to get pure text
+    plain = _INLINE_TOKEN_RE.sub('', _FORMAT_TAG_RE.sub('', t)).strip()
+    if not plain:
+        return False  # only markup/tokens — nothing human-readable to translate
+    t = plain
     # MCM $KEY tokens — resolved at runtime from MCM txt files, not AI-translatable
     if t.startswith('$'):
         return False
@@ -640,8 +673,8 @@ def translate_strings(strings: list, progress_path: Path = None, context: str = 
 
     if uncached:
         texts_full = [s['text'] for _, s in uncached]
-        plain_texts, html_templates = strip_html_for_ai(texts_full)
-        log.info("Sending %d strings to pipeline (model loads once)...", len(plain_texts))
+        ai_texts, ai_meta = prepare_for_ai(texts_full)
+        log.info("Sending %d strings to pipeline (model loads once)...", len(ai_texts))
         cached_count = len(to_do) - len(uncached)
         total_todo   = len(to_do)
 
@@ -649,10 +682,9 @@ def translate_strings(strings: list, progress_path: Path = None, context: str = 
             if progress_cb:
                 progress_cb(cached_count + batch_done, total_todo)
 
-        translated = translate_batch(plain_texts, context, progress_cb=_inner_cb)
-        for (i, s), plain, template, t in zip(uncached, plain_texts, html_templates, translated):
-            if template is not None and t and t != plain:
-                t = reinsert_html(template, t)
+        translated_raw = translate_batch(ai_texts, context, progress_cb=_inner_cb)
+        translated     = restore_from_ai(translated_raw, ai_meta)
+        for (i, s), t in zip(uncached, translated):
             done[s['text']] = t
 
     # Apply all translations back

@@ -723,7 +723,8 @@ def translate_strings_worker(job, cfg, mod_name: str,
     from translator.web.job_manager import JobManager
     from translator.web.mod_scanner import ModScanner
     from translator.web.global_dict import GlobalTextDict
-    from scripts.esp_engine import translate_batch, quality_score, strip_html_for_ai, reinsert_html
+    from scripts.esp_engine import (translate_batch, quality_score,
+                                    prepare_for_ai, restore_from_ai, validate_tokens)
     from translator.context.builder import ContextBuilder
 
     jm      = JobManager.get()
@@ -830,31 +831,35 @@ def translate_strings_worker(job, cfg, mod_name: str,
         jm.update_progress(job, done, total,
                            f"Translating {done + 1}–{end_idx} / {total}")
 
-        # Strip HTML tags before AI (Skyrim BOOK DESC strings); restore after
-        plain_originals, html_templates = strip_html_for_ai(originals)
+        # Strip format tags + mask game tokens before AI; restore after
+        ai_originals, ai_meta = prepare_for_ai(originals)
 
         # Enrich context with relevant terms + TM for this chunk
-        chunk_context = enrich_context(context, build_tm_block(tm_pairs, plain_originals), plain_originals)
+        chunk_context = enrich_context(context, build_tm_block(tm_pairs, ai_originals), ai_originals)
         try:
-            results = translate_batch(plain_originals, chunk_context)
+            raw_results = translate_batch(ai_originals, chunk_context)
         except Exception as exc:
             for s in chunk:
                 job.add_log(f"ERROR chunk at {s['key']}: {exc}")
             done += len(chunk)
             continue
 
-        for s, plain_orig, template, translation in zip(chunk, plain_originals, html_templates, results):
+        results = restore_from_ai(raw_results, ai_meta)
+
+        for s, ai_orig, translation in zip(chunk, ai_originals, results):
             done += 1
-            if not translation or translation == plain_orig:
+            if not translation or translation == ai_orig:
                 continue
-            if template is not None:
-                translation = reinsert_html(template, translation)
+            tok_ok, tok_issues = validate_tokens(s["original"], translation)
+            status = "translated" if tok_ok else "needs_review"
+            if not tok_ok:
+                job.add_log(f"Token mismatch [{s['key']}]: {'; '.join(tok_issues)}")
             qs = quality_score(s["original"], translation)
             save_translation(cfg.paths.mods_dir, mod_name,
                              cfg.paths.translation_cache,
                              s["esp"], s["key"], translation, cfg=cfg)
             jm.add_string_update(job, s["key"], s["esp"],
-                                 translation, "translated", qs)
+                                 translation, status, qs)
             # Add to TM and global dict so subsequent chunks + future mods benefit
             tm_pairs[s["original"]] = translation
             if gd:

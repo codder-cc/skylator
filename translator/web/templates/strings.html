@@ -14,11 +14,12 @@
 
 {# Scope tab definitions #}
 {% set scope_tabs = [
-  ("all", "All",     scope_counts.all),
-  ("esp", "ESP",     scope_counts.esp),
-  ("mcm", "MCM",     scope_counts.mcm),
-  ("bsa", "BSA-MCM", scope_counts.bsa),
-  ("swf", "SWF",     scope_counts.swf),
+  ("all",    "All",        scope_counts.all),
+  ("esp",    "ESP",        scope_counts.esp),
+  ("mcm",    "MCM",        scope_counts.mcm),
+  ("bsa",    "BSA-MCM",    scope_counts.bsa),
+  ("swf",    "SWF",        scope_counts.swf),
+  ("review", "Review",     scope_counts.get("review", 0)),
 ] %}
 
 <!-- Scope tabs -->
@@ -26,10 +27,10 @@
   {% for tab_scope, tab_label, tab_count in scope_tabs %}
   {% if tab_count > 0 or tab_scope == 'all' %}
   <li class="nav-item">
-    <a class="nav-link py-1 px-3 {% if scope == tab_scope %}active{% endif %}"
+    <a class="nav-link py-1 px-3 {% if scope == tab_scope %}active{% endif %}{% if tab_scope == 'review' and tab_count > 0 and scope != 'review' %} text-warning{% endif %}"
        href="?scope={{ tab_scope }}&status={{ filter_status }}&q={{ search }}">
       {{ tab_label }}
-      <span class="badge ms-1 {% if scope == tab_scope %}bg-light text-dark{% else %}bg-secondary{% endif %}">
+      <span class="badge ms-1 {% if scope == tab_scope %}bg-light text-dark{% elif tab_scope == 'review' and tab_count > 0 %}bg-warning text-dark{% else %}bg-secondary{% endif %}">
         {{ tab_count }}
       </span>
     </a>
@@ -53,10 +54,11 @@
          style="width:220px" placeholder="Search strings…" value="{{ search }}">
 
   <!-- Status filter -->
-  <select id="status-filter" class="form-select form-select-sm" style="width:130px">
-    <option value="all"        {% if filter_status=='all' %}selected{% endif %}>All</option>
-    <option value="pending"    {% if filter_status=='pending' %}selected{% endif %}>Pending</option>
-    <option value="translated" {% if filter_status=='translated' %}selected{% endif %}>Translated</option>
+  <select id="status-filter" class="form-select form-select-sm" style="width:145px">
+    <option value="all"          {% if filter_status=='all' %}selected{% endif %}>All</option>
+    <option value="pending"      {% if filter_status=='pending' %}selected{% endif %}>Pending</option>
+    <option value="translated"   {% if filter_status=='translated' %}selected{% endif %}>Translated</option>
+    <option value="needs_review" {% if filter_status=='needs_review' %}selected{% endif %}>Needs Review</option>
   </select>
 
   <div class="ms-auto d-flex gap-2">
@@ -116,7 +118,7 @@
         {% for s in strings %}
         {% set is_loc = s.original.startswith('[LOC:') %}
         {% set dict_match = s.dict_match if s.dict_match else '' %}
-        <tr class="{% if s.status == 'pending' %}table-warning-subtle{% endif %}"
+        <tr class="{% if s.status == 'needs_review' %}table-warning{% elif s.status == 'pending' %}table-warning-subtle{% endif %}"
             data-key="{{ s.key | e }}"
             data-esp="{{ s.esp | e }}"
             data-original="{{ s.original | e }}"
@@ -268,8 +270,9 @@ const CURR_SCOPE = {{ scope | tojson }};
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function statusBadge(status) {
-  const cls = status === 'translated' ? 'translated' : 'pending';
-  return `<span class="badge-status ${cls}">${status}</span>`;
+  if (status === 'translated')   return `<span class="badge-status translated">translated</span>`;
+  if (status === 'needs_review') return `<span class="badge-status review">needs review</span>`;
+  return `<span class="badge-status pending">pending</span>`;
 }
 
 function scoreBadge(qs) {
@@ -314,7 +317,8 @@ function applyUpdate(key, translation, status, qs) {
   const qc = row.querySelector('.score-cell');
   if (qc) qc.innerHTML = scoreBadge(qs);
 
-  row.classList.toggle('table-warning-subtle', status !== 'translated');
+  row.classList.toggle('table-warning',        status === 'needs_review');
+  row.classList.toggle('table-warning-subtle', status === 'pending');
 }
 
 // ── Use existing (global dict match) ─────────────────────────────────────────
@@ -468,7 +472,8 @@ async function saveEdit(btn, key, esp) {
     const row = cell.closest('tr');
     const sc = row.querySelector('.status-cell');
     if (sc) sc.innerHTML = statusBadge(status);
-    row.classList.toggle('table-warning-subtle', status !== 'translated');
+    row.classList.toggle('table-warning',        status === 'needs_review');
+  row.classList.toggle('table-warning-subtle', status === 'pending');
     toast('Saved', 'success');
     // Re-attach click listener
     attachEditListener(cell, key, esp);

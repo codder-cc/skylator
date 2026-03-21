@@ -43,6 +43,10 @@ def parse_numbered_output(raw: str, expected: int) -> list[str]:
             log.warning(f"parse_numbered_output: missing entry {i}/{expected}")
         result.append(val)
 
+    # Single-string fallback: if model skipped the "1." prefix, use raw output
+    if expected == 1 and not result[0] and raw:
+        result[0] = raw
+
     return result
 
 

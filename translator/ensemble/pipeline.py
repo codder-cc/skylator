@@ -92,7 +92,7 @@ class EnsemblePipeline:
             log.info("EnsemblePipeline: local mode (%s)", ens_cfg.backend_type)
 
     def translate(self, texts: list[str], context: str = "",
-                  progress_cb=None) -> list[str]:
+                  progress_cb=None, force: bool = False) -> list[str]:
         if not texts:
             return []
 
@@ -101,7 +101,7 @@ class EnsemblePipeline:
         uncached_texts: list[str] = []
         results: list[str | None] = [None] * len(texts)
 
-        if self._use_cache:
+        if self._use_cache and not force:
             for i, t in enumerate(texts):
                 if t in self._cache:
                     results[i] = self._cache[t]

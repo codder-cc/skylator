@@ -568,11 +568,12 @@ def validate_tokens(original: str, translation: str) -> tuple:
 
 # ── Translation ───────────────────────────────────────────────────────────────
 
-def translate_batch(texts: list, context: str = '', progress_cb=None) -> list:
+def translate_batch(texts: list, context: str = '', progress_cb=None,
+                    force: bool = False) -> list:
     """Delegate to translator.pipeline (ensemble)."""
     try:
         from translator.pipeline import translate_batch as _tb
-        return _tb(texts, context, progress_cb=progress_cb)
+        return _tb(texts, context, progress_cb=progress_cb, force=force)
     except Exception as e:
         log.error("translate_batch error: %s", e)
         return list(texts)

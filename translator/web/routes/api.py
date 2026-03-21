@@ -389,7 +389,7 @@ def translate_one_string(mod_name: str):
 
         from scripts.esp_engine import prepare_for_ai, restore_from_ai, validate_tokens
         ai_texts, ai_meta = prepare_for_ai([original])
-        results       = translate_batch(ai_texts, context)
+        results       = translate_batch(ai_texts, context, force=True)
         translated_r  = results[0] if results else ""
         if not translated_r:
             return jsonify({"ok": False, "error": "Translation failed — empty response from AI"}), 500

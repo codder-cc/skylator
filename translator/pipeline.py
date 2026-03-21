@@ -22,17 +22,18 @@ def _get_pipeline():
 
 
 def translate_batch(texts: list[str], context: str = "",
-                    progress_cb=None) -> list[str]:
+                    progress_cb=None, force: bool = False) -> list[str]:
     """
     Translate a batch of strings using the ensemble pipeline.
     Returns list of same length. Never raises — returns originals on failure.
     progress_cb(done, total) called after each inner batch completes.
+    force=True bypasses the in-memory translation cache.
     """
     if not texts:
         return []
     try:
         return _get_pipeline().translate(texts, context=context,
-                                         progress_cb=progress_cb)
+                                         progress_cb=progress_cb, force=force)
     except Exception as exc:
         log.error(f"translate_batch failed: {exc}")
         return list(texts)

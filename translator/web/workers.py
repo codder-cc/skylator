@@ -563,6 +563,15 @@ def translate_strings_worker(job, cfg, mod_name: str,
     mod_folder = cfg.paths.mods_dir / mod_name
     context = ContextBuilder().get_mod_context(mod_folder, force=False)
 
+    from translator.prompt.builder import build_tm_block, enrich_context
+
+    # Seed TM with strings already translated before this job started
+    tm_pairs: dict[str, str] = {
+        s["original"]: s["translation"]
+        for s in strings
+        if s.get("translation") and s["translation"] != s["original"]
+    }
+
     CHUNK = 10
     done  = 0
     for chunk_start in range(0, total, CHUNK):
@@ -574,8 +583,11 @@ def translate_strings_worker(job, cfg, mod_name: str,
 
         jm.update_progress(job, done, total,
                            f"Translating {done + 1}–{end_idx} / {total}")
+
+        # Enrich context with TM relevant to this chunk
+        chunk_context = enrich_context(context, build_tm_block(tm_pairs, originals))
         try:
-            results = translate_batch(originals, context)
+            results = translate_batch(originals, chunk_context)
         except Exception as exc:
             for s in chunk:
                 job.add_log(f"ERROR chunk at {s['key']}: {exc}")
@@ -591,6 +603,8 @@ def translate_strings_worker(job, cfg, mod_name: str,
                                   s["esp"], s["key"], translation)
             jm.add_string_update(job, s["key"], s["esp"],
                                  translation, "translated", qs)
+            # Add to TM so subsequent chunks benefit from this translation
+            tm_pairs[s["original"]] = translation
 
     jm.update_progress(job, total, total, "Done")
     job.result = f"Translated strings for {mod_name}"

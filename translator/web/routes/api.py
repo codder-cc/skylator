@@ -346,10 +346,31 @@ def translate_one_string(mod_name: str):
     try:
         from scripts.esp_engine import translate_batch, quality_score
         from translator.context.builder import ContextBuilder
+        from translator.prompt.builder import build_tm_block, enrich_context
         from translator.web.workers import _save_single_to_cache
+        import json as _json
 
         mod_folder = cfg.paths.mods_dir / mod_name
         context    = ContextBuilder().get_mod_context(mod_folder, force=False)
+
+        # Build translation memory from existing .trans.json for consistency
+        esp_stem   = Path(esp_name).stem
+        trans_json = cfg.paths.mods_dir / mod_name / (esp_stem + ".trans.json")
+        if not trans_json.exists():
+            hits = list((cfg.paths.mods_dir / mod_name).rglob(esp_stem + ".trans.json"))
+            trans_json = hits[0] if hits else None
+        tm_pairs: dict = {}
+        if trans_json and trans_json.exists():
+            try:
+                saved = _json.loads(trans_json.read_text(encoding="utf-8"))
+                tm_pairs = {s["text"]: s["translation"]
+                            for s in saved
+                            if s.get("text") and s.get("translation")
+                            and s["translation"] != s["text"]}
+            except Exception:
+                pass
+        context = enrich_context(context, build_tm_block(tm_pairs, [original]))
+
         results    = translate_batch([original], context)
         translated = results[0] if results else original
         if not translated or translated == original:

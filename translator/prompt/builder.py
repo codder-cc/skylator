@@ -42,6 +42,54 @@ def _preserve_note(preserve_tokens: list[str]) -> str:
     return f"\nDo NOT translate these tokens (keep as-is): {tokens}\n"
 
 
+def build_tm_block(
+    pairs: dict[str, str],
+    current_texts: list[str],
+    max_entries: int = 15,
+) -> str:
+    """
+    Build a translation memory (TM) block from already-translated pairs.
+
+    Selects entries most relevant to current_texts (word-overlap scoring)
+    so the model can be consistent with prior translations.
+
+    Args:
+        pairs:         {original_english: russian_translation} from .trans.json
+        current_texts: the strings about to be translated (used for scoring)
+        max_entries:   max reference lines to include in the prompt
+
+    Returns:
+        A formatted string like
+        "Reference translations (for consistency):\\n  X → Y\\n..."
+        or "" if no useful pairs.
+    """
+    if not pairs:
+        return ""
+
+    # Build query word set from current batch (ignore very short words)
+    query_words: set[str] = set()
+    for t in current_texts:
+        query_words.update(w.lower() for w in t.split() if len(w) > 2)
+
+    def _score(item: tuple[str, str]) -> int:
+        orig_words = set(w.lower() for w in item[0].split())
+        return len(orig_words & query_words)
+
+    scored = sorted(pairs.items(), key=_score, reverse=True)[:max_entries]
+    if not scored:
+        return ""
+
+    lines = [f"  {orig} → {trans}" for orig, trans in scored]
+    return "Reference translations (for consistency):\n" + "\n".join(lines)
+
+
+def enrich_context(context: str, tm_block: str) -> str:
+    """Append TM block to an existing context string."""
+    if not tm_block:
+        return context
+    return (context.rstrip() + "\n\n" + tm_block).strip()
+
+
 # ── HY-MT prompt ──────────────────────────────────────────────────────────────
 
 _HYMT_TMPL = """\

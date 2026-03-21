@@ -7,8 +7,22 @@
 async function api(method, url, body) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (body !== undefined) opts.body = JSON.stringify(body);
-  const r = await fetch(url, opts);
-  return r.json();
+  let r;
+  try {
+    r = await fetch(url, opts);
+  } catch (err) {
+    console.error(`[api] network error ${method} ${url}:`, err);
+    return { ok: false, error: `Network error: ${err.message}` };
+  }
+  let data;
+  try {
+    data = await r.json();
+  } catch (err) {
+    console.error(`[api] JSON parse error ${method} ${url} (HTTP ${r.status}):`, err);
+    return { ok: false, error: `Server error (HTTP ${r.status})` };
+  }
+  if (!r.ok && data.ok === undefined) data.ok = false;
+  return data;
 }
 
 const GET  = url        => api('GET',  url);

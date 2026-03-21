@@ -1,6 +1,9 @@
 """JSON API endpoints for AJAX calls."""
 from __future__ import annotations
+import logging
 from flask import Blueprint, current_app, jsonify, request
+
+log = logging.getLogger(__name__)
 
 bp = Blueprint("api", __name__, url_prefix="/api")
 
@@ -344,6 +347,8 @@ def translate_one_string(mod_name: str):
     if not original or original.startswith("[LOC:"):
         return jsonify({"ok": False, "error": "Cannot translate this string"}), 400
 
+    xlogs: list[str] = []  # step log forwarded to FE
+
     # ── Global dict fast-path ────────────────────────────────────────────────
     use_gd = cfg.translation.use_global_dict and not force_ai
     if use_gd:
@@ -351,12 +356,15 @@ def translate_one_string(mod_name: str):
         if gd:
             existing = gd.get(original)
             if existing:
+                xlogs.append(f"source: global dict hit")
+                log.info("[translate-one] %s | global dict hit → %s", key_str, existing[:80])
                 from translator.web.workers import save_translation
                 save_translation(cfg.paths.mods_dir, mod_name,
                                  cfg.paths.translation_cache,
                                  esp_name, key_str, existing, cfg=cfg)
                 return jsonify({"ok": True, "translation": existing,
-                                "quality_score": None, "from_dict": True})
+                                "quality_score": None, "from_dict": True,
+                                "logs": xlogs})
 
     try:
         from pathlib import Path
@@ -365,6 +373,9 @@ def translate_one_string(mod_name: str):
         from translator.prompt.builder import build_tm_block, enrich_context
         from translator.web.workers import save_translation
         import json as _json
+
+        xlogs.append(f"input: {original[:100]}")
+        log.info("[translate-one] %s | input: %s", key_str, original[:200])
 
         mod_folder = cfg.paths.mods_dir / mod_name
         context    = ContextBuilder().get_mod_context(mod_folder, force=False)
@@ -389,14 +400,35 @@ def translate_one_string(mod_name: str):
 
         from scripts.esp_engine import prepare_for_ai, restore_from_ai, validate_tokens
         ai_texts, ai_meta = prepare_for_ai([original])
-        results       = translate_batch(ai_texts, context, force=True)
-        translated_r  = results[0] if results else ""
-        if not translated_r:
-            return jsonify({"ok": False, "error": "Translation failed — empty response from AI"}), 500
-        translated    = restore_from_ai([translated_r], ai_meta)[0]
+        masked = ai_texts[0]
+        if masked != original.strip():
+            xlogs.append(f"masked: {masked[:100]}")
+            log.info("[translate-one] %s | masked: %s", key_str, masked[:200])
+
+        results      = translate_batch(ai_texts, context, force=True)
+        raw          = results[0] if results else ""
+        xlogs.append(f"ai_raw: {raw[:120]}" if raw else "ai_raw: (empty)")
+        log.info("[translate-one] %s | ai_raw: %s", key_str, raw[:300] if raw else "(empty)")
+
+        if not raw:
+            log.error("[translate-one] %s | empty response from AI", key_str)
+            return jsonify({"ok": False, "error": "Empty response from AI", "logs": xlogs}), 500
+
+        translated = restore_from_ai([raw], ai_meta)[0]
+        if translated != raw:
+            xlogs.append(f"restored: {translated[:120]}")
+            log.info("[translate-one] %s | restored: %s", key_str, translated[:200])
+
         tok_ok, tok_issues = validate_tokens(original, translated)
+        if not tok_ok:
+            xlogs.append(f"token_issues: {'; '.join(tok_issues)}")
+            log.warning("[translate-one] %s | token issues: %s", key_str, '; '.join(tok_issues))
+
         status = "translated" if tok_ok else "needs_review"
         qs     = quality_score(original, translated)
+        xlogs.append(f"status={status} qs={qs}")
+        log.info("[translate-one] %s | done — status=%s qs=%s", key_str, status, qs)
+
         save_translation(cfg.paths.mods_dir, mod_name,
                          cfg.paths.translation_cache,
                          esp_name, key_str, translated, cfg=cfg)
@@ -406,9 +438,12 @@ def translate_one_string(mod_name: str):
             gd.add(original, translated)
             gd.save()
         return jsonify({"ok": True, "translation": translated, "quality_score": qs,
-                        "status": status, "token_issues": tok_issues, "from_dict": False})
+                        "status": status, "token_issues": tok_issues,
+                        "from_dict": False, "logs": xlogs})
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        xlogs.append(f"exception: {exc}")
+        log.exception("[translate-one] %s | unhandled exception: %s", key_str, exc)
+        return jsonify({"ok": False, "error": str(exc), "logs": xlogs}), 500
 
 
 @bp.route("/global-dict/stats")

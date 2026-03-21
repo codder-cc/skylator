@@ -362,19 +362,41 @@ async function translateOne(btn) {
   const orig  = btn.innerHTML;
   btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
 
+  // Clear any previous inline error
+  const transCell = row.querySelector('.trans-cell');
+  if (transCell) { const prev = transCell.querySelector('.translate-error'); if (prev) prev.remove(); }
+
   const r = await POST(
     `/api/mods/${encodeURIComponent(MOD_NAME)}/strings/translate-one`,
     { key, esp, original }
   );
 
+  // Always dump BE logs to browser console
+  if (r.logs?.length) {
+    console.group(`[translate-one] ${key}`);
+    r.logs.forEach(l => console.log(l));
+    console.groupEnd();
+  }
+
   if (r.ok) {
-    applyUpdate(key, r.translation, 'translated', r.quality_score);
-    // Re-enable with lightning icon
+    applyUpdate(key, r.translation, r.status || 'translated', r.quality_score);
+    if (r.token_issues?.length) {
+      toast('Token issues: ' + r.token_issues.join('; '), 'warning');
+    }
     btn.disabled = false;
     btn.innerHTML = '<i class="bi bi-lightning-fill"></i>';
     btn.classList.replace('btn-outline-secondary', 'btn-outline-warning');
   } else {
-    toast('AI error: ' + (r.error || 'unknown'), 'danger');
+    const msg = r.error || 'Unknown error';
+    toast('AI error: ' + msg, 'danger');
+    // Show inline error under the translation cell
+    if (transCell) {
+      const errDiv = document.createElement('div');
+      errDiv.className = 'translate-error';
+      const steps = r.logs ? r.logs.join(' → ') : '';
+      errDiv.textContent = msg + (steps ? ` [${steps}]` : '');
+      transCell.appendChild(errDiv);
+    }
     btn.disabled = false;
     btn.innerHTML = orig;
   }

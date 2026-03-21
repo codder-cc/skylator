@@ -336,6 +336,16 @@ code {
 
 .breadcrumb-item + .breadcrumb-item::before { color: var(--text-muted); }
 
+/* ── Inline translation error ─────────────────────────── */
+
+.translate-error {
+  color: var(--danger);
+  font-size: 11px;
+  margin-top: 4px;
+  font-family: 'Consolas', 'Fira Code', monospace;
+  word-break: break-word;
+}
+
 /* ── Responsive ───────────────────────────────────────── */
 @media (max-width: 768px) {
   .sidebar { width: 200px; }

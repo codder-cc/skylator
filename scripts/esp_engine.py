@@ -519,7 +519,11 @@ def restore_from_ai(translations: list, metadata: list) -> list:
     result = []
     for trans, meta in zip(translations, metadata):
         for i, tok in enumerate(meta["tokens"]):
-            trans = trans.replace(f'{{T{i}}}', tok)
+            placeholder = f'{{T{i}}}'
+            if placeholder not in trans:
+                log.warning("restore_from_ai: placeholder %s missing in translation: %s",
+                            placeholder, trans[:120])
+            trans = trans.replace(placeholder, tok)
         if meta["fmt"] is not None:
             trans = _reinsert_format(meta["fmt"], trans)
         result.append(trans)
@@ -563,6 +567,8 @@ def validate_tokens(original: str, translation: str) -> tuple:
         for tok, cnt in orig_counts.items()
         if trans_counts.get(tok, 0) < cnt
     ]
+    if issues:
+        log.warning("validate_tokens: %s", '; '.join(issues))
     return len(issues) == 0, issues
 
 

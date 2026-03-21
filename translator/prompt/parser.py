@@ -40,7 +40,8 @@ def parse_numbered_output(raw: str, expected: int) -> list[str]:
     for i in range(1, expected + 1):
         val = parsed.get(i, "")
         if not val:
-            log.warning(f"parse_numbered_output: missing entry {i}/{expected}")
+            log.warning("parse_numbered_output: missing entry %d/%d | raw=%s",
+                        i, expected, raw[:300].replace('\n', '\\n'))
         result.append(val)
 
     # Single-string fallback: if model skipped the "1." prefix, use raw output

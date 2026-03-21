@@ -29,6 +29,39 @@ def _save_single_to_cache(cache_path: Path, esp_name: str,
         )
 
 
+def _update_trans_json(mods_dir: Path, mod_name: str,
+                       esp_name: str, key_str: str, translation: str) -> None:
+    """Update translation in the .trans.json file if it exists.
+    This is authoritative — mod_scanner reads .trans.json first and the
+    central cache only as a fallback, so we must write here too."""
+    esp_stem    = Path(esp_name).stem
+    trans_json  = mods_dir / mod_name / f"{esp_stem}.trans.json"
+    if not trans_json.exists():
+        # Also search one level deeper (mods may have sub-folders)
+        hits = list((mods_dir / mod_name).rglob(f"{esp_stem}.trans.json"))
+        trans_json = hits[0] if hits else None
+    if not trans_json:
+        return
+    with _CACHE_LOCK:
+        try:
+            strings = json.loads(trans_json.read_text(encoding="utf-8"))
+            updated = False
+            for s in strings:
+                k = str((s.get("form_id"), s.get("rec_type"),
+                          s.get("field_type"), s.get("field_index")))
+                if k == key_str:
+                    s["translation"] = translation
+                    updated = True
+                    break
+            if updated:
+                trans_json.write_text(
+                    json.dumps(strings, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+        except Exception:
+            log.exception("_update_trans_json failed for %s / %s", mod_name, esp_name)
+
+
 def _save_mcm_translation(mods_dir: Path, mod_name: str,
                            key_str: str, translation: str) -> None:
     """
@@ -193,6 +226,7 @@ def save_translation(mods_dir: Path, mod_name: str, cache_path: Path,
             log.warning("save_translation: cfg required for swf key")
     else:
         _save_single_to_cache(cache_path, esp_name, key_str, translation)
+        _update_trans_json(mods_dir, mod_name, esp_name, key_str, translation)
 
 
 def translate_mod_worker(job, cfg, mod_name: str,

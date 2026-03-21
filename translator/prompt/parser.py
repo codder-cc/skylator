@@ -42,11 +42,12 @@ def parse_numbered_output(raw: str, expected: int) -> list[str]:
         if not val:
             log.warning("parse_numbered_output: missing entry %d/%d | raw=%s",
                         i, expected, raw[:300].replace('\n', '\\n'))
-        result.append(val)
+        # Decode newline placeholder back to real newlines
+        result.append(val.replace("⟨NL⟩", "\n"))
 
     # Single-string fallback: if model skipped the "1." prefix, use raw output
     if expected == 1 and not result[0] and raw:
-        result[0] = raw
+        result[0] = raw.replace("⟨NL⟩", "\n")
 
     return result
 

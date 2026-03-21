@@ -153,8 +153,8 @@ the translation MUST also contain exactly N sentences or N items.
 appears — translate the word or phrase after each ~ just like any other text.
 - Translate ALL words including proper nouns, NPC names, item names, ingredient names, and \
 place names — do NOT leave them in English unless they are untranslatable brand tokens.
-- Preserve formatting tokens, variable placeholders (<Alias=...>, %1, [PlayerName]), and \
-newlines exactly.
+- Preserve formatting tokens, variable placeholders (<Alias=...>, %1, [PlayerName]) exactly.
+- ⟨NL⟩ represents a newline in the original — preserve every ⟨NL⟩ exactly where it appears.
 - Copy {{T0}}, {{T1}}... token placeholders verbatim — they are runtime-substituted game values.
 - Output ONLY the numbered translations — no commentary, no explanations.
 {terms}{preserve}{context_block}
@@ -186,7 +186,10 @@ def build_prompt(
 
     ctx_block = f"\nContext: {context}\n" if context else ""
 
-    numbered = "\n".join(f"{i+1}. {t}" for i, t in enumerate(texts))
+    # Encode newlines inside each text so every item is a single line.
+    # The model is instructed to preserve ⟨NL⟩; the parser decodes them back.
+    numbered = "\n".join(f"{i+1}. {t.replace(chr(13), '').replace(chr(10), '⟨NL⟩')}"
+                         for i, t in enumerate(texts))
 
     if model_type == "qwen":
         return _build_qwen_prompt(texts, src_lang, tgt_lang, context, preserve, terms,
@@ -225,9 +228,9 @@ the translation MUST also contain exactly N sentences or N items.
 appears — translate the word or phrase after each ~ just like any other text.
 - Translate ALL words including proper nouns, NPC names, item names, ingredient names, and \
 place names — do NOT leave them in English unless they are untranslatable brand tokens.
-- Preserve ALL formatting tokens: <Alias=...>, %1, [PlayerName], \\n, etc.
+- Preserve ALL formatting tokens: <Alias=...>, %1, [PlayerName] exactly.
+- ⟨NL⟩ represents a newline in the original — preserve every ⟨NL⟩ exactly where it appears.
 - Copy {{T0}}, {{T1}}... token placeholders exactly — they are runtime game values.
-- Do not add or remove newlines.
 - Output ONLY numbered translations, one per line.
 {terms}{preserve}{context_block}
 Strings:
@@ -245,7 +248,8 @@ def _build_qwen_prompt(
     thinking:      bool = False,
 ) -> str:
     ctx_block  = f"\nContext: {context}\n" if context else ""
-    numbered   = "\n".join(f"{i+1}. {t}" for i, t in enumerate(texts))
+    numbered   = "\n".join(f"{i+1}. {t.replace(chr(13), '').replace(chr(10), '⟨NL⟩')}"
+                           for i, t in enumerate(texts))
 
     user_msg = _QWEN_USER_TMPL.format(
         src=src_lang,
@@ -296,7 +300,10 @@ def build_arbiter_prompt(
 
     lines = []
     for i, (src, a, b) in enumerate(zip(texts, candidates_a, candidates_b)):
-        lines.append(f"{i+1}. {src} | {a} | {b}")
+        src_enc = src.replace('\r', '').replace('\n', '⟨NL⟩')
+        a_enc   = a.replace('\r', '').replace('\n', '⟨NL⟩')
+        b_enc   = b.replace('\r', '').replace('\n', '⟨NL⟩')
+        lines.append(f"{i+1}. {src_enc} | {a_enc} | {b_enc}")
 
     numbered_items = "\n".join(lines)
 

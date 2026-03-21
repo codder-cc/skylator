@@ -35,7 +35,7 @@ def translate_batch(texts: list[str], context: str = "",
         return _get_pipeline().translate(texts, context=context,
                                          progress_cb=progress_cb, force=force)
     except Exception as exc:
-        log.error(f"translate_batch failed: {exc}")
+        log.exception("translate_batch failed")
         return list(texts)
 
 

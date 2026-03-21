@@ -93,7 +93,7 @@ class RemoteBackend(BaseBackend):
             )
             return translations
         except Exception as exc:
-            log.error("RemoteBackend: translation failed (%s) — returning originals", exc)
+            log.exception("RemoteBackend: translation failed — returning originals")
             return list(texts)
 
     @property

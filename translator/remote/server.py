@@ -285,6 +285,8 @@ async def _run_translate(job: JobRecord, state: ServerState, loop: asyncio.Abstr
     context = payload.get("context", "")
     job.total    = len(texts)
     job.progress = 0
+    log.info("Job %s: translating %d string(s) | first: %s",
+             job.job_id[:8], len(texts), texts[0][:120] if texts else "(empty)")
 
     def _progress_cb(done: int, total: int) -> None:
         job.progress = done
@@ -317,6 +319,8 @@ async def _run_translate(job: JobRecord, state: ServerState, loop: asyncio.Abstr
 
     job.result   = results
     job.progress = job.total
+    log.info("Job %s: done — first result: %s",
+             job.job_id[:8], (results[0][:120] if results else "(empty)"))
 
 
 async def _run_chat(job: JobRecord, state: ServerState, loop: asyncio.AbstractEventLoop) -> None:

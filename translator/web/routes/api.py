@@ -414,6 +414,13 @@ def translate_one_string(mod_name: str):
             log.error("[translate-one] %s | empty response from AI", key_str)
             return jsonify({"ok": False, "error": "Empty response from AI", "logs": xlogs}), 500
 
+        # Detect silent remote failure: backend returned masked input unchanged
+        # (only meaningful when tokens were present — pure text proper nouns are ok)
+        if raw == masked and masked != original.strip():
+            xlogs.append("error: remote returned masked input unchanged — translation failed silently")
+            log.error("[translate-one] %s | remote backend returned input unchanged (silent failure)", key_str)
+            return jsonify({"ok": False, "error": "Remote server failed — returned input unchanged", "logs": xlogs}), 500
+
         translated = restore_from_ai([raw], ai_meta)[0]
         if translated != raw:
             xlogs.append(f"restored: {translated[:120]}")

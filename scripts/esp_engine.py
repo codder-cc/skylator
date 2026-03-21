@@ -580,8 +580,8 @@ def translate_batch(texts: list, context: str = '', progress_cb=None,
     try:
         from translator.pipeline import translate_batch as _tb
         return _tb(texts, context, progress_cb=progress_cb, force=force)
-    except Exception as e:
-        log.error("translate_batch error: %s", e)
+    except Exception:
+        log.exception("translate_batch error")
         return list(texts)
 
 

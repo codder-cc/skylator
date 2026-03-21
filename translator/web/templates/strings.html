@@ -222,7 +222,8 @@
                 <span class="text-muted fst-italic">{{ s.original }}</span>
                 <span class="badge bg-secondary ms-1" style="font-size:9px">Localized</span>
               {% else %}
-                <span class="orig-display">{{ s.original[:1200] | e }}{% if s.original|length > 1200 %}…{% endif %}</span>
+                {# Populated via JS textContent — never rendered as HTML #}
+                <span class="orig-display" data-raw="{{ s.original | e }}"></span>
               {% endif %}
             </div>
           </td>
@@ -231,15 +232,8 @@
           <td class="trans-cell"
               data-translation="{{ s.translation | e }}"
               style="cursor:pointer;min-width:160px">
-            {% if s.translation %}
-            <span class="string-row-trans trans-display">
-              <span class="trans-plain">{{ s.translation[:1200] | e }}{% if s.translation|length > 1200 %}…{% endif %}</span>
-            </span>
-            {% else %}
-            <span class="text-muted trans-display" style="font-size:11px">
-              <em>not translated</em>
-            </span>
-            {% endif %}
+            {# Populated via JS textContent on load — never rendered as HTML #}
+            <span class="trans-display"></span>
           </td>
 
           <!-- Status -->
@@ -593,9 +587,14 @@ async function saveEdit(btn, key, esp) {
     cell.classList.remove('editing');
     cell.dataset.translation = text;
     const status = text.trim() ? 'translated' : 'pending';
-    cell.innerHTML = text.trim()
-      ? `<span class="string-row-trans trans-display">${escHtml(text.slice(0,1200))}${text.length>1200?'…':''}</span>`
-      : `<span class="text-muted trans-display" style="font-size:11px"><em>not translated</em></span>`;
+    if (text.trim()) {
+      const sp = document.createElement('span');
+      sp.className = 'string-row-trans trans-display';
+      sp.textContent = text.length > 1200 ? text.slice(0, 1200) + '…' : text;
+      cell.appendChild(sp);
+    } else {
+      cell.innerHTML = '<span class="text-muted trans-display" style="font-size:11px"><em>not translated</em></span>';
+    }
     // Update status cell
     const row = cell.closest('tr');
     const sc = row.querySelector('.status-cell');
@@ -616,9 +615,14 @@ function cancelEdit(btn, original) {
   const key = cell.closest('tr').dataset.key;
   const esp = cell.closest('tr').dataset.esp;
   cell.dataset.translation = original;
-  cell.innerHTML = original
-    ? `<span class="string-row-trans trans-display">${escHtml(original.slice(0,1200))}${original.length>1200?'…':''}</span>`
-    : `<span class="text-muted trans-display" style="font-size:11px"><em>not translated</em></span>`;
+  if (original) {
+    const sp = document.createElement('span');
+    sp.className = 'string-row-trans trans-display';
+    sp.textContent = original.length > 1200 ? original.slice(0, 1200) + '…' : original;
+    cell.appendChild(sp);
+  } else {
+    cell.innerHTML = '<span class="text-muted trans-display" style="font-size:11px"><em>not translated</em></span>';
+  }
   attachEditListener(cell, key, esp);
 }
 
@@ -631,6 +635,26 @@ function attachEditListener(cell, key, esp) {
   }, { once: true });
 }
 
+
+// ── Populate display cells via textContent (prevents HTML rendering) ─────────
+
+document.querySelectorAll('.orig-display[data-raw]').forEach(el => {
+  const raw = el.dataset.raw || '';
+  el.textContent = raw.length > 1200 ? raw.slice(0, 1200) + '…' : raw;
+});
+
+document.querySelectorAll('.trans-cell').forEach(cell => {
+  const translation = cell.dataset.translation || '';
+  const display = cell.querySelector('.trans-display');
+  if (!display) return;
+  if (translation) {
+    display.className = 'string-row-trans trans-display';
+    display.textContent = translation.length > 1200 ? translation.slice(0, 1200) + '…' : translation;
+  } else {
+    display.className = 'text-muted trans-display';
+    display.innerHTML = '<em>not translated</em>';
+  }
+});
 
 // ── Attach click-to-edit listeners on page load ───────────────────────────────
 

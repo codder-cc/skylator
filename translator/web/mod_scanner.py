@@ -127,6 +127,10 @@ class ModScanner:
         """
         Extract strings from all ESP/ESM in a mod folder.
         Returns list of dicts: {form_id, rec_type, field, original, translation, status}.
+
+        When a .trans.json file exists for an ESP, it is used as the primary source.
+        This preserves original English text even after translations have been applied
+        back to the ESP binary (which would otherwise show Russian as "original").
         """
         folder = self.mods_dir / folder_name
         if not folder.is_dir():
@@ -138,42 +142,56 @@ class ModScanner:
         for ext in ("*.esp", "*.esm", "*.esl"):
             for esp_path in folder.rglob(ext):
                 try:
-                    from scripts.esp_engine import extract_all_strings
-                    extracted, _ = extract_all_strings(esp_path)
                     mod_cache = trans_cache.get(esp_path.stem, {})
-
-                    # Load quality scores from .trans.json if available
-                    quality_scores: dict = {}
                     trans_json_path = esp_path.with_suffix(".trans.json")
-                    if trans_json_path.exists():
-                        try:
-                            saved = json.loads(trans_json_path.read_text(encoding="utf-8"))
-                            for s in saved:
-                                if s.get("quality_score") is not None:
-                                    sk = str((s["form_id"], s["rec_type"],
-                                              s["field_type"], s["field_index"]))
-                                    quality_scores[sk] = s["quality_score"]
-                        except Exception:
-                            pass
 
-                    for entry in extracted:
-                        key     = (entry["form_id"], entry["rec_type"],
-                                   entry["field_type"], entry["field_index"])
-                        key_str = str(key)
-                        translated = mod_cache.get(key_str, "")
-                        status = "translated" if translated else "pending"
-                        strings.append({
-                            "esp":           esp_path.name,
-                            "form_id":       entry["form_id"],
-                            "rec_type":      entry["rec_type"],
-                            "field":         entry["field_type"],
-                            "idx":           entry["field_index"],
-                            "original":      entry["text"],
-                            "translation":   translated,
-                            "status":        status,
-                            "key":           key_str,
-                            "quality_score": quality_scores.get(key_str),
-                        })
+                    if trans_json_path.exists():
+                        # .trans.json is authoritative: preserves original English
+                        # text even after the ESP binary has been overwritten with
+                        # translated strings.
+                        saved = json.loads(trans_json_path.read_text(encoding="utf-8"))
+                        for s in saved:
+                            key     = (s["form_id"], s["rec_type"],
+                                       s["field_type"], s["field_index"])
+                            key_str = str(key)
+                            # Prefer .trans.json translation; fall back to cache
+                            translation = (s.get("translation") or
+                                           mod_cache.get(key_str, ""))
+                            status = "translated" if translation else "pending"
+                            strings.append({
+                                "esp":           esp_path.name,
+                                "form_id":       s["form_id"],
+                                "rec_type":      s["rec_type"],
+                                "field":         s["field_type"],
+                                "idx":           s["field_index"],
+                                "original":      s["text"],      # always English
+                                "translation":   translation,
+                                "status":        status,
+                                "key":           key_str,
+                                "quality_score": s.get("quality_score"),
+                            })
+                    else:
+                        # No .trans.json — parse ESP directly
+                        from scripts.esp_engine import extract_all_strings
+                        extracted, _ = extract_all_strings(esp_path)
+                        for entry in extracted:
+                            key     = (entry["form_id"], entry["rec_type"],
+                                       entry["field_type"], entry["field_index"])
+                            key_str = str(key)
+                            translated = mod_cache.get(key_str, "")
+                            status = "translated" if translated else "pending"
+                            strings.append({
+                                "esp":           esp_path.name,
+                                "form_id":       entry["form_id"],
+                                "rec_type":      entry["rec_type"],
+                                "field":         entry["field_type"],
+                                "idx":           entry["field_index"],
+                                "original":      entry["text"],
+                                "translation":   translated,
+                                "status":        status,
+                                "key":           key_str,
+                                "quality_score": None,
+                            })
                 except Exception as exc:
                     log.warning(f"String extract failed for {esp_path}: {exc}")
 

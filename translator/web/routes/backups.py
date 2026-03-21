@@ -140,8 +140,9 @@ def restore_mod_esp():
         shutil.copy2(str(backup_path), str(original_path))
 
         # Remove companion .trans.json for ESP/ESM
+        # (.with_suffix replaces the last extension, so ACatsLife.esp → ACatsLife.trans.json)
         if backup_path.suffix in (".esp", ".esm"):
-            trans_json = original_path.with_suffix(original_path.suffix + ".trans.json")
+            trans_json = original_path.with_suffix(".trans.json")
             if trans_json.exists():
                 log.info("Removing trans.json: %s", trans_json)
                 trans_json.unlink()

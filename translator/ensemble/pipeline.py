@@ -25,16 +25,70 @@ class EnsemblePipeline:
     """
 
     def __init__(self):
-        cfg = get_config().ensemble
-        self._model_full = LlamaCppBackend(model_cfg=cfg.model_b)
-        self._model_lite = (
-            LlamaCppBackend(model_cfg=cfg.model_b_lite)
-            if cfg.model_b_lite
-            else None
-        )
-        self._threshold   = cfg.adaptive_threshold
-        self._use_cache   = cfg.use_translation_cache
+        cfg     = get_config()
+        ens_cfg = cfg.ensemble
+        rem_cfg = cfg.remote
+
+        self._threshold = ens_cfg.adaptive_threshold
+        self._use_cache = ens_cfg.use_translation_cache
         self._cache: dict[str, str] = {}
+
+        mode = rem_cfg.mode  # "local" | "remote" | "auto"
+
+        if mode == "remote":
+            if not rem_cfg.server_url:
+                raise ValueError(
+                    "remote.mode=remote requires remote.server_url to be set in config"
+                )
+            from translator.models.remote_backend import RemoteBackend
+            self._model_full = RemoteBackend(
+                server_url  = rem_cfg.server_url,
+                source_lang = cfg.translation.source_lang,
+                target_lang = cfg.translation.target_lang,
+                timeout_sec = rem_cfg.timeout_sec,
+            )
+            self._model_lite = None
+            log.info("EnsemblePipeline: remote mode → %s", rem_cfg.server_url)
+
+        elif mode == "auto":
+            from translator.models.remote_backend import RemoteBackend
+            from translator.remote.scanner import LanScanner
+
+            explicit_url = rem_cfg.server_url
+            if explicit_url:
+                servers = [{"url": explicit_url}]
+                log.info("EnsemblePipeline: auto mode — using explicit URL %s", explicit_url)
+            else:
+                log.info("EnsemblePipeline: auto mode — scanning LAN...")
+                scanner = LanScanner(port=rem_cfg.port, mdns_enabled=rem_cfg.mdns_enabled)
+                servers = scanner.scan()
+
+            if servers:
+                best = servers[0]
+                self._model_full = RemoteBackend(
+                    server_url  = best["url"],
+                    source_lang = cfg.translation.source_lang,
+                    target_lang = cfg.translation.target_lang,
+                    timeout_sec = rem_cfg.timeout_sec,
+                )
+                self._model_lite = None
+                log.info("EnsemblePipeline: auto mode — using remote server %s", best["url"])
+            else:
+                log.info("EnsemblePipeline: auto mode — no servers found, using local models")
+                self._model_full = LlamaCppBackend(model_cfg=ens_cfg.model_b)
+                self._model_lite = (
+                    LlamaCppBackend(model_cfg=ens_cfg.model_b_lite)
+                    if ens_cfg.model_b_lite else None
+                )
+
+        else:
+            # Default: local — pick backend based on backend_type
+            self._model_full = self._make_backend(ens_cfg.model_b, ens_cfg, cfg.translation)
+            self._model_lite = (
+                self._make_backend(ens_cfg.model_b_lite, ens_cfg, cfg.translation)
+                if ens_cfg.model_b_lite else None
+            )
+            log.info("EnsemblePipeline: local mode (%s)", ens_cfg.backend_type)
 
     def translate(self, texts: list[str], context: str = "",
                   progress_cb=None) -> list[str]:
@@ -119,12 +173,38 @@ class EnsemblePipeline:
 
         return results  # type: ignore[return-value]
 
+    @staticmethod
+    def _make_backend(model_cfg, ens_cfg, translation_cfg):
+        """Instantiate the correct backend class based on ensemble.backend_type."""
+        backend_type = getattr(ens_cfg, "backend_type", "llamacpp")
+        if backend_type == "mlx":
+            from translator.models.mlx_backend import MlxBackend
+            return MlxBackend(
+                repo_id     = model_cfg.repo_id,
+                source_lang = translation_cfg.source_lang,
+                target_lang = translation_cfg.target_lang,
+                max_tokens  = model_cfg.max_new_tokens,
+                temperature = model_cfg.temperature,
+                top_p       = model_cfg.top_p,
+                repetition_penalty = model_cfg.repetition_penalty,
+            )
+        # Default: llamacpp
+        return LlamaCppBackend(model_cfg=model_cfg, translation_cfg=translation_cfg)
+
+    @staticmethod
+    def _backend_label(backend) -> str:
+        """Safe label for any backend type (LlamaCppBackend or RemoteBackend)."""
+        mcfg = getattr(backend, "_mcfg", None)
+        if mcfg:
+            return mcfg.gguf_filename or mcfg.local_dir_name
+        return getattr(backend, "_label", repr(backend))
+
     def _translate_with(
-        self, texts: list[str], context: str, backend: LlamaCppBackend,
+        self, texts: list[str], context: str, backend,
         progress_cb=None,
     ) -> list[str]:
         import time as _time
-        label = backend._mcfg.gguf_filename or backend._mcfg.local_dir_name
+        label = self._backend_label(backend)
         log.info(f"Translating {len(texts)} strings with {label}")
         t0 = _time.time()
         with backend:

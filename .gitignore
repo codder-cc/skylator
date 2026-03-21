@@ -1,5 +1,6 @@
 # ── Secrets / local config ────────────────────────────────────────────────────
 config.yaml
+server_config.yaml
 
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
@@ -25,6 +26,11 @@ dist/
 logs/
 cache/
 *.log
+
+# ── Model files (GGUF weights — large binaries, never commit) ─────────────────
+/models/
+*.gguf
+*.safetensors
 
 # ── Translation working files ─────────────────────────────────────────────────
 *.trans.json

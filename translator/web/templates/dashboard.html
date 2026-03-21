@@ -105,6 +105,41 @@
   </div>
 </div>
 
+<!-- Translation Mode -->
+<div class="row g-3 mb-4">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <span><i class="bi bi-wifi me-2 text-accent"></i>Translation Mode</span>
+        <a href="{{ url_for('servers_rt.servers_page') }}" class="btn btn-sm btn-outline-secondary">
+          <i class="bi bi-radar me-1"></i>Manage Servers
+        </a>
+      </div>
+      <div class="card-body py-2">
+        <div class="d-flex align-items-center gap-3 flex-wrap">
+          {% if cfg and cfg.remote %}
+          <span class="badge fs-6 {% if cfg.remote.mode == 'local' %}bg-secondary{% elif cfg.remote.mode == 'remote' %}bg-primary{% else %}bg-warning text-dark{% endif %}">
+            {{ cfg.remote.mode | upper }}
+          </span>
+          {% if cfg.remote.mode != 'local' and cfg.remote.server_url %}
+          <span class="text-muted" style="font-size:12px">
+            <i class="bi bi-link-45deg me-1"></i>{{ cfg.remote.server_url }}
+          </span>
+          {% elif cfg.remote.mode == 'auto' %}
+          <span class="text-muted" style="font-size:12px">Auto-discover via mDNS / LAN scan</span>
+          {% else %}
+          <span class="text-muted" style="font-size:12px">Using local GGUF models</span>
+          {% endif %}
+          {% else %}
+          <span class="badge bg-secondary fs-6">LOCAL</span>
+          <span class="text-muted" style="font-size:12px">No remote config</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Token Stats -->
 <div class="row g-3 mb-4">
   <div class="col-12">

@@ -190,3 +190,21 @@ def models_status():
         "cuda_available": cuda_ok,
         "models":         models,
     })
+
+
+@bp.route("/servers")
+def servers():
+    """Return last known list of discovered LAN translation servers."""
+    from translator.web.routes.servers_rt import _scan_cache, _scanning
+    return jsonify({
+        "servers":  _scan_cache,
+        "scanning": _scanning,
+        "count":    len(_scan_cache),
+    })
+
+
+@bp.route("/servers/scan", methods=["POST"])
+def servers_scan():
+    """Trigger a background LAN scan."""
+    from translator.web.routes.servers_rt import trigger_scan
+    return trigger_scan()

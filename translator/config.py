@@ -19,14 +19,15 @@ _CONFIG_FILE  = _PROJECT_ROOT / "config.yaml"
 @dataclass
 class PathsConfig:
     model_cache_dir:    Path
-    mods_dir:           Path
-    backup_dir:         Path
-    bsarch_exe:         Path
-    temp_dir:           Path
     nexus_cache:        Path
     translation_cache:  Path
     skyrim_terms:       Path
     log_file:           Path
+    # These are only needed for the full translation pipeline (not the server)
+    mods_dir:           Optional[Path] = None
+    backup_dir:         Optional[Path] = None
+    bsarch_exe:         Optional[Path] = None
+    temp_dir:           Optional[Path] = None
 
 
 @dataclass
@@ -69,6 +70,8 @@ class EnsembleConfig:
     model_b_lite:          Optional[ModelConfig] # lite model (14B) for short strings
     use_translation_cache: bool = True
     adaptive_threshold:    int  = 200            # chars; below → lite, above → full
+    # "llamacpp" (default/Windows/Linux) | "mlx" (macOS Apple Silicon)
+    backend_type:          str  = "llamacpp"
     # kept for backward compat but unused in llama-cpp path
     model_a:               Optional[ModelConfig] = None
     consensus:             Optional[ConsensusConfig] = None
@@ -102,6 +105,16 @@ class LoggingConfig:
 
 
 @dataclass
+class RemoteConfig:
+    mode:            str   = "local"  # "local" | "remote" | "auto"
+    server_url:      str   = ""       # explicit URL, e.g. "http://192.168.1.10:8765"
+    timeout_sec:     float = 30.0
+    scan_on_startup: bool  = False
+    mdns_enabled:    bool  = True
+    port:            int   = 8765     # default port for server + TCP fallback scan
+
+
+@dataclass
 class TranslatorConfig:
     paths:       PathsConfig
     nexus:       NexusConfig
@@ -109,6 +122,7 @@ class TranslatorConfig:
     context:     ContextConfig
     translation: TranslationConfig
     logging:     LoggingConfig
+    remote:      RemoteConfig = field(default_factory=RemoteConfig)
 
 
 # ── Loader ────────────────────────────────────────────────────────────────────
@@ -158,13 +172,13 @@ def load_config(config_file: Path = _CONFIG_FILE) -> TranslatorConfig:
     p = raw["paths"]
 
     paths = PathsConfig(
-        model_cache_dir   = Path(p["model_cache_dir"]),
-        mods_dir          = Path(p["mods_dir"]),
-        backup_dir        = Path(p["backup_dir"]),
-        bsarch_exe        = Path(p["bsarch_exe"]),
-        temp_dir          = Path(p["temp_dir"]),
+        model_cache_dir   = _resolve(root, p["model_cache_dir"]),
         nexus_cache       = _resolve(root, p["nexus_cache"]),
         translation_cache = _resolve(root, p["translation_cache"]),
+        mods_dir          = Path(p["mods_dir"])   if p.get("mods_dir")   else None,
+        backup_dir        = Path(p["backup_dir"]) if p.get("backup_dir") else None,
+        bsarch_exe        = Path(p["bsarch_exe"]) if p.get("bsarch_exe") else None,
+        temp_dir          = Path(p["temp_dir"])   if p.get("temp_dir")   else None,
         skyrim_terms      = _resolve(root, p["skyrim_terms"]),
         log_file          = _resolve(root, p["log_file"]),
     )
@@ -186,6 +200,7 @@ def load_config(config_file: Path = _CONFIG_FILE) -> TranslatorConfig:
         model_b_lite         = _model_cfg(lite_raw) if lite_raw else None,
         use_translation_cache = ens.get("use_translation_cache", True),
         adaptive_threshold   = ens.get("adaptive_threshold", 200),
+        backend_type         = ens.get("backend_type", "llamacpp"),
         model_a              = _model_cfg(model_a_raw) if model_a_raw else None,
         consensus            = ConsensusConfig(
             similarity_threshold = con_raw.get("similarity_threshold", 0.82),
@@ -221,6 +236,16 @@ def load_config(config_file: Path = _CONFIG_FILE) -> TranslatorConfig:
         backup_count    = lg.get("backup_count", 3),
     )
 
+    rm = raw.get("remote", {})
+    remote_cfg = RemoteConfig(
+        mode            = rm.get("mode", "local"),
+        server_url      = rm.get("server_url", ""),
+        timeout_sec     = rm.get("timeout_sec", 30.0),
+        scan_on_startup = rm.get("scan_on_startup", False),
+        mdns_enabled    = rm.get("mdns_enabled", True),
+        port            = rm.get("port", 8765),
+    )
+
     _config = TranslatorConfig(
         paths       = paths,
         nexus       = nexus,
@@ -228,6 +253,7 @@ def load_config(config_file: Path = _CONFIG_FILE) -> TranslatorConfig:
         context     = context,
         translation = translation,
         logging     = logging_cfg,
+        remote      = remote_cfg,
     )
     return _config
 

@@ -12,7 +12,9 @@ import os
 # Disable CUDA graphs before llama_cpp DLL is loaded — they are broken for
 # recurrent/SSM models on Blackwell (RTX 5080), causing 0.1 tok/s instead of 1+ tok/s.
 # The env var is read as a static once on first inference call inside ggml_cuda_graph::is_enabled().
-os.environ.setdefault("GGML_CUDA_DISABLE_GRAPHS", "1")
+import platform as _platform
+if _platform.system() != "Darwin":
+    os.environ.setdefault("GGML_CUDA_DISABLE_GRAPHS", "1")
 
 from translator.models.base import BaseBackend, ModelState
 from translator.models.loader import resolve_gguf
@@ -37,11 +39,15 @@ class LlamaCppBackend(BaseBackend):
     model_cfg must have: repo_id, local_dir_name, gguf_filename.
     """
 
-    def __init__(self, model_cfg=None):
+    def __init__(self, model_cfg=None, translation_cfg=None):
         super().__init__()
-        cfg = get_config()
-        self._mcfg = model_cfg or cfg.ensemble.model_b
-        self._tcfg = cfg.translation
+        if model_cfg is None or translation_cfg is None:
+            cfg = get_config()
+            self._mcfg = model_cfg or cfg.ensemble.model_b
+            self._tcfg = translation_cfg or cfg.translation
+        else:
+            self._mcfg = model_cfg
+            self._tcfg = translation_cfg
         self._model = None
 
     def load(self) -> None:

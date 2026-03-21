@@ -1,17 +1,27 @@
 """
 Model loader — resolves model paths:
-  1. D:/DevSpace/AI/<local_dir_name>/   (pre-downloaded)
-  2. HuggingFace hub cache              (already cached by HF)
-  3. Download from HF hub → local_dir   (first run)
+  1. <local_dir_name>/<gguf_filename>   (absolute path — used by standalone server)
+  2. model_cache_dir/<local_dir_name>/  (pre-downloaded via config)
+  3. HuggingFace hub cache              (already cached by HF)
+  4. Download from HF hub → local_dir   (first run)
 """
 
 from __future__ import annotations
 import logging
 from pathlib import Path
 
-from translator.config import get_config
-
 log = logging.getLogger(__name__)
+
+
+def default_model_cache_dir() -> Path:
+    """
+    Return the default model cache directory: <project_root>/models/
+    Used when no config.yaml is present (standalone server mode).
+    Models stay inside the project folder, never polluting system storage.
+    """
+    # loader.py is at translator/models/loader.py → project root is two levels up
+    project_root = Path(__file__).parent.parent.parent
+    return project_root / "models"
 
 
 def _has_model_files(path: Path) -> bool:
@@ -21,13 +31,22 @@ def _has_model_files(path: Path) -> bool:
     return (path / "config.json").exists() or any(path.glob("*.safetensors"))
 
 
+def _get_model_cache_dir() -> Path:
+    """Return model_cache_dir from config if loaded, else platform default."""
+    try:
+        from translator.config import get_config
+        cfg = get_config()
+        return cfg.paths.model_cache_dir
+    except Exception:
+        return default_model_cache_dir()
+
+
 def resolve(repo_id: str, local_dir_name: str) -> str:
     """
     Return a path string suitable for from_pretrained().
     Checks local model_cache_dir first, then HF hub, then downloads.
     """
-    cfg = get_config()
-    cache_root = cfg.paths.model_cache_dir
+    cache_root = _get_model_cache_dir()
 
     # 1. Local pre-downloaded
     local = cache_root / local_dir_name
@@ -66,13 +85,29 @@ def resolve(repo_id: str, local_dir_name: str) -> str:
 def resolve_gguf(repo_id: str, local_dir_name: str, gguf_filename: str) -> str:
     """
     Return absolute path to a .gguf file (first shard if split).
-    Checks model_cache_dir/<local_dir_name>/<gguf_filename> first.
-    If missing, downloads all shards of the same quantization from HF hub.
+
+    Resolution order:
+      1. If local_dir_name is an absolute path and the file exists → return directly
+         (used by standalone server launched with --model-path)
+      2. model_cache_dir/<local_dir_name>/<gguf_filename>  (config or platform default)
+      3. Download from HF hub if missing
+
     llama-cpp-python auto-discovers additional shards from the same directory.
     """
     import re
-    cfg = get_config()
-    local_dir = cfg.paths.model_cache_dir / local_dir_name
+
+    # Fast path: absolute local_dir means caller provided a full path
+    _dir = Path(local_dir_name)
+    if _dir.is_absolute():
+        first_shard = _dir / gguf_filename
+        if first_shard.exists():
+            log.info("Using model at absolute path: %s", first_shard)
+            return str(first_shard)
+        # Absolute dir given but file missing — download into that dir
+        local_dir = _dir
+    else:
+        local_dir = _get_model_cache_dir() / local_dir_name
+
     first_shard = local_dir / gguf_filename
 
     if first_shard.exists():

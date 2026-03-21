@@ -6,7 +6,7 @@
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 paths:
-  model_cache_dir:  "D:/DevSpace/AI"
+  model_cache_dir:  "models"          # relative to project root; models/ is gitignored
   mods_dir:         "H:/Nolvus/Instances/Nolvus Awakening/MODS/mods"
   backup_dir:       "H:/Nolvus/Instances/Nolvus Awakening/MODS/mods_backup"
   bsarch_exe:       "H:/Nolvus/Instances/Nolvus Awakening/TOOLS/BSArch/BSArch.exe"
@@ -100,3 +100,17 @@ logging:
   log_to_console: true
   max_log_size_mb: 10
   backup_count:   3
+
+# ── Remote Translation ─────────────────────────────────────────────────────────
+remote:
+  # mode: local | remote | auto
+  #   local  — always use local GGUF models (default)
+  #   remote — always use a remote Skylator server (requires server_url)
+  #   auto   — try remote first (if discovered via LAN), fall back to local
+  mode:            "local"
+  server_url:      ""         # leave blank for auto-discovery, or set explicit URL
+                              # e.g. "http://192.168.1.10:8765"
+  timeout_sec:     30.0
+  scan_on_startup: false      # run LAN scan automatically when web UI starts
+  mdns_enabled:    true       # announce/discover via mDNS (requires zeroconf)
+  port:            8765       # default port for the translation server

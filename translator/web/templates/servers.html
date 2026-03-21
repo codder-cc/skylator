@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+{% block title %}Servers — Nolvus Translator{% endblock %}
+{% block page_title %}<i class="bi bi-wifi me-2 text-accent"></i>Translation Servers{% endblock %}
+
+{% block content %}
+<div class="row g-3 mb-4">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <span><i class="bi bi-broadcast me-2 text-accent"></i>LAN Discovery</span>
+        <div class="d-flex gap-2 align-items-center">
+          <span id="scan-status" class="badge {% if is_scanning %}bg-warning text-dark{% else %}bg-secondary{% endif %}">
+            {% if is_scanning %}Scanning...{% else %}Idle{% endif %}
+          </span>
+          <button class="btn btn-sm btn-primary" onclick="scanLan()" id="scan-btn"
+                  {% if is_scanning %}disabled{% endif %}>
+            <i class="bi bi-radar me-1"></i>Scan LAN
+          </button>
+        </div>
+      </div>
+      <div class="card-body">
+        <p class="text-muted mb-3">
+          Discovers Skylator translation servers on your local network via
+          mDNS (<code>_skylator._tcp</code>) and TCP port scan
+          (port <strong>{{ cfg.remote.port if cfg else 8765 }}</strong>).
+          Servers must be running <code>server.py</code> (or <code>python -m translator.remote</code>).
+        </p>
+
+        {% if cfg and cfg.remote %}
+        <div class="mb-3">
+          <span class="me-2 text-muted" style="font-size:13px">Current mode:</span>
+          <span class="badge {% if cfg.remote.mode == 'local' %}bg-secondary{% elif cfg.remote.mode == 'remote' %}bg-primary{% else %}bg-warning text-dark{% endif %}">
+            {{ cfg.remote.mode | upper }}
+          </span>
+          {% if cfg.remote.server_url %}
+          <span class="text-muted ms-2" style="font-size:12px">
+            <i class="bi bi-link-45deg"></i> {{ cfg.remote.server_url }}
+          </span>
+          {% endif %}
+        </div>
+        {% endif %}
+
+        <div id="servers-list">
+          {% if servers %}
+            {% for s in servers %}
+            <div class="d-flex align-items-center justify-content-between border border-secondary rounded p-3 mb-2">
+              <div>
+                <div class="fw-semibold">
+                  <i class="bi bi-hdd-network me-1 text-accent"></i>{{ s.host }}:{{ s.port }}
+                </div>
+                <div class="text-muted mt-1" style="font-size:11px">
+                  <span class="me-3"><i class="bi bi-display me-1"></i>{{ s.platform }}</span>
+                  <span class="me-3"><i class="bi bi-cpu me-1"></i>{{ s.model_name }}</span>
+                  <a href="{{ s.url }}/health" target="_blank" class="text-muted">
+                    <i class="bi bi-link-45deg"></i>{{ s.url }}
+                  </a>
+                </div>
+              </div>
+              <div class="d-flex gap-2">
+                <button class="btn btn-sm btn-outline-secondary"
+                        onclick="testServer('{{ s.url }}')">
+                  <i class="bi bi-plug me-1"></i>Test
+                </button>
+                <button class="btn btn-sm btn-outline-primary"
+                        onclick="copyUrl('{{ s.url }}')">
+                  <i class="bi bi-clipboard me-1"></i>Copy URL
+                </button>
+              </div>
+            </div>
+            {% endfor %}
+          {% else %}
+          <div class="text-center text-muted py-5" id="no-servers-msg">
+            <i class="bi bi-wifi-off d-block mb-2" style="font-size:2rem"></i>
+            No servers found — click <strong>Scan LAN</strong> to discover servers.
+          </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header">
+        <i class="bi bi-info-circle me-2 text-accent"></i>How to start a server
+      </div>
+      <div class="card-body">
+        <p class="text-muted mb-2">Run on the machine with the GPU (Mac or Windows):</p>
+        <pre class="bg-body-secondary rounded p-3" style="font-size:12px">python server.py --host 0.0.0.0 --port 8765
+
+# Override model path:
+python server.py --model-path /path/to/model.gguf
+
+# Disable mDNS (use TCP scan only):
+python server.py --no-mdns
+
+# CPU only (no GPU):
+python server.py --gpu-layers 0</pre>
+        <p class="text-muted mb-2 mt-3">Then in <code>config.yaml</code> set the translation mode:</p>
+        <pre class="bg-body-secondary rounded p-3" style="font-size:12px">remote:
+  mode: remote            # always use remote server
+  server_url: "http://192.168.1.x:8765"
+
+# or auto-discover:
+remote:
+  mode: auto              # try LAN first, fall back to local</pre>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function scanLan() {
+  document.getElementById('scan-btn').disabled = true;
+  document.getElementById('scan-status').textContent = 'Scanning...';
+  document.getElementById('scan-status').className = 'badge bg-warning text-dark';
+  toast('LAN scan started — this may take a few seconds', 'info');
+
+  try {
+    await fetch('/api/servers/scan', {method: 'POST'});
+  } catch(e) {
+    toast('Failed to start scan: ' + e.message, 'danger');
+    document.getElementById('scan-btn').disabled = false;
+    return;
+  }
+
+  const poll = setInterval(async () => {
+    try {
+      const r = await fetch('/api/servers');
+      const d = await r.json();
+      if (!d.scanning) {
+        clearInterval(poll);
+        document.getElementById('scan-btn').disabled = false;
+        document.getElementById('scan-status').textContent = 'Done';
+        document.getElementById('scan-status').className = 'badge bg-success';
+        renderServers(d.servers);
+        toast(
+          d.count > 0 ? `Found ${d.count} server(s)` : 'No servers found',
+          d.count > 0 ? 'success' : 'warning'
+        );
+      }
+    } catch(e) {
+      clearInterval(poll);
+      document.getElementById('scan-btn').disabled = false;
+    }
+  }, 1000);
+}
+
+function renderServers(servers) {
+  const el = document.getElementById('servers-list');
+  if (!servers || !servers.length) {
+    el.innerHTML = `<div class="text-center text-muted py-5">
+      <i class="bi bi-wifi-off d-block mb-2" style="font-size:2rem"></i>
+      No servers found on LAN.
+    </div>`;
+    return;
+  }
+  el.innerHTML = servers.map(s => `
+    <div class="d-flex align-items-center justify-content-between border border-secondary rounded p-3 mb-2">
+      <div>
+        <div class="fw-semibold">
+          <i class="bi bi-hdd-network me-1 text-accent"></i>${s.host}:${s.port}
+        </div>
+        <div class="text-muted mt-1" style="font-size:11px">
+          <span class="me-3"><i class="bi bi-display me-1"></i>${s.platform}</span>
+          <span class="me-3"><i class="bi bi-cpu me-1"></i>${s.model_name}</span>
+          <a href="${s.url}/health" target="_blank" class="text-muted">
+            <i class="bi bi-link-45deg"></i>${s.url}
+          </a>
+        </div>
+      </div>
+      <div class="d-flex gap-2">
+        <button class="btn btn-sm btn-outline-secondary" onclick="testServer('${s.url}')">
+          <i class="bi bi-plug me-1"></i>Test
+        </button>
+        <button class="btn btn-sm btn-outline-primary" onclick="copyUrl('${s.url}')">
+          <i class="bi bi-clipboard me-1"></i>Copy URL
+        </button>
+      </div>
+    </div>`).join('');
+}
+
+async function testServer(url) {
+  toast(`Testing ${url}...`, 'info');
+  try {
+    const r = await fetch(url + '/health', {signal: AbortSignal.timeout(5000)});
+    const d = await r.json();
+    toast(`Server OK — model_loaded: ${d.model_loaded}, queue: ${d.queue_depth}`, 'success');
+  } catch(e) {
+    toast(`Server unreachable: ${e.message}`, 'danger');
+  }
+}
+
+function copyUrl(url) {
+  navigator.clipboard.writeText(url).then(() => {
+    toast(`Copied: ${url}`, 'success');
+  }).catch(() => {
+    toast(`URL: ${url}`, 'info');
+  });
+}
+</script>
+{% endblock %}

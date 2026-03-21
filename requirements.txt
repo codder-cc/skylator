@@ -23,6 +23,14 @@ requests>=2.32.0
 # ── Web UI ─────────────────────────────────────────────────────────────────────
 flask>=3.0.0              # Web framework for the UI
 
+# ── macOS Apple Silicon backend (alternative to llama-cpp for Qwen3.5) ────────
+# mlx-lm           # install via: pip install mlx-lm  (macOS only)
+
+# ── Remote translation server (install when running server.py) ─────────────────
+fastapi>=0.115.0          # High-performance async API framework for the translation server
+uvicorn[standard]>=0.30.0 # ASGI server (httptools + websockets)
+pydantic>=2.0.0           # Request/response models for FastAPI
+zeroconf>=0.132.0         # mDNS service announcement + LAN discovery
 
 # ── Dev / testing ──────────────────────────────────────────────────────────────
 pytest>=8.3.0

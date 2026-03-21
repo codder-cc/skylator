@@ -356,6 +356,13 @@ def translate_one_string(mod_name: str):
         if gd:
             existing = gd.get(original)
             if existing:
+                from scripts.esp_engine import strip_echo
+                cleaned = strip_echo(existing)
+                if cleaned != existing:
+                    log.info("[translate-one] %s | global dict: cleaned echo from cached value", key_str)
+                    gd.add(original, cleaned)
+                    gd.save()
+                    existing = cleaned
                 xlogs.append(f"source: global dict hit")
                 log.info("[translate-one] %s | global dict hit → %s", key_str, existing[:80])
                 from translator.web.workers import save_translation

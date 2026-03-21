@@ -3,11 +3,30 @@ Background worker functions — called from job threads.
 These wrap the existing CLI logic and report progress via Job.
 """
 from __future__ import annotations
+import json
 import logging
 import sys
+import threading
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+# Lock for concurrent reads/writes to translation_cache.json
+_CACHE_LOCK = threading.Lock()
+
+
+def _save_single_to_cache(cache_path: Path, esp_name: str,
+                          key_str: str, translation: str) -> None:
+    """Thread-safe write of a single translation entry to the cache file."""
+    with _CACHE_LOCK:
+        cache = (json.loads(cache_path.read_text(encoding="utf-8"))
+                 if cache_path.exists() else {})
+        esp_stem = Path(esp_name).stem
+        cache.setdefault(esp_stem, {})[key_str] = translation
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
 
 def translate_mod_worker(job, cfg, mod_name: str,
@@ -506,3 +525,72 @@ def validate_translations_worker(job, cfg, mod_name: str):
         log.info("Validation results saved to %s", out_path.name)
     except Exception as exc:
         log.warning("Could not save validation results: %s", exc)
+
+
+def translate_strings_worker(job, cfg, mod_name: str,
+                             keys: list | None = None):
+    """
+    Translate strings for a mod with real-time per-string SSE updates.
+    Processes strings in chunks of 10 for efficient batching.
+    keys: if provided, translate only those specific cache key strings
+          (supports per-row re-translate from the strings editor).
+    """
+    from translator.web.job_manager import JobManager
+    from translator.web.mod_scanner import ModScanner
+    from scripts.esp_engine import translate_batch, quality_score
+    from translator.context.builder import ContextBuilder
+
+    jm      = JobManager.get()
+    scanner = ModScanner(cfg.paths.mods_dir, cfg.paths.translation_cache,
+                         cfg.paths.nexus_cache)
+    strings = scanner.get_mod_strings(mod_name)
+
+    if keys:
+        key_set = set(keys)
+        strings = [s for s in strings if s["key"] in key_set]
+    else:
+        # Only untranslated, non-localized strings
+        strings = [s for s in strings
+                   if not s["translation"]
+                   and not s["original"].startswith("[LOC:")]
+
+    total = len(strings)
+    if total == 0:
+        job.result = "No strings to translate"
+        return
+
+    jm.update_progress(job, 0, total, f"Building context for {mod_name}...")
+    mod_folder = cfg.paths.mods_dir / mod_name
+    context = ContextBuilder().get_mod_context(mod_folder, force=False)
+
+    CHUNK = 10
+    done  = 0
+    for chunk_start in range(0, total, CHUNK):
+        if job.status.value == "cancelled":
+            break
+        chunk    = strings[chunk_start:chunk_start + CHUNK]
+        end_idx  = min(done + CHUNK, total)
+        originals = [s["original"] for s in chunk]
+
+        jm.update_progress(job, done, total,
+                           f"Translating {done + 1}–{end_idx} / {total}")
+        try:
+            results = translate_batch(originals, context)
+        except Exception as exc:
+            for s in chunk:
+                job.add_log(f"ERROR chunk at {s['key']}: {exc}")
+            done += len(chunk)
+            continue
+
+        for s, translation in zip(chunk, results):
+            done += 1
+            if not translation or translation == s["original"]:
+                continue
+            qs = quality_score(s["original"], translation)
+            _save_single_to_cache(cfg.paths.translation_cache,
+                                  s["esp"], s["key"], translation)
+            jm.add_string_update(job, s["key"], s["esp"],
+                                 translation, "translated", qs)
+
+    jm.update_progress(job, total, total, "Done")
+    job.result = f"Translated strings for {mod_name}"

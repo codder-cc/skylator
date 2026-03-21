@@ -496,7 +496,7 @@ def needs_translation(text: str) -> bool:
     return bool(re.search(r'[a-zA-Z]', text))
 
 
-def _quality_score(original: str, translation: str) -> int:
+def quality_score(original: str, translation: str) -> int:
     """
     Heuristic quality score 0–100 for a translation.
     Used to flag potentially bad translations in the strings editor.
@@ -580,7 +580,7 @@ def translate_strings(strings: list, progress_path: Path = None, context: str = 
     # Add quality scores to all translated strings
     for s in strings:
         if s.get('translation'):
-            s['quality_score'] = _quality_score(s['text'], s['translation'])
+            s['quality_score'] = quality_score(s['text'], s['translation'])
 
     if progress_path:
         progress_path.write_text(

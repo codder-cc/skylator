@@ -46,11 +46,13 @@ class Job:
     finished_at: Optional[float]     = None
     result:      Optional[str]       = None
     error:       Optional[str]       = None
-    log_lines:   list[str]           = field(default_factory=list)
+    log_lines:      list[str]           = field(default_factory=list)
+    string_updates: list[dict]          = field(default_factory=list)
 
     def __post_init__(self):
         self._timing: list[float] = []       # timestamps of progress updates (for ETA)
         self._timing_counts: list[int] = []  # progress counts at each timestamp
+        self._string_update_cursor: int = 0  # tracks how many string_updates have been broadcast
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -182,11 +184,16 @@ class JobManager:
         """Publish job state to SSE subscribers.
         Progress events omit log_lines (reduces SSE payload from ~50 KB to ~1 KB).
         Terminal events (done/failed/cancelled) always include full logs.
+        new_string_updates contains only entries added since the last broadcast.
         """
         terminal = job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED)
         d = job.to_dict()
         if not terminal and not include_logs:
             d["log_lines"] = []   # strip logs from in-flight progress events
+        # Send only new string updates since last broadcast (avoids re-sending full list)
+        cursor = job._string_update_cursor
+        d["new_string_updates"] = job.string_updates[cursor:]
+        job._string_update_cursor = len(job.string_updates)
         data = json.dumps(d)
         with self._sse_lock:
             for q in list(self._sse.get(job.id, [])):
@@ -230,6 +237,21 @@ class JobManager:
             self._persist()
             self._queue.task_done()
 
+    def add_string_update(self, job: Job, key: str, esp: str,
+                          translation: str, status: str,
+                          quality_score: int | None = None):
+        """Append a per-string translation result and broadcast via SSE."""
+        job.string_updates.append({
+            "key":           key,
+            "esp":           esp,
+            "translation":   translation,
+            "status":        status,
+            "quality_score": quality_score,
+        })
+        if len(job.string_updates) > 10000:
+            job.string_updates = job.string_updates[-10000:]
+        self._notify(job)
+
     def update_progress(self, job: Job, current: int, total: int,
                         message: str = "", sub_step: str = ""):
         prev_msg = job.progress.message
@@ -270,9 +292,10 @@ class JobManager:
             data: dict = {}
             for j in all_jobs:
                 d = j.to_dict()
-                # Strip log_lines from old finished jobs to keep the file small
+                # Strip bulky lists from old finished jobs to keep the file small
                 if (j.finished_at or j.created_at) < cutoff:
-                    d["log_lines"] = []
+                    d["log_lines"]      = []
+                    d["string_updates"] = []
                 data[j.id] = d
 
             self._persist_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -286,17 +309,18 @@ class JobManager:
             data = json.loads(self._persist_path.read_text(encoding="utf-8"))
             for jid, d in data.items():
                 j = Job(
-                    id          = d["id"],
-                    name        = d["name"],
-                    job_type    = d.get("job_type", "unknown"),
-                    params      = d.get("params", {}),
-                    status      = JobStatus(d.get("status", "done")),
-                    created_at  = d.get("created_at", 0),
-                    started_at  = d.get("started_at"),
-                    finished_at = d.get("finished_at"),
-                    result      = d.get("result"),
-                    error       = d.get("error"),
-                    log_lines   = d.get("log_lines", []),
+                    id             = d["id"],
+                    name           = d["name"],
+                    job_type       = d.get("job_type", "unknown"),
+                    params         = d.get("params", {}),
+                    status         = JobStatus(d.get("status", "done")),
+                    created_at     = d.get("created_at", 0),
+                    started_at     = d.get("started_at"),
+                    finished_at    = d.get("finished_at"),
+                    result         = d.get("result"),
+                    error          = d.get("error"),
+                    log_lines      = d.get("log_lines", []),
+                    string_updates = d.get("string_updates", []),
                 )
                 p = d.get("progress", {})
                 j.progress = JobProgress(

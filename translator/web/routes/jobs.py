@@ -116,6 +116,9 @@ def create_job():
         job = _create_apply_mod_job(jm, cfg, mod_names[0], options)
     elif job_type == "translate_bsa" and mod_names:
         job = _create_translate_bsa_job(jm, cfg, mod_names[0], options)
+    elif job_type == "translate_strings" and mod_names:
+        keys = data.get("keys")   # optional list of specific cache key strings
+        job  = _create_translate_strings_job(jm, cfg, mod_names[0], keys)
     else:
         return jsonify({"error": "Unknown job type"}), 400
 
@@ -239,6 +242,25 @@ def _create_translate_bsa_job(jm, cfg, mod_name: str, options: dict):
         name     = f"BSA/SWF: {mod_name}",
         job_type = "translate_bsa",
         params   = {"mod_name": mod_name, "dry_run": dry_run},
+        fn       = run,
+    )
+
+
+def _create_translate_strings_job(jm, cfg, mod_name: str, keys: list | None = None):
+    def run(job):
+        from translator.web.workers import translate_strings_worker
+        translate_strings_worker(job, cfg, mod_name, keys=keys)
+
+    if keys:
+        n = len(keys)
+        label = f"Translate {n} string{'s' if n != 1 else ''}: {mod_name}"
+    else:
+        label = f"Translate Strings: {mod_name}"
+
+    return jm.create(
+        name     = label,
+        job_type = "translate_strings",
+        params   = {"mod_name": mod_name, "keys": keys},
         fn       = run,
     )
 

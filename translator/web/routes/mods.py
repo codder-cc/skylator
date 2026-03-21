@@ -83,6 +83,9 @@ def mod_detail(mod_name: str):
     )
 
 
+_STRINGS_LOAD_ALL_THRESHOLD = 5000
+
+
 @bp.route("/<path:mod_name>/strings")
 def mod_strings(mod_name: str):
     scanner = current_app.config["SCANNER"]
@@ -90,12 +93,12 @@ def mod_strings(mod_name: str):
     if mod is None:
         abort(404)
 
-    page    = int(request.args.get("page", 1))
-    per_page = int(request.args.get("per", 50))
     filter_status = request.args.get("status", "all")
     search        = request.args.get("q", "")
 
-    strings = scanner.get_mod_strings(mod_name)
+    strings   = scanner.get_mod_strings(mod_name)
+    total_all = len(strings)
+    over_threshold = total_all > _STRINGS_LOAD_ALL_THRESHOLD
 
     if filter_status != "all":
         strings = [s for s in strings if s["status"] == filter_status]
@@ -104,21 +107,35 @@ def mod_strings(mod_name: str):
         strings = [s for s in strings
                    if sq in s["original"].lower() or sq in s["translation"].lower()]
 
-    total  = len(strings)
-    start  = (page - 1) * per_page
-    end    = start + per_page
-    page_strings = strings[start:end]
+    total    = len(strings)
+    load_all = (request.args.get("all", "").lower() in ("1", "true")
+                or not over_threshold)
+
+    if load_all:
+        page_strings = strings
+        page         = 1
+        per_page     = total
+        total_pages  = 1
+    else:
+        page     = int(request.args.get("page", 1))
+        per_page = int(request.args.get("per", 100))
+        start    = (page - 1) * per_page
+        page_strings = strings[start:start + per_page]
+        total_pages  = max(1, (total + per_page - 1) // per_page)
 
     return render_template(
         "strings.html",
-        mod          = mod,
-        strings      = page_strings,
-        total        = total,
-        page         = page,
-        per_page     = per_page,
-        total_pages  = max(1, (total + per_page - 1) // per_page),
-        filter_status = filter_status,
-        search        = search,
+        mod            = mod,
+        strings        = page_strings,
+        total          = total,
+        total_all      = total_all,
+        page           = page,
+        per_page       = per_page,
+        total_pages    = total_pages,
+        filter_status  = filter_status,
+        search         = search,
+        load_all       = load_all,
+        over_threshold = over_threshold,
     )
 
 

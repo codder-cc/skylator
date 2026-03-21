@@ -326,6 +326,39 @@ def tokens_perf():
         return jsonify({"ok": False, "error": str(exc)})
 
 
+@bp.route("/mods/<path:mod_name>/strings/translate-one", methods=["POST"])
+def translate_one_string(mod_name: str):
+    """Synchronously translate a single string via AI.
+    Body: {key, esp, original}
+    Returns: {ok, translation, quality_score}
+    """
+    cfg = current_app.config.get("TRANSLATOR_CFG")
+    if not cfg:
+        return jsonify({"ok": False, "error": "No config"}), 500
+
+    data     = request.get_json() or {}
+    key_str  = data.get("key", "")
+    esp_name = data.get("esp", "")
+    original = data.get("original", "")
+    if not original or original.startswith("[LOC:"):
+        return jsonify({"ok": False, "error": "Cannot translate this string"}), 400
+
+    try:
+        from scripts.esp_engine import translate_batch, quality_score
+        from translator.context.builder import ContextBuilder
+        from translator.web.workers import _save_single_to_cache
+
+        mod_folder = cfg.paths.mods_dir / mod_name
+        context    = ContextBuilder().get_mod_context(mod_folder, force=False)
+        results    = translate_batch([original], context)
+        translated = results[0] if results else original
+        qs         = quality_score(original, translated)
+        _save_single_to_cache(cfg.paths.translation_cache, esp_name, key_str, translated)
+        return jsonify({"ok": True, "translation": translated, "quality_score": qs})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 @bp.route("/remote/config", methods=["POST"])
 def remote_config_set():
     """Save remote.mode and remote.server_url to config.yaml and reload config."""

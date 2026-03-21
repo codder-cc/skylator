@@ -475,6 +475,65 @@ def rewrite_esp(esp_path: Path, trans_map: dict, out_path: Path):
     print(f"Written: {out_path}  ({len(new_data):,} bytes, was {len(data):,})")
 
 
+# ── HTML tag helpers (Skyrim BOOK strings) ────────────────────────────────────
+
+_HTML_TAG_RE = re.compile(r'<[^>]+>')
+
+
+def strip_html_for_ai(texts: list) -> tuple:
+    """
+    Strip HTML/font tags from a list of strings before sending to AI.
+    Returns (plain_texts, templates) where templates[i] is the original
+    full string if it had HTML tags, or None otherwise.
+    plain_texts[i] is the plain text content only.
+    """
+    plain, templates = [], []
+    for t in texts:
+        if _HTML_TAG_RE.search(t):
+            templates.append(t)
+            plain.append(_HTML_TAG_RE.sub('', t).strip())
+        else:
+            templates.append(None)
+            plain.append(t)
+    return plain, templates
+
+
+def reinsert_html(original: str, translated_plain: str) -> str:
+    """
+    Put translated_plain back into the HTML structure of original.
+    All <tag> markup is preserved verbatim; only visible text is replaced.
+    Handles single and multi-segment text nodes.
+    """
+    segments = _HTML_TAG_RE.split(original)   # text nodes
+    tags     = _HTML_TAG_RE.findall(original)  # tag nodes
+
+    # Find text segments that have actual content (non-whitespace)
+    text_seg_idx = [i for i, s in enumerate(segments) if s.strip()]
+
+    if not text_seg_idx:
+        return original  # nothing to replace
+
+    result = list(segments)
+    for j, i in enumerate(text_seg_idx):
+        orig_seg = segments[i]
+        lead  = orig_seg[:len(orig_seg) - len(orig_seg.lstrip())]
+        trail = orig_seg[len(orig_seg.rstrip()):]
+        if j == 0:
+            # Put all translation in first text segment
+            result[i] = lead + translated_plain + trail
+        else:
+            # Clear subsequent text segments but keep surrounding whitespace
+            result[i] = lead + trail
+
+    # Interleave text nodes and tags back
+    parts = []
+    for i, seg in enumerate(result):
+        parts.append(seg)
+        if i < len(tags):
+            parts.append(tags[i])
+    return ''.join(parts)
+
+
 # ── Translation ───────────────────────────────────────────────────────────────
 
 def translate_batch(texts: list, context: str = '', progress_cb=None) -> list:
@@ -491,6 +550,10 @@ def needs_translation(text: str) -> bool:
     if not text or not text.strip():
         return False
     t = text.strip()
+    # For HTML-tagged strings (Skyrim BOOK DESC etc.) check the plain text content
+    if _HTML_TAG_RE.search(t):
+        plain = _HTML_TAG_RE.sub('', t).strip()
+        return needs_translation(plain) if plain else False
     # MCM $KEY tokens — resolved at runtime from MCM txt files, not AI-translatable
     if t.startswith('$'):
         return False
@@ -576,8 +639,9 @@ def translate_strings(strings: list, progress_path: Path = None, context: str = 
              len(to_do), len(strings), len(to_do) - len(uncached))
 
     if uncached:
-        texts = [s['text'] for _, s in uncached]
-        log.info("Sending %d strings to pipeline (model loads once)...", len(texts))
+        texts_full = [s['text'] for _, s in uncached]
+        plain_texts, html_templates = strip_html_for_ai(texts_full)
+        log.info("Sending %d strings to pipeline (model loads once)...", len(plain_texts))
         cached_count = len(to_do) - len(uncached)
         total_todo   = len(to_do)
 
@@ -585,8 +649,10 @@ def translate_strings(strings: list, progress_path: Path = None, context: str = 
             if progress_cb:
                 progress_cb(cached_count + batch_done, total_todo)
 
-        translated = translate_batch(texts, context, progress_cb=_inner_cb)
-        for (i, s), t in zip(uncached, translated):
+        translated = translate_batch(plain_texts, context, progress_cb=_inner_cb)
+        for (i, s), plain, template, t in zip(uncached, plain_texts, html_templates, translated):
+            if template is not None and t and t != plain:
+                t = reinsert_html(template, t)
             done[s['text']] = t
 
     # Apply all translations back

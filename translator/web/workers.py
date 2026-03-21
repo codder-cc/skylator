@@ -723,7 +723,7 @@ def translate_strings_worker(job, cfg, mod_name: str,
     from translator.web.job_manager import JobManager
     from translator.web.mod_scanner import ModScanner
     from translator.web.global_dict import GlobalTextDict
-    from scripts.esp_engine import translate_batch, quality_score
+    from scripts.esp_engine import translate_batch, quality_score, strip_html_for_ai, reinsert_html
     from translator.context.builder import ContextBuilder
 
     jm      = JobManager.get()
@@ -830,20 +830,25 @@ def translate_strings_worker(job, cfg, mod_name: str,
         jm.update_progress(job, done, total,
                            f"Translating {done + 1}–{end_idx} / {total}")
 
+        # Strip HTML tags before AI (Skyrim BOOK DESC strings); restore after
+        plain_originals, html_templates = strip_html_for_ai(originals)
+
         # Enrich context with relevant terms + TM for this chunk
-        chunk_context = enrich_context(context, build_tm_block(tm_pairs, originals), originals)
+        chunk_context = enrich_context(context, build_tm_block(tm_pairs, plain_originals), plain_originals)
         try:
-            results = translate_batch(originals, chunk_context)
+            results = translate_batch(plain_originals, chunk_context)
         except Exception as exc:
             for s in chunk:
                 job.add_log(f"ERROR chunk at {s['key']}: {exc}")
             done += len(chunk)
             continue
 
-        for s, translation in zip(chunk, results):
+        for s, plain_orig, template, translation in zip(chunk, plain_originals, html_templates, results):
             done += 1
-            if not translation or translation == s["original"]:
+            if not translation or translation == plain_orig:
                 continue
+            if template is not None:
+                translation = reinsert_html(template, translation)
             qs = quality_score(s["original"], translation)
             save_translation(cfg.paths.mods_dir, mod_name,
                              cfg.paths.translation_cache,

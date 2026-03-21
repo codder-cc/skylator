@@ -386,10 +386,15 @@ def translate_one_string(mod_name: str):
                 pass
         context = enrich_context(context, build_tm_block(tm_pairs, [original]), [original])
 
-        results    = translate_batch([original], context)
-        translated = results[0] if results else original
-        if not translated or translated == original:
+        from scripts.esp_engine import strip_html_for_ai, reinsert_html
+        plain_list, templates = strip_html_for_ai([original])
+        plain_original = plain_list[0]
+        results    = translate_batch(plain_list, context)
+        translated = results[0] if results else plain_original
+        if not translated or translated == plain_original:
             return jsonify({"ok": False, "error": "Translation failed — server returned original text unchanged"}), 500
+        if templates[0] is not None:
+            translated = reinsert_html(templates[0], translated)
         qs         = quality_score(original, translated)
         save_translation(cfg.paths.mods_dir, mod_name,
                          cfg.paths.translation_cache,

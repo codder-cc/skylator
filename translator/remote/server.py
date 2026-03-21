@@ -105,7 +105,14 @@ def _register_mdns(host: str, port: int, state: ServerState) -> None:
         from zeroconf import ServiceInfo, Zeroconf
 
         if not host:
-            host = socket.gethostbyname(socket.gethostname())
+            # gethostbyname may return 127.0.0.1 — use UDP trick to get LAN IP
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                host = s.getsockname()[0]
+                s.close()
+            except Exception:
+                host = socket.gethostbyname(socket.gethostname())
 
         properties = {
             b"platform": platform.system().lower().encode(),
@@ -125,7 +132,7 @@ def _register_mdns(host: str, port: int, state: ServerState) -> None:
     except ImportError:
         log.warning("zeroconf not installed — mDNS announcement disabled")
     except Exception as exc:
-        log.warning("mDNS registration failed: %s", exc)
+        log.warning("mDNS registration failed: %s", exc or type(exc).__name__)
 
 
 def _unregister_mdns() -> None:

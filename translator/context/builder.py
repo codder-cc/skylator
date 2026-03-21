@@ -36,16 +36,49 @@ class ContextBuilder:
 
     def get_mod_context(self, mod_folder: Path) -> str:
         """
-        Return a short description of the mod from Nexus (cached).
+        Return a short description of the mod from Nexus (cached in memory + disk).
         Returns "" if unavailable.
         """
         if mod_folder in self._mod_desc_cache:
             return self._mod_desc_cache[mod_folder]
 
+        # Check disk cache first — survives restarts
+        cached = self._load_summary_cache(mod_folder)
+        if cached is not None:
+            self._mod_desc_cache[mod_folder] = cached
+            return cached
+
         raw = self._fetcher.fetch_mod_description(mod_folder)
         summary = self._summarizer.summarize(raw or "")
         self._mod_desc_cache[mod_folder] = summary
+
+        # Persist to disk so it survives restarts
+        if summary:
+            self._save_summary_cache(mod_folder, summary)
+
         return summary
+
+    def _summary_cache_path(self, mod_folder: Path) -> Path:
+        cfg = get_config()
+        return cfg.paths.nexus_cache / f"{mod_folder.name}_ctx.txt"
+
+    def _load_summary_cache(self, mod_folder: Path) -> str | None:
+        try:
+            p = self._summary_cache_path(mod_folder)
+            if p.exists():
+                return p.read_text(encoding="utf-8")
+        except Exception:
+            pass
+        return None
+
+    def _save_summary_cache(self, mod_folder: Path, summary: str) -> None:
+        try:
+            p = self._summary_cache_path(mod_folder)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(summary, encoding="utf-8")
+            log.debug("Saved context summary cache: %s", p.name)
+        except Exception as exc:
+            log.warning("Could not save context summary: %s", exc)
 
     # ── ESP record-level ──────────────────────────────────────────────────────
 

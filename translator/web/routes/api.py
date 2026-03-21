@@ -359,6 +359,7 @@ def translate_one_string(mod_name: str):
                                 "quality_score": None, "from_dict": True})
 
     try:
+        from pathlib import Path
         from scripts.esp_engine import translate_batch, quality_score
         from translator.context.builder import ContextBuilder
         from translator.prompt.builder import build_tm_block, enrich_context

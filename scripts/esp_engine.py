@@ -514,10 +514,27 @@ def prepare_for_ai(texts: list) -> tuple:
     return ai_texts, metadata
 
 
+def _strip_echo(text: str) -> str:
+    """Remove 'source → translation' echo that some models output.
+    Keeps only the right-hand side when it contains predominantly Cyrillic text."""
+    if ' → ' not in text:
+        return text
+    left, _, right = text.rpartition(' → ')
+    right = right.strip()
+    if not right:
+        return text
+    cyrillic = sum(1 for c in right if '\u0400' <= c <= '\u04ff')
+    if cyrillic > len(right) * 0.15:
+        log.debug("restore_from_ai: stripped source echo, kept: %s", right[:80])
+        return right
+    return text
+
+
 def restore_from_ai(translations: list, metadata: list) -> list:
     """Reverse prepare_for_ai: unmask {T0},{T1}... then reinsert format structure."""
     result = []
     for trans, meta in zip(translations, metadata):
+        trans = _strip_echo(trans)
         for i, tok in enumerate(meta["tokens"]):
             placeholder = f'{{T{i}}}'
             if placeholder not in trans:

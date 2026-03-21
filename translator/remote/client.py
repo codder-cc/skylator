@@ -117,6 +117,72 @@ class TranslationClient:
 
             time.sleep(interval)
 
+    def poll_job_liveness(
+        self,
+        job_id: str,
+        liveness_timeout: float = 45.0,
+        absolute_timeout: float = 600.0,
+        progress_cb: Optional[Callable[[dict], None]] = None,
+        interval: float = 2.0,
+    ) -> dict:
+        """
+        Heartbeat-based polling: timeout resets as long as the server responds.
+
+        Unlike poll_job(), this does NOT use a fixed deadline from the start.
+        Instead, `liveness_timeout` is the max silence period — if the server
+        stops responding for that long, it's considered a failure.
+
+        Args:
+            job_id:           Job identifier returned by submit_*.
+            liveness_timeout: Fail if server silent (no HTTP response) for this
+                              many seconds. Default 45s.
+            absolute_timeout: Hard cap regardless of liveness. Default 600s.
+            progress_cb:      Optional callback with job dict on each successful poll.
+            interval:         Seconds between polls.
+
+        Returns:
+            Final job dict (status "done" or "error").
+
+        Raises:
+            TimeoutError: if server silent for liveness_timeout, or absolute cap hit.
+        """
+        absolute_deadline   = time.monotonic() + absolute_timeout
+        last_response_at    = time.monotonic()
+        poll_request_timeout = min(interval * 4, 15.0)
+
+        while True:
+            try:
+                job = self._get(f"/jobs/{job_id}", timeout=poll_request_timeout)
+                last_response_at = time.monotonic()   # server responded — alive
+
+                if progress_cb is not None:
+                    try:
+                        progress_cb(job)
+                    except Exception:
+                        pass
+
+                if job.get("status") in ("done", "error"):
+                    return job
+
+            except Exception as exc:
+                silent_for = time.monotonic() - last_response_at
+                if silent_for >= liveness_timeout:
+                    raise TimeoutError(
+                        f"Remote server silent for {silent_for:.0f}s on job {job_id} "
+                        f"(last error: {exc})"
+                    ) from exc
+                log.debug(
+                    "Poll attempt failed (%.0fs silent): %s",
+                    silent_for, exc,
+                )
+
+            if time.monotonic() >= absolute_deadline:
+                raise TimeoutError(
+                    f"Job {job_id} exceeded absolute timeout of {absolute_timeout:.0f}s"
+                )
+
+            time.sleep(interval)
+
     # ── Backward-compatible blocking API ─────────────────────────────────
 
     def translate(

@@ -125,12 +125,15 @@ def mod_context_api(mod_name: str):
         context = ContextBuilder().get_mod_context(folder, force=False)
         return jsonify({"ok": True, "context": context or "", "from_cache": True})
 
-    # Force regeneration — run in thread so Flask isn't blocked
+    # Force regeneration — run in thread so Flask isn't blocked.
+    # The summarizer uses heartbeat-based polling and will only fail if the
+    # remote server goes silent — the outer timeout is just a safety backstop.
     def _regenerate():
         from translator.context.builder import ContextBuilder
         return ContextBuilder().get_mod_context(folder, force=True)
 
-    wait_sec = min(max(getattr(cfg.remote, "timeout_sec", 30.0) + 30, 60), 150)
+    # 660s = 10 min absolute cap (poll_job_liveness) + 60s buffer
+    wait_sec = 660
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             context = pool.submit(_regenerate).result(timeout=wait_sec)
@@ -138,9 +141,7 @@ def mod_context_api(mod_name: str):
     except concurrent.futures.TimeoutError:
         return jsonify({
             "ok":    False,
-            "error": f"Generation timed out after {wait_sec:.0f}s — "
-                     "check that the remote server is running, "
-                     "or switch to Local mode in the Servers page.",
+            "error": "Generation timed out — server may be unreachable.",
         }), 504
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500

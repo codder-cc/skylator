@@ -257,8 +257,6 @@ body {
 .string-row-orig {
   color: var(--text-muted);
   font-size: 12px;
-  max-height: 72px;
-  overflow: hidden;
   white-space: pre-wrap;
   word-break: break-word;
 }

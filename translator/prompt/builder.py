@@ -147,6 +147,10 @@ Translate each numbered item from {src} to {tgt}.
 CRITICAL RULES — violating any of these is an error:
 - Translate the COMPLETE text. Do NOT summarize, shorten, paraphrase, or omit any part.
 - Every sentence, clause, list item, and word in the original must appear in the translation.
+- If the original contains N sentences or N items separated by ~ or newlines, \
+the translation MUST also contain exactly N sentences or N items.
+- The ~ character is a Skyrim UI line-separator/bullet. Preserve every ~ exactly where it \
+appears — translate the word or phrase after each ~ just like any other text.
 - Translate ALL words including proper nouns, NPC names, item names, ingredient names, and \
 place names — do NOT leave them in English unless they are untranslatable brand tokens.
 - Preserve formatting tokens, variable placeholders (<Alias=...>, %1, [PlayerName]), and \
@@ -215,6 +219,10 @@ Translate each numbered string from {src} to {tgt}.
 CRITICAL RULES — violating any of these is an error:
 - Translate the COMPLETE text. Do NOT summarize, shorten, paraphrase, or omit any part.
 - Every sentence, clause, list item, and word must appear in the translation.
+- If the original contains N sentences or N items separated by ~ or newlines, \
+the translation MUST also contain exactly N sentences or N items.
+- The ~ character is a Skyrim UI line-separator/bullet. Preserve every ~ exactly where it \
+appears — translate the word or phrase after each ~ just like any other text.
 - Translate ALL words including proper nouns, NPC names, item names, ingredient names, and \
 place names — do NOT leave them in English unless they are untranslatable brand tokens.
 - Preserve ALL formatting tokens: <Alias=...>, %1, [PlayerName], \\n, etc.

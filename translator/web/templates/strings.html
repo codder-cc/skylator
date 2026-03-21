@@ -217,12 +217,12 @@
 
           <!-- Original -->
           <td>
-            <div class="string-row-orig" style="max-height:80px;overflow:auto;font-size:13px">
+            <div class="string-row-orig">
               {% if is_loc %}
                 <span class="text-muted fst-italic">{{ s.original }}</span>
                 <span class="badge bg-secondary ms-1" style="font-size:9px">Localized</span>
               {% else %}
-                {{ s.original[:500] }}{% if s.original|length > 500 %}…{% endif %}
+                <span class="orig-display">{{ s.original[:500] | e }}{% if s.original|length > 500 %}…{% endif %}</span>
               {% endif %}
             </div>
           </td>
@@ -232,8 +232,8 @@
               data-translation="{{ s.translation | e }}"
               style="cursor:pointer;min-width:160px">
             {% if s.translation %}
-            <span class="string-row-trans trans-display" style="font-size:13px">
-              {{ s.translation[:500] }}{% if s.translation|length > 500 %}…{% endif %}
+            <span class="string-row-trans trans-display">
+              <span class="trans-plain">{{ s.translation[:500] | e }}{% if s.translation|length > 500 %}…{% endif %}</span>
             </span>
             {% else %}
             <span class="text-muted trans-display" style="font-size:11px">
@@ -353,6 +353,18 @@ function escHtml(s) {
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+function stripTags(s) {
+  return String(s).replace(/<[^>]*>/g, '').trim();
+}
+
+// Auto-sizing for textareas: estimate rows from newlines + wrapped lines
+function calcRows(text, min=3, max=16) {
+  if (!text) return min;
+  const lines = text.split('\n').length;
+  const wrapped = Math.ceil(text.length / 90);
+  return Math.min(max, Math.max(min, lines, wrapped));
+}
+
 // ── Apply a string update to a DOM row ───────────────────────────────────────
 
 function applyUpdate(key, translation, status, qs) {
@@ -366,9 +378,9 @@ function applyUpdate(key, translation, status, qs) {
     if (display) {
       if (translation) {
         display.className = 'string-row-trans trans-display';
-        display.style.fontSize = '13px';
-        display.textContent = translation.length > 500
-          ? translation.slice(0, 500) + '…' : translation;
+        display.style.fontSize = '';
+        const plain = stripTags(translation);
+        display.innerHTML = `<span class="trans-plain">${escHtml(plain.length > 500 ? plain.slice(0,500)+'…' : plain)}</span>`;
       } else {
         display.className = 'text-muted trans-display';
         display.style.fontSize = '11px';
@@ -558,16 +570,20 @@ async function translateAll() {
 
 function enterEdit(cell, key, esp) {
   cell.classList.add('editing');
-  const current = cell.dataset.translation || '';
+  const current  = cell.dataset.translation || '';
+  const original = cell.closest('tr').dataset.original || '';
+  const rows     = calcRows(original);
   cell.innerHTML = `
-    <textarea class="string-edit-area" rows="2" style="width:100%;resize:vertical">${escHtml(current)}</textarea>
+    <textarea class="string-original-area" rows="${rows}" readonly
+              title="Original (read-only)">${escHtml(original)}</textarea>
+    <textarea class="string-edit-area" rows="${rows}">${escHtml(current)}</textarea>
     <div class="mt-1 d-flex gap-1">
       <button class="btn btn-sm btn-primary"
               onclick="saveEdit(this,${JSON.stringify(key)},${JSON.stringify(esp)})">Save</button>
       <button class="btn btn-sm btn-outline-secondary"
               onclick="cancelEdit(this,${JSON.stringify(current)})">Cancel</button>
     </div>`;
-  cell.querySelector('textarea').focus();
+  cell.querySelector('.string-edit-area').focus();
 }
 
 async function saveEdit(btn, key, esp) {
@@ -581,9 +597,10 @@ async function saveEdit(btn, key, esp) {
     cell.classList.remove('editing');
     cell.dataset.translation = text;
     const status = text.trim() ? 'translated' : 'pending';
-    // Rebuild display span
+    // Rebuild display span (strip game HTML tags for clean preview)
+    const plain = stripTags(text);
     cell.innerHTML = text.trim()
-      ? `<span class="string-row-trans trans-display" style="font-size:13px">${escHtml(text.slice(0,500))}${text.length>500?'…':''}</span>`
+      ? `<span class="string-row-trans trans-display"><span class="trans-plain">${escHtml(plain.slice(0,500))}${plain.length>500?'…':''}</span></span>`
       : `<span class="text-muted trans-display" style="font-size:11px"><em>not translated</em></span>`;
     // Update status cell
     const row = cell.closest('tr');
@@ -605,8 +622,9 @@ function cancelEdit(btn, original) {
   const key = cell.closest('tr').dataset.key;
   const esp = cell.closest('tr').dataset.esp;
   cell.dataset.translation = original;
+  const plain = stripTags(original);
   cell.innerHTML = original
-    ? `<span class="string-row-trans trans-display" style="font-size:13px">${escHtml(original.slice(0,500))}${original.length>500?'…':''}</span>`
+    ? `<span class="string-row-trans trans-display"><span class="trans-plain">${escHtml(plain.slice(0,500))}${plain.length>500?'…':''}</span></span>`
     : `<span class="text-muted trans-display" style="font-size:11px"><em>not translated</em></span>`;
   attachEditListener(cell, key, esp);
 }
@@ -619,6 +637,18 @@ function attachEditListener(cell, key, esp) {
     enterEdit(cell, key, esp);
   }, { once: true });
 }
+
+// ── Strip HTML tags from display cells on page load ───────────────────────────
+
+document.querySelectorAll('.orig-display').forEach(el => {
+  const raw = el.textContent;
+  el.textContent = stripTags(raw) || raw;
+});
+
+document.querySelectorAll('.trans-plain').forEach(el => {
+  const raw = el.textContent;
+  el.textContent = stripTags(raw) || raw;
+});
 
 // ── Attach click-to-edit listeners on page load ───────────────────────────────
 

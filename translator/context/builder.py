@@ -34,25 +34,25 @@ class ContextBuilder:
 
     # ── Mod-level ─────────────────────────────────────────────────────────────
 
-    def get_mod_context(self, mod_folder: Path) -> str:
+    def get_mod_context(self, mod_folder: Path, force: bool = False) -> str:
         """
         Return a short description of the mod from Nexus (cached in memory + disk).
+        force=True: bypass all caches and regenerate via LLM, then save new result.
         Returns "" if unavailable.
         """
-        if mod_folder in self._mod_desc_cache:
-            return self._mod_desc_cache[mod_folder]
+        if not force:
+            if mod_folder in self._mod_desc_cache:
+                return self._mod_desc_cache[mod_folder]
+            cached = self._load_summary_cache(mod_folder)
+            if cached is not None:
+                self._mod_desc_cache[mod_folder] = cached
+                return cached
 
-        # Check disk cache first — survives restarts
-        cached = self._load_summary_cache(mod_folder)
-        if cached is not None:
-            self._mod_desc_cache[mod_folder] = cached
-            return cached
-
+        # Force or no cache — run the LLM summarizer
         raw = self._fetcher.fetch_mod_description(mod_folder)
         summary = self._summarizer.summarize(raw or "")
-        self._mod_desc_cache[mod_folder] = summary
 
-        # Persist to disk so it survives restarts
+        self._mod_desc_cache[mod_folder] = summary
         if summary:
             self._save_summary_cache(mod_folder, summary)
 

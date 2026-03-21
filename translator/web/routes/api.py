@@ -101,8 +101,11 @@ def nexus_test():
 
 @bp.route("/mods/<path:mod_name>/context")
 def mod_context_api(mod_name: str):
-    """Return the summarized AI context string for a mod (what gets injected into prompts).
-    Runs in a background thread so Flask is never blocked by LLM/network timeouts.
+    """Return the summarized AI context string for a mod.
+
+    ?force=true  — bypass cache, regenerate via LLM (runs in background thread,
+                   may take up to 150s for a remote 27B model).
+    (no param)   — return disk cache immediately; "" if nothing cached yet.
     """
     import concurrent.futures
     cfg     = current_app.config.get("TRANSLATOR_CFG")
@@ -114,23 +117,29 @@ def mod_context_api(mod_name: str):
         return jsonify({"ok": False, "error": "Mod not found"}), 404
 
     folder = cfg.paths.mods_dir / mod_name
+    force  = request.args.get("force", "").lower() in ("1", "true", "yes")
 
-    def _build():
+    if not force:
+        # Fast path: return disk cache only, no LLM
         from translator.context.builder import ContextBuilder
-        return ContextBuilder().get_mod_context(folder)
+        context = ContextBuilder().get_mod_context(folder, force=False)
+        return jsonify({"ok": True, "context": context or "", "from_cache": True})
 
-    # Cap wait time: remote.timeout_sec + 30s buffer, max 150s
+    # Force regeneration — run in thread so Flask isn't blocked
+    def _regenerate():
+        from translator.context.builder import ContextBuilder
+        return ContextBuilder().get_mod_context(folder, force=True)
+
     wait_sec = min(max(getattr(cfg.remote, "timeout_sec", 30.0) + 30, 60), 150)
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(_build)
-            context = future.result(timeout=wait_sec)
-        return jsonify({"ok": True, "context": context or ""})
+            context = pool.submit(_regenerate).result(timeout=wait_sec)
+        return jsonify({"ok": True, "context": context or "", "from_cache": False})
     except concurrent.futures.TimeoutError:
         return jsonify({
             "ok":    False,
-            "error": f"Context generation timed out after {wait_sec:.0f}s — "
-                     "check that the remote server is running and reachable, "
+            "error": f"Generation timed out after {wait_sec:.0f}s — "
+                     "check that the remote server is running, "
                      "or switch to Local mode in the Servers page.",
         }), 504
     except Exception as exc:

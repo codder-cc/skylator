@@ -451,21 +451,41 @@ async function fetchNexus() {
   }
 }
 
-async function loadContext() {
-  const btn = document.getElementById('btn-summarize');
-  stepBusy(btn);
-  const r = await fetch(`/api/mods/${encodeURIComponent(MOD_NAME)}/context`).then(x => x.json());
-  stepDone(btn, null, r.ok, r.error);
-  const el = document.getElementById('context-content');
+function _renderContext(r, el) {
   if (r.ok && r.context) {
+    const tag = r.from_cache
+      ? `<span class="badge bg-secondary me-2" style="font-size:10px">cached</span>`
+      : `<span class="badge bg-success me-2" style="font-size:10px">generated</span>`;
     el.innerHTML =
-      `<div class="text-muted mb-2" style="font-size:11px">Injected into every prompt for this mod:</div>
+      `<div class="text-muted mb-2" style="font-size:11px">${tag}Injected into every translation prompt for this mod:</div>
        <div class="log-terminal" style="font-size:12px;white-space:pre-wrap">${r.context}</div>`;
   } else if (r.ok) {
-    el.innerHTML = '<div class="text-muted">No context available — fetch Nexus data first.</div>';
+    el.innerHTML = '<div class="text-muted">No cached context — click Generate to create one.</div>';
   } else {
     el.innerHTML = `<div class="text-danger">${r.error}</div>`;
   }
+}
+
+async function loadCachedContext() {
+  // Called on page load / tab open — fast, reads disk cache only, no LLM
+  const el = document.getElementById('context-content');
+  try {
+    const r = await fetch(`/api/mods/${encodeURIComponent(MOD_NAME)}/context`).then(x => x.json());
+    _renderContext(r, el);
+  } catch(e) {
+    // silently ignore on auto-load
+  }
+}
+
+async function loadContext() {
+  // Called by "Generate" button — forces LLM regeneration
+  const btn = document.getElementById('btn-summarize');
+  const el  = document.getElementById('context-content');
+  stepBusy(btn);
+  el.innerHTML = '<div class="text-muted"><span class="spinner-border spinner-border-sm me-2"></span>Generating via AI — this may take up to a minute...</div>';
+  const r = await fetch(`/api/mods/${encodeURIComponent(MOD_NAME)}/context?force=true`).then(x => x.json());
+  stepDone(btn, null, r.ok, r.error);
+  _renderContext(r, el);
 }
 
 async function runStep(step, btn) {
@@ -542,6 +562,19 @@ async function runStep(step, btn) {
 
   toast('Step "' + step + '" — use full pipeline', 'info');
 }
+
+// Auto-load cached context when Nexus tab is first opened
+(function() {
+  let nexusTabLoaded = false;
+  document.querySelectorAll('[href="#tab-nexus"]').forEach(el => {
+    el.addEventListener('shown.bs.tab', () => {
+      if (!nexusTabLoaded) {
+        nexusTabLoaded = true;
+        loadCachedContext();
+      }
+    });
+  });
+})();
 
 // Auto-refresh page when any job for this mod completes.
 // Only reload when a job we saw as running/pending transitions to done/failed.

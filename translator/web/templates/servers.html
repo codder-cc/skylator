@@ -187,11 +187,15 @@ function renderServers(servers) {
 async function testServer(url) {
   toast(`Testing ${url}...`, 'info');
   try {
-    const r = await fetch(url + '/health', {signal: AbortSignal.timeout(5000)});
+    const r = await fetch('/api/servers/test?url=' + encodeURIComponent(url));
     const d = await r.json();
-    toast(`Server OK — model_loaded: ${d.model_loaded}, queue: ${d.queue_depth}`, 'success');
+    if (d.ok) {
+      toast(`Server OK — model_loaded: ${d.model_loaded}, queue: ${d.queue_depth}`, 'success');
+    } else {
+      toast(`Server unreachable: ${d.error}`, 'danger');
+    }
   } catch(e) {
-    toast(`Server unreachable: ${e.message}`, 'danger');
+    toast(`Test failed: ${e.message}`, 'danger');
   }
 }
 

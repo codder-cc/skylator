@@ -192,6 +192,22 @@ def models_status():
     })
 
 
+@bp.route("/servers/test")
+def servers_test():
+    """Proxy a health check to a remote server — avoids browser CORS restrictions."""
+    url = request.args.get("url", "").rstrip("/")
+    if not url:
+        return jsonify({"ok": False, "error": "Missing url parameter"}), 400
+    try:
+        import requests as _requests
+        r = _requests.get(f"{url}/health", timeout=5.0)
+        if r.status_code == 200:
+            return jsonify({"ok": True, **r.json()})
+        return jsonify({"ok": False, "error": f"HTTP {r.status_code}"})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)})
+
+
 @bp.route("/servers")
 def servers():
     """Return last known list of discovered LAN translation servers."""

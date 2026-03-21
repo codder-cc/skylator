@@ -157,15 +157,17 @@ class ModScanner:
                             pass
 
                     for entry in extracted:
-                        key_str = str(entry["key"])
+                        key     = (entry["form_id"], entry["rec_type"],
+                                   entry["field_type"], entry["field_index"])
+                        key_str = str(key)
                         translated = mod_cache.get(key_str, "")
                         status = "translated" if translated else "pending"
                         strings.append({
                             "esp":           esp_path.name,
-                            "form_id":       entry["key"][0],
-                            "rec_type":      entry["key"][1],
-                            "field":         entry["key"][2],
-                            "idx":           entry["key"][3],
+                            "form_id":       entry["form_id"],
+                            "rec_type":      entry["rec_type"],
+                            "field":         entry["field_type"],
+                            "idx":           entry["field_index"],
                             "original":      entry["text"],
                             "translation":   translated,
                             "status":        status,

@@ -145,6 +145,7 @@ def _unregister_mdns() -> None:
 def create_server_app(
     model_cfg=None,
     translation_cfg=None,
+    backend_type: str = "llamacpp",
     mdns_enabled: bool = True,
     mdns_host: str = "",
     mdns_port: int = 8765,
@@ -182,9 +183,11 @@ def create_server_app(
         _state.gpu_label   = _state.detect_gpu()
         _state.model_label = model_cfg.gguf_filename or model_cfg.local_dir_name
 
-        log.info("Loading model: %s", _state.model_label)
-        from translator.models.llamacpp_backend import LlamaCppBackend
-        _state.backend = LlamaCppBackend(model_cfg=model_cfg, translation_cfg=translation_cfg)
+        log.info("Loading model: %s via %s", _state.model_label, backend_type)
+        from types import SimpleNamespace
+        from translator.ensemble.pipeline import EnsemblePipeline
+        ens_cfg = SimpleNamespace(backend_type=backend_type)
+        _state.backend = EnsemblePipeline._make_backend(model_cfg, ens_cfg, translation_cfg)
         _state.backend.load()
         log.info("Model loaded on %s (%s)", platform.system(), _state.gpu_label)
 

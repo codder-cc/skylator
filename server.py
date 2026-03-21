@@ -86,11 +86,13 @@ def main():
                 config_file = candidate
                 break
 
+    backend_type = "llamacpp"
     if config_file and config_file.exists():
         from translator.config import load_config
         cfg             = load_config(config_file)
         model_cfg       = cfg.ensemble.model_b
         translation_cfg = cfg.translation
+        backend_type    = cfg.ensemble.backend_type
         log.info("Config loaded: %s", config_file)
     else:
         log.warning("No config file found — model must be specified via --model-path")
@@ -123,6 +125,7 @@ def main():
     app = create_server_app(
         model_cfg       = model_cfg,
         translation_cfg = translation_cfg,
+        backend_type    = backend_type,
         mdns_enabled    = not args.no_mdns,
         mdns_host       = args.host if args.host != "0.0.0.0" else "",
         mdns_port       = args.port,

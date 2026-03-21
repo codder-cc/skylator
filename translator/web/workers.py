@@ -29,24 +29,34 @@ def _save_single_to_cache(cache_path: Path, esp_name: str,
         )
 
 
-def _update_trans_json(mods_dir: Path, mod_name: str,
+def _upsert_trans_json(mods_dir: Path, mod_name: str,
                        esp_name: str, key_str: str, translation: str,
                        quality_score: int = None, status: str = None) -> None:
-    """Update translation in the .trans.json file if it exists.
-    This is authoritative — mod_scanner reads .trans.json first and the
-    central cache only as a fallback, so we must write here too."""
-    esp_stem    = Path(esp_name).stem
-    trans_json  = mods_dir / mod_name / f"{esp_stem}.trans.json"
+    """.trans.json is the single source of truth for all translations.
+    If the file doesn't exist yet (mod never batch-translated), create it
+    by extracting strings from the ESP first, then insert the translation."""
+    esp_stem   = Path(esp_name).stem
+    trans_json = mods_dir / mod_name / f"{esp_stem}.trans.json"
     if not trans_json.exists():
-        # Also search one level deeper (mods may have sub-folders)
         hits = list((mods_dir / mod_name).rglob(f"{esp_stem}.trans.json"))
         trans_json = hits[0] if hits else None
-    if not trans_json:
-        return
+
     with _CACHE_LOCK:
         try:
-            strings = json.loads(trans_json.read_text(encoding="utf-8"))
-            updated = False
+            if trans_json and trans_json.exists():
+                strings = json.loads(trans_json.read_text(encoding="utf-8"))
+            else:
+                # No .trans.json yet — bootstrap it from the ESP binary
+                esp_candidates = list((mods_dir / mod_name).rglob(f"{esp_stem}.esp"))
+                esp_candidates += list((mods_dir / mod_name).rglob(f"{esp_stem}.esm"))
+                if not esp_candidates:
+                    log.warning("_upsert_trans_json: ESP not found for %s", esp_name)
+                    return
+                from scripts.esp_engine import extract_all_strings
+                strings, _ = extract_all_strings(esp_candidates[0])
+                trans_json  = esp_candidates[0].with_suffix(".trans.json")
+                log.info("_upsert_trans_json: created %s (%d strings)", trans_json.name, len(strings))
+
             for s in strings:
                 k = str((s.get("form_id"), s.get("rec_type"),
                           s.get("field_type"), s.get("field_index")))
@@ -56,15 +66,14 @@ def _update_trans_json(mods_dir: Path, mod_name: str,
                         s["quality_score"] = quality_score
                     if status is not None:
                         s["status"] = status
-                    updated = True
                     break
-            if updated:
-                trans_json.write_text(
-                    json.dumps(strings, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
+
+            trans_json.write_text(
+                json.dumps(strings, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
         except Exception:
-            log.exception("_update_trans_json failed for %s / %s", mod_name, esp_name)
+            log.exception("_upsert_trans_json failed for %s / %s", mod_name, esp_name)
 
 
 def _save_mcm_translation(mods_dir: Path, mod_name: str,
@@ -230,8 +239,7 @@ def save_translation(mods_dir: Path, mod_name: str, cache_path: Path,
         else:
             log.warning("save_translation: cfg required for swf key")
     else:
-        _save_single_to_cache(cache_path, esp_name, key_str, translation)
-        _update_trans_json(mods_dir, mod_name, esp_name, key_str, translation,
+        _upsert_trans_json(mods_dir, mod_name, esp_name, key_str, translation,
                            quality_score=quality_score, status=status)
 
 

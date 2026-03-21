@@ -290,6 +290,32 @@ def remote_config_get():
     })
 
 
+@bp.route("/remote/stats")
+def remote_stats():
+    """Proxy stats from the configured remote server."""
+    cfg = current_app.config.get("TRANSLATOR_CFG")
+    if not cfg or not cfg.remote.server_url:
+        return jsonify({"ok": False, "error": "No remote server configured"})
+    try:
+        from translator.remote.client import TranslationClient
+        client = TranslationClient(cfg.remote.server_url, timeout=5.0)
+        stats = client.get_stats()
+        client.close()
+        return jsonify({"ok": True, **stats})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)})
+
+
+@bp.route("/tokens/perf")
+def tokens_perf():
+    """Return performance stats from the local backend."""
+    try:
+        from translator.models.llamacpp_backend import get_performance_stats
+        return jsonify({"ok": True, **get_performance_stats()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)})
+
+
 @bp.route("/remote/config", methods=["POST"])
 def remote_config_set():
     """Save remote.mode and remote.server_url to config.yaml and reload config."""

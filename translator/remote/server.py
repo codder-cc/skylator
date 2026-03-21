@@ -1,18 +1,28 @@
 """
-Skylator Translation Server — FastAPI + uvicorn.
+Skylator Translation Server — FastAPI + uvicorn, async job queue.
 
-Loads a GGUF model locally and exposes:
-    POST /translate
-    GET  /health
-    GET  /info
+Endpoints:
+    POST /translate          → {"job_id": "...", "status": "queued"}
+    POST /chat               → {"job_id": "...", "status": "queued"}
+    GET  /jobs/{job_id}      → current job state
+    GET  /jobs/{job_id}/stream → SSE stream of job updates
+    GET  /jobs               → list recent jobs (last 100 completed)
+    GET  /stats              → aggregate performance stats
+    GET  /health             → model_loaded, queue_depth
+    GET  /info               → platform, gpu, model, version
 
 Announces itself via mDNS on _skylator._tcp.local.
 """
 from __future__ import annotations
 import asyncio
+import json
 import logging
 import platform
 import socket
+import time
+import uuid
+from collections import deque
+from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -28,20 +38,9 @@ class TranslateRequest(BaseModel):
     target_lang: str = "Russian"
 
 
-class TranslateResponse(BaseModel):
-    translations: list[str]
-    model:        str
-    tokens_used:  int
-
-
 class ChatRequest(BaseModel):
     prompt:      str
     temperature: float = 0.2
-
-
-class ChatResponse(BaseModel):
-    result: str
-    model:  str
 
 
 class HealthResponse(BaseModel):
@@ -57,6 +56,52 @@ class InfoResponse(BaseModel):
     version:  str = "2.0.0"
 
 
+# ── Job model ─────────────────────────────────────────────────────────────────
+
+class JobRecord:
+    def __init__(self, job_id: str, kind: str, payload: dict):
+        self.job_id:      str            = job_id
+        self.kind:        str            = kind        # "translate" | "chat"
+        self.payload:     dict           = payload
+        self.status:      str            = "queued"    # queued|running|done|error
+        self.created_at:  float          = time.time()
+        self.started_at:  Optional[float] = None
+        self.finished_at: Optional[float] = None
+        self.tokens_gen:  int            = 0
+        self.tokens_per_sec: float       = 0.0
+        self.result:      Optional[object] = None
+        self.error:       Optional[str]  = None
+        self.progress:    int            = 0           # items done (for translate)
+        self.total:       int            = 0           # total items
+        self.eta:         Optional[float] = None
+        # SSE subscribers: list of asyncio.Queue
+        self._subscribers: list[asyncio.Queue] = []
+
+    def elapsed(self) -> float:
+        if self.started_at is None:
+            return 0.0
+        end = self.finished_at or time.time()
+        return round(end - self.started_at, 2)
+
+    def to_dict(self) -> dict:
+        return {
+            "job_id":        self.job_id,
+            "kind":          self.kind,
+            "status":        self.status,
+            "created_at":    self.created_at,
+            "started_at":    self.started_at,
+            "finished_at":   self.finished_at,
+            "elapsed":       self.elapsed(),
+            "tokens_gen":    self.tokens_gen,
+            "tokens_per_sec": self.tokens_per_sec,
+            "progress":      self.progress,
+            "total":         self.total,
+            "eta":           self.eta,
+            "result":        self.result,
+            "error":         self.error,
+        }
+
+
 # ── Server state ──────────────────────────────────────────────────────────────
 
 class ServerState:
@@ -64,8 +109,26 @@ class ServerState:
         self.backend          = None
         self.model_label: str = ""
         self.gpu_label:   str = ""
-        self.lock             = None   # asyncio.Lock created in startup
+        # asyncio queue for pending jobs
+        self.queue: asyncio.Queue = None   # created in startup
         self.queue_depth: int = 0
+        # completed jobs (capped at 100)
+        self.jobs: dict[str, JobRecord] = {}
+        self.completed_order: deque[str] = deque()   # oldest → newest
+        # performance history
+        self.tps_history: deque[float] = deque(maxlen=20)
+
+    @property
+    def tps_avg(self) -> float:
+        if not self.tps_history:
+            return 0.0
+        return round(sum(self.tps_history) / len(self.tps_history), 2)
+
+    @property
+    def tps_last(self) -> float:
+        if not self.tps_history:
+            return 0.0
+        return round(self.tps_history[-1], 2)
 
     def detect_gpu(self) -> str:
         if platform.system() == "Darwin":
@@ -100,6 +163,24 @@ class ServerState:
                 pass
             return "Unknown GPU"
 
+    def add_job(self, job: JobRecord) -> None:
+        self.jobs[job.job_id] = job
+
+    def finish_job(self, job: JobRecord) -> None:
+        """Move job to completed list; prune oldest if over 100."""
+        self.completed_order.append(job.job_id)
+        while len(self.completed_order) > 100:
+            old_id = self.completed_order.popleft()
+            self.jobs.pop(old_id, None)
+
+    def notify_subscribers(self, job: JobRecord) -> None:
+        data = json.dumps(job.to_dict())
+        for q in list(job._subscribers):
+            try:
+                q.put_nowait(data)
+            except asyncio.QueueFull:
+                pass
+
 
 _state = ServerState()
 
@@ -115,7 +196,6 @@ def _register_mdns(host: str, port: int, state: ServerState) -> None:
         from zeroconf import ServiceInfo, Zeroconf
 
         if not host:
-            # gethostbyname may return 127.0.0.1 — use UDP trick to get LAN IP
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 s.connect(("8.8.8.8", 80))
@@ -157,6 +237,117 @@ def _unregister_mdns() -> None:
     _service_info      = None
 
 
+# ── Background worker ─────────────────────────────────────────────────────────
+
+async def _worker(state: ServerState) -> None:
+    """Single-worker loop: process one job at a time from state.queue."""
+    loop = asyncio.get_running_loop()
+    while True:
+        job: JobRecord = await state.queue.get()
+        state.queue_depth = max(0, state.queue_depth - 1)
+
+        job.status     = "running"
+        job.started_at = time.time()
+        state.notify_subscribers(job)
+
+        try:
+            if job.kind == "translate":
+                await _run_translate(job, state, loop)
+            elif job.kind == "chat":
+                await _run_chat(job, state, loop)
+            else:
+                raise ValueError(f"Unknown job kind: {job.kind}")
+
+            job.status      = "done"
+            job.finished_at = time.time()
+
+        except Exception as exc:
+            log.exception("Job %s failed", job.job_id)
+            job.status      = "error"
+            job.error       = str(exc)
+            job.finished_at = time.time()
+
+        state.notify_subscribers(job)
+        # Signal EOF to all SSE subscribers
+        for q in list(job._subscribers):
+            try:
+                q.put_nowait(None)   # sentinel
+            except asyncio.QueueFull:
+                pass
+
+        state.finish_job(job)
+        state.queue.task_done()
+
+
+async def _run_translate(job: JobRecord, state: ServerState, loop: asyncio.AbstractEventLoop) -> None:
+    payload = job.payload
+    texts   = payload["texts"]
+    context = payload.get("context", "")
+    job.total    = len(texts)
+    job.progress = 0
+
+    def _progress_cb(done: int, total: int) -> None:
+        job.progress = done
+        job.total    = total
+        if job.started_at and done > 0:
+            elapsed = time.time() - job.started_at
+            rate    = done / elapsed
+            remaining = total - done
+            job.eta = remaining / rate if rate > 0 else None
+        loop.call_soon_threadsafe(state.notify_subscribers, job)
+
+    t0 = time.time()
+    results = await loop.run_in_executor(
+        None,
+        lambda: state.backend.translate(texts, context=context, progress_cb=_progress_cb),
+    )
+    elapsed = time.time() - t0
+
+    # Gather token stats
+    try:
+        from translator.models.llamacpp_backend import get_token_stats
+        stats = get_token_stats()
+        comp  = stats.get("completion", 0)
+        job.tokens_gen = comp
+        if elapsed > 0:
+            job.tokens_per_sec = round(comp / elapsed, 2)
+            state.tps_history.append(job.tokens_per_sec)
+    except Exception:
+        pass
+
+    job.result   = results
+    job.progress = job.total
+
+
+async def _run_chat(job: JobRecord, state: ServerState, loop: asyncio.AbstractEventLoop) -> None:
+    payload     = job.payload
+    prompt      = payload["prompt"]
+    temperature = payload.get("temperature", 0.2)
+    job.total   = 1
+
+    t0     = time.time()
+    result = await loop.run_in_executor(
+        None,
+        lambda: state.backend._chat(prompt, temperature=temperature),
+    )
+    elapsed = time.time() - t0
+
+    # Gather token stats from the backend
+    try:
+        from translator.models.llamacpp_backend import get_performance_stats
+        perf = get_performance_stats()
+        job.tokens_gen     = perf.get("last_completion_tokens", 0)
+        job.tokens_per_sec = perf.get("tps_last", 0.0)
+        if job.tokens_per_sec > 0:
+            state.tps_history.append(job.tokens_per_sec)
+    except Exception:
+        if elapsed > 0:
+            job.tokens_per_sec = 0.0
+
+    job.result   = result
+    job.progress = 1
+
+
 # ── App factory ───────────────────────────────────────────────────────────────
 
 def create_server_app(
@@ -168,17 +359,9 @@ def create_server_app(
     mdns_host: str = "",
     mdns_port: int = 8765,
 ):
-    """
-    Build the FastAPI application.
-
-    Args:
-        model_cfg:       translator.config.ModelConfig instance
-        translation_cfg: translator.config.TranslationConfig instance
-        mdns_enabled:    register mDNS service on startup
-        mdns_host:       host to advertise in mDNS (auto-detected if blank)
-        mdns_port:       port to advertise in mDNS
-    """
+    """Build the FastAPI application with async job queue."""
     from fastapi import FastAPI, HTTPException
+    from fastapi.responses import StreamingResponse
 
     app = FastAPI(
         title       = "Skylator Translation Server",
@@ -190,7 +373,7 @@ def create_server_app(
     async def _startup():
         nonlocal model_cfg, translation_cfg
 
-        _state.lock = asyncio.Lock()
+        _state.queue = asyncio.Queue()
 
         if model_cfg is None:
             from translator.config import get_config
@@ -209,6 +392,9 @@ def create_server_app(
         _state.backend.load()
         log.info("Model loaded on %s (%s)", platform.system(), _state.gpu_label)
 
+        # Start the single background worker
+        asyncio.create_task(_worker(_state))
+
         if mdns_enabled:
             _register_mdns(mdns_host, mdns_port, _state)
 
@@ -217,6 +403,8 @@ def create_server_app(
         if _state.backend and _state.backend.is_loaded:
             _state.backend.unload()
         _unregister_mdns()
+
+    # ── Endpoints ──────────────────────────────────────────────────────────
 
     @app.get("/health", response_model=HealthResponse)
     async def health():
@@ -234,60 +422,104 @@ def create_server_app(
             model    = _state.model_label,
         )
 
-    @app.post("/chat", response_model=ChatResponse)
-    async def chat(req: ChatRequest):
-        if not _state.backend:
-            raise HTTPException(status_code=503, detail="Model not loaded")
+    @app.get("/stats")
+    async def stats():
+        total_jobs = len(_state.jobs)
+        completed  = sum(1 for j in _state.jobs.values() if j.status == "done")
+        errors     = sum(1 for j in _state.jobs.values() if j.status == "error")
+        total_tokens = sum(j.tokens_gen for j in _state.jobs.values())
+        return {
+            "tps_avg":         _state.tps_avg,
+            "tps_last":        _state.tps_last,
+            "tps_history":     list(_state.tps_history),
+            "jobs_total":      total_jobs,
+            "jobs_completed":  completed,
+            "jobs_errors":     errors,
+            "jobs_queued":     _state.queue_depth,
+            "total_tokens":    total_tokens,
+            "model":           _state.model_label,
+        }
 
-        async with _state.lock:
-            _state.queue_depth += 1
+    @app.get("/jobs")
+    async def list_jobs():
+        recent = list(_state.completed_order)[-100:]
+        return [_state.jobs[jid].to_dict() for jid in recent if jid in _state.jobs]
+
+    @app.get("/jobs/{job_id}")
+    async def get_job(job_id: str):
+        job = _state.jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return job.to_dict()
+
+    @app.get("/jobs/{job_id}/stream")
+    async def stream_job(job_id: str):
+        job = _state.jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        q: asyncio.Queue = asyncio.Queue(maxsize=64)
+        job._subscribers.append(q)
+
+        # If already finished, send current state + EOF immediately
+        if job.status in ("done", "error"):
+            await q.put(json.dumps(job.to_dict()))
+            await q.put(None)
+
+        async def event_generator():
             try:
-                loop = asyncio.get_running_loop()
-                if hasattr(_state.backend, "_chat"):
-                    result = await loop.run_in_executor(
-                        None,
-                        lambda: _state.backend._chat(req.prompt, temperature=req.temperature),
-                    )
-                else:
-                    # Fallback: use translate() with the prompt as a single item
-                    results = await loop.run_in_executor(
-                        None,
-                        lambda: _state.backend.translate([req.prompt]),
-                    )
-                    result = results[0] if results else ""
+                while True:
+                    item = await asyncio.wait_for(q.get(), timeout=30.0)
+                    if item is None:
+                        break
+                    yield f"data: {item}\n\n"
+            except asyncio.TimeoutError:
+                # Send keepalive comment
+                yield ": keepalive\n\n"
             finally:
-                _state.queue_depth -= 1
+                try:
+                    job._subscribers.remove(q)
+                except ValueError:
+                    pass
 
-        return ChatResponse(result=result, model=_state.model_label)
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
-    @app.post("/translate", response_model=TranslateResponse)
+    @app.post("/translate")
     async def translate(req: TranslateRequest):
         if not _state.backend:
             raise HTTPException(status_code=503, detail="Model not loaded")
 
-        async with _state.lock:
-            _state.queue_depth += 1
-            try:
-                loop    = asyncio.get_running_loop()
-                results = await loop.run_in_executor(
-                    None,
-                    lambda: _state.backend.translate(req.texts, context=req.context),
-                )
-            finally:
-                _state.queue_depth -= 1
+        job_id = str(uuid.uuid4())
+        job    = JobRecord(job_id, "translate", {
+            "texts":       req.texts,
+            "context":     req.context,
+            "source_lang": req.source_lang,
+            "target_lang": req.target_lang,
+        })
+        _state.add_job(job)
+        _state.queue_depth += 1
+        await _state.queue.put(job)
 
-        # Pull token stats from the global counter in llamacpp_backend
-        tokens_used = 0
-        try:
-            from translator.models.llamacpp_backend import _token_stats
-            tokens_used = _token_stats.get("total", 0)
-        except Exception:
-            pass
+        return {"job_id": job_id, "status": "queued"}
 
-        return TranslateResponse(
-            translations = results,
-            model        = _state.model_label,
-            tokens_used  = tokens_used,
-        )
+    @app.post("/chat")
+    async def chat(req: ChatRequest):
+        if not _state.backend:
+            raise HTTPException(status_code=503, detail="Model not loaded")
+
+        job_id = str(uuid.uuid4())
+        job    = JobRecord(job_id, "chat", {
+            "prompt":      req.prompt,
+            "temperature": req.temperature,
+        })
+        _state.add_job(job)
+        _state.queue_depth += 1
+        await _state.queue.put(job)
+
+        return {"job_id": job_id, "status": "queued"}
 
     return app

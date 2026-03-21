@@ -8,6 +8,7 @@ downloaded from HuggingFace on first use if missing.
 from __future__ import annotations
 import logging
 import os
+import time as _time
 
 # Disable CUDA graphs before llama_cpp DLL is loaded — they are broken for
 # recurrent/SSM models on Blackwell (RTX 5080), causing 0.1 tok/s instead of 1+ tok/s.
@@ -22,15 +23,41 @@ from translator.config import get_config
 
 log = logging.getLogger(__name__)
 
-_token_stats = {"prompt": 0, "completion": 0, "total": 0, "calls": 0}
+_token_stats = {
+    "prompt": 0, "completion": 0, "total": 0, "calls": 0,
+    # timing
+    "last_tps": 0.0, "last_elapsed_sec": 0.0,
+    "tps_sum": 0.0,  "tps_count": 0,
+    "last_completion_tokens": 0,
+}
 
 
 def get_token_stats() -> dict:
     return dict(_token_stats)
 
 
+def get_performance_stats() -> dict:
+    s   = _token_stats
+    avg = round(s["tps_sum"] / s["tps_count"], 2) if s["tps_count"] > 0 else 0.0
+    return {
+        "calls":                  s["calls"],
+        "prompt_tokens":          s["prompt"],
+        "completion_tokens":      s["completion"],
+        "total_tokens":           s["total"],
+        "last_completion_tokens": s["last_completion_tokens"],
+        "tps_last":               round(s["last_tps"], 2),
+        "tps_avg":                avg,
+        "last_elapsed_sec":       round(s["last_elapsed_sec"], 3),
+    }
+
+
 def reset_token_stats() -> None:
-    _token_stats.update({"prompt": 0, "completion": 0, "total": 0, "calls": 0})
+    _token_stats.update({
+        "prompt": 0, "completion": 0, "total": 0, "calls": 0,
+        "last_tps": 0.0, "last_elapsed_sec": 0.0,
+        "tps_sum": 0.0, "tps_count": 0,
+        "last_completion_tokens": 0,
+    })
 
 
 class LlamaCppBackend(BaseBackend):
@@ -146,6 +173,7 @@ class LlamaCppBackend(BaseBackend):
             f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
             f"<|im_start|>assistant\n</think>\n\n"
         )
+        t0   = _time.time()
         resp = self._model.create_completion(
             prompt,
             max_tokens=self._mcfg.max_new_tokens,
@@ -156,15 +184,29 @@ class LlamaCppBackend(BaseBackend):
             stop=["<|im_end|>", "<|im_start|>"],
             echo=False,
         )
-        usage = resp.get("usage") or {}
-        _token_stats["prompt"]     += usage.get("prompt_tokens", 0)
-        _token_stats["completion"] += usage.get("completion_tokens", 0)
-        _token_stats["total"]      += usage.get("total_tokens", 0)
-        _token_stats["calls"]      += 1
+        elapsed = _time.time() - t0
+        usage   = resp.get("usage") or {}
+
+        completion_tokens = usage.get("completion_tokens", 0)
+        tps = completion_tokens / elapsed if elapsed > 0 else 0.0
+
+        _token_stats["prompt"]                += usage.get("prompt_tokens", 0)
+        _token_stats["completion"]            += completion_tokens
+        _token_stats["total"]                 += usage.get("total_tokens", 0)
+        _token_stats["calls"]                 += 1
+        _token_stats["last_tps"]               = tps
+        _token_stats["last_elapsed_sec"]       = elapsed
+        _token_stats["last_completion_tokens"] = completion_tokens
+        _token_stats["tps_sum"]               += tps
+        _token_stats["tps_count"]             += 1
+
         if _token_stats["calls"] % 10 == 0:  # log every 10 calls
-            log.info("Token usage so far: %d prompt + %d completion = %d total (%d calls)",
-                     _token_stats["prompt"], _token_stats["completion"],
-                     _token_stats["total"], _token_stats["calls"])
+            log.info(
+                "Token usage so far: %d prompt + %d completion = %d total "
+                "(%d calls, last %.1f tok/s)",
+                _token_stats["prompt"], _token_stats["completion"],
+                _token_stats["total"], _token_stats["calls"], tps,
+            )
         return resp["choices"][0]["text"].strip()
 
     def _translate_batch(self, batch: list[str], context: str) -> list[str]:

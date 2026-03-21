@@ -75,6 +75,37 @@
             </div>
           </div>
         </div>
+
+        <!-- Performance stats row -->
+        <div class="row g-3 mt-2" id="perf-stats-row">
+          <!-- Local backend perf -->
+          <div class="col-md-6">
+            <div class="border border-secondary rounded p-3">
+              <div class="d-flex align-items-center justify-content-between mb-2">
+                <span class="fw-semibold"><i class="bi bi-speedometer2 me-2 text-accent"></i>Local Performance</span>
+                <button class="btn btn-sm btn-outline-secondary py-0" onclick="loadPerfStats()" title="Refresh stats">
+                  <i class="bi bi-arrow-clockwise"></i> Refresh Stats
+                </button>
+              </div>
+              <div id="local-perf-info" class="text-muted" style="font-size:12px">
+                Loading...
+              </div>
+            </div>
+          </div>
+          <!-- Remote backend perf -->
+          <div class="col-md-6">
+            <div class="border border-secondary rounded p-3">
+              <div class="fw-semibold mb-2"><i class="bi bi-graph-up me-2 text-accent"></i>Remote Performance</div>
+              <div id="remote-perf-info" class="text-muted" style="font-size:12px">
+                {% if cfg and cfg.remote.server_url %}
+                  Loading...
+                {% else %}
+                  No remote server configured.
+                {% endif %}
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -286,8 +317,54 @@ async function testActiveServer() {
   }
 }
 
+// ── Performance Stats ─────────────────────────────────────────────────────────
+
+async function loadPerfStats() {
+  // Local backend
+  const localEl = document.getElementById('local-perf-info');
+  try {
+    const d = await fetch('/api/tokens/perf').then(r => r.json());
+    if (d.ok) {
+      localEl.innerHTML = `
+        <div class="d-flex flex-wrap gap-3">
+          <span><strong>tok/s (last):</strong> ${d.tps_last ?? '—'}</span>
+          <span><strong>tok/s (avg):</strong> ${d.tps_avg ?? '—'}</span>
+          <span><strong>calls:</strong> ${d.calls ?? 0}</span>
+          <span><strong>total tokens:</strong> ${(d.total_tokens ?? 0).toLocaleString()}</span>
+        </div>`;
+    } else {
+      localEl.innerHTML = `<span class="text-muted">${d.error || 'No data yet'}</span>`;
+    }
+  } catch (e) {
+    localEl.innerHTML = `<span class="text-warning">Failed to load: ${e.message}</span>`;
+  }
+
+  // Remote backend
+  const remoteEl = document.getElementById('remote-perf-info');
+  if (!remoteEl) return;
+  try {
+    const d = await fetch('/api/remote/stats').then(r => r.json());
+    if (d.ok) {
+      remoteEl.innerHTML = `
+        <div class="d-flex flex-wrap gap-3">
+          <span><strong>tok/s (last):</strong> ${d.tps_last ?? '—'}</span>
+          <span><strong>tok/s (avg):</strong> ${d.tps_avg ?? '—'}</span>
+          <span><strong>jobs done:</strong> ${d.jobs_completed ?? 0}</span>
+          <span><strong>total tokens:</strong> ${(d.total_tokens ?? 0).toLocaleString()}</span>
+        </div>`;
+    } else {
+      remoteEl.innerHTML = `<span class="text-muted">${d.error || 'No remote server configured'}</span>`;
+    }
+  } catch (e) {
+    remoteEl.innerHTML = `<span class="text-warning">Failed to load: ${e.message}</span>`;
+  }
+}
+
 // Load on page init
-document.addEventListener('DOMContentLoaded', loadBackendInfo);
+document.addEventListener('DOMContentLoaded', () => {
+  loadBackendInfo();
+  loadPerfStats();
+});
 
 // Allow discovered servers to be set as active
 function useServer(url) {

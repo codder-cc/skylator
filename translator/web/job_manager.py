@@ -260,7 +260,21 @@ class JobManager:
         try:
             self._persist_path.parent.mkdir(parents=True, exist_ok=True)
             with self._lock:
-                data = {jid: j.to_dict() for jid, j in self._jobs.items()}
+                all_jobs = list(self._jobs.values())
+
+            # Keep only the newest 500 jobs by created_at
+            all_jobs.sort(key=lambda j: j.created_at)
+            all_jobs = all_jobs[-500:]
+
+            cutoff = time.time() - 86400  # 24 hours ago
+            data: dict = {}
+            for j in all_jobs:
+                d = j.to_dict()
+                # Strip log_lines from old finished jobs to keep the file small
+                if (j.finished_at or j.created_at) < cutoff:
+                    d["log_lines"] = []
+                data[j.id] = d
+
             self._persist_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         except Exception:
             pass

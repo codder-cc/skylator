@@ -169,3 +169,37 @@ class MlxBackend(BaseBackend):
                 progress_cb(min(i + batch_size, len(texts)), len(texts))
 
         return results
+
+    def _chat(self, prompt: str, temperature: float = 0.2) -> str:
+        """
+        Raw chat inference — no translation prompt wrapping.
+        Used by the server's /chat endpoint.
+        """
+        if not self.is_loaded:
+            self.load()
+
+        import mlx_lm
+        from mlx_lm.sample_utils import make_sampler, make_logits_processors
+
+        sampler = make_sampler(temp=temperature, top_p=self._top_p)
+        logits_processors = make_logits_processors(
+            repetition_penalty=self._repetition_penalty,
+        )
+
+        messages = [{"role": "user", "content": prompt}]
+        formatted = self._tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=False,
+        )
+        formatted += "</think>\n\n"
+
+        return mlx_lm.generate(
+            self._model,
+            self._tokenizer,
+            prompt            = formatted,
+            max_tokens        = self._max_tokens,
+            sampler           = sampler,
+            logits_processors = logits_processors,
+            verbose           = False,
+        )

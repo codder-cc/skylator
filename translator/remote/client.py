@@ -73,6 +73,15 @@ class TranslationClient:
         data = self._post("/translate", payload)
         return data["job_id"]
 
+    def submit_infer(self, prompt: str, params=None) -> str:
+        """POST /infer → returns job_id.
+        prompt: pre-built ChatML string; params: InferenceParams (sampling only)."""
+        payload: dict = {"prompt": prompt}
+        if params is not None:
+            payload["params"] = params.as_dict()
+        data = self._post("/infer", payload)
+        return data["job_id"]
+
     def submit_chat(self, prompt: str, temperature: float = 0.2) -> str:
         """POST /chat → returns job_id."""
         data = self._post("/chat", {"prompt": prompt, "temperature": temperature})
@@ -213,6 +222,20 @@ class TranslationClient:
         if not isinstance(result, list):
             result = [str(result)]
         return result
+
+    def infer(self, prompt: str, params=None) -> str:
+        """
+        Submit a pre-built prompt for raw inference and block until complete.
+
+        Returns the raw model output string.
+        Raises on network failure or if the job ends in error.
+        """
+        job_id = self.submit_infer(prompt, params=params)
+        job    = self.poll_job_liveness(job_id, liveness_timeout=45.0, absolute_timeout=600.0)
+        if job.get("status") == "error":
+            raise RuntimeError(f"Remote infer job failed: {job.get('error')}")
+        result = job.get("result") or ""
+        return str(result)
 
     def chat(self, prompt: str, temperature: float = 0.2) -> str:
         """

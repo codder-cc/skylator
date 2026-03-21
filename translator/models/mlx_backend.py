@@ -159,6 +159,38 @@ class MlxBackend(BaseBackend):
 
         return results
 
+    def _infer(self, prompt: str, params=None) -> str:
+        """
+        Raw inference from a pre-built prompt string.
+        Called by the server's /infer endpoint — no prompt building here.
+        params: InferenceParams with sampling overrides (None = use constructor defaults).
+        """
+        if not self.is_loaded:
+            self.load()
+
+        import mlx_lm
+        from mlx_lm.sample_utils import make_sampler, make_logits_processors
+        from translator.models.inference_params import InferenceParams
+
+        p                  = params or InferenceParams.defaults()
+        temperature        = p.temperature        if p.temperature        is not None else self._temperature
+        top_p              = p.top_p              if p.top_p              is not None else self._top_p
+        repetition_penalty = p.repetition_penalty if p.repetition_penalty is not None else self._repetition_penalty
+        max_tokens         = p.max_tokens         if p.max_tokens         is not None else self._max_tokens
+
+        sampler           = make_sampler(temp=temperature, top_p=top_p)
+        logits_processors = make_logits_processors(repetition_penalty=repetition_penalty)
+
+        return mlx_lm.generate(
+            self._model,
+            self._tokenizer,
+            prompt            = prompt,
+            max_tokens        = max_tokens,
+            sampler           = sampler,
+            logits_processors = logits_processors,
+            verbose           = False,
+        )
+
     def _chat(self, prompt: str, temperature: float = 0.2) -> str:
         """
         Raw chat inference — no translation prompt wrapping.

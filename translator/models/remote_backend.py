@@ -68,38 +68,70 @@ class RemoteBackend(BaseBackend):
         progress_cb=None,
     ) -> list[str]:
         """
-        Translate via remote server. Returns originals on any network/server error.
-        Never raises.
-        params: InferenceParams — forwarded to server so remote inference uses same config.
+        Translate via remote server.
+
+        Builds the full ChatML prompt on the Windows (client) side using
+        build_prompt(), sends it pre-built to the Mac server's /infer endpoint,
+        and parses the numbered output locally.  The Mac server is a pure
+        inference executor — no builder.py or parser.py dependency there.
+
+        Returns originals on any network/server error. Never raises.
         """
         from translator.models.inference_params import InferenceParams
-        params = params or InferenceParams.defaults()
+        from translator.prompt.builder import build_prompt
+        from translator.prompt.parser import parse_numbered_output
+
+        params     = params or InferenceParams.defaults()
+        batch_size = params.batch_size if params.batch_size is not None else 4
+
         if not texts:
             return []
-        try:
-            translations = self._client.translate(
-                texts       = texts,
-                source_lang = self._source_lang,
-                target_lang = self._target_lang,
-                context     = context,
-                params      = params,
-            )
-            if len(translations) != len(texts):
-                log.warning(
-                    "RemoteBackend: expected %d translations, got %d — returning originals",
-                    len(texts), len(translations),
+
+        # Sampling-only params forwarded to the server (system_prompt/thinking
+        # are already baked into the pre-built prompt string).
+        infer_params = InferenceParams(
+            temperature        = params.temperature,
+            top_p              = params.top_p,
+            top_k              = params.top_k,
+            max_tokens         = params.max_tokens,
+            repetition_penalty = params.repetition_penalty,
+        )
+
+        results: list[str] = []
+        num_batches = (len(texts) + batch_size - 1) // batch_size
+
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i: i + batch_size]
+            try:
+                prompt = build_prompt(
+                    texts         = batch,
+                    src_lang      = self._source_lang,
+                    tgt_lang      = self._target_lang,
+                    context       = context,
+                    model_type    = "qwen",
+                    system_prompt = params.system_prompt,
+                    thinking      = params.thinking,
                 )
-                return list(texts)
+                raw    = self._client.infer(prompt, params=infer_params)
+                parsed = parse_numbered_output(raw, len(batch))
+                results.extend(parsed)
+                log.info("RemoteBackend: batch %d/%d translated",
+                         i // batch_size + 1, num_batches)
+            except Exception:
+                log.exception("RemoteBackend: batch %d failed — returning originals", i)
+                results.extend(batch)
+
             if progress_cb:
-                progress_cb(len(texts), len(texts))
-            log.info(
-                "RemoteBackend: translated %d strings",
-                len(texts),
+                progress_cb(min(i + batch_size, len(texts)), len(texts))
+
+        if len(results) != len(texts):
+            log.warning(
+                "RemoteBackend: expected %d results, got %d — returning originals",
+                len(texts), len(results),
             )
-            return translations
-        except Exception as exc:
-            log.exception("RemoteBackend: translation failed — returning originals")
             return list(texts)
+
+        return results
 
     @property
     def server_info(self) -> dict:

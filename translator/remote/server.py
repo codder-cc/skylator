@@ -40,6 +40,11 @@ class TranslateRequest(BaseModel):
     params:      dict = {}   # serialised InferenceParams.as_dict()
 
 
+class InferRequest(BaseModel):
+    prompt: str
+    params: dict = {}   # serialised InferenceParams.as_dict() — sampling only
+
+
 class ChatRequest(BaseModel):
     prompt:      str
     temperature: float = 0.2
@@ -255,6 +260,8 @@ async def _worker(state: ServerState) -> None:
         try:
             if job.kind == "translate":
                 await _run_translate(job, state, loop)
+            elif job.kind == "infer":
+                await _run_infer(job, state, loop)
             elif job.kind == "chat":
                 await _run_chat(job, state, loop)
             else:
@@ -326,6 +333,39 @@ async def _run_translate(job: JobRecord, state: ServerState, loop: asyncio.Abstr
     job.progress = job.total
     log.info("Job %s: done — first result: %s",
              job.job_id[:8], (results[0][:120] if results else "(empty)"))
+
+
+async def _run_infer(job: JobRecord, state: ServerState, loop: asyncio.AbstractEventLoop) -> None:
+    """Execute raw inference on a pre-built prompt. No prompt building on the server side."""
+    from translator.models.inference_params import InferenceParams
+    payload = job.payload
+    prompt  = payload["prompt"]
+    params  = InferenceParams.from_dict(payload.get("params") or {})
+    job.total    = 1
+    job.progress = 0
+    log.info("Job %s (infer): prompt len=%d", job.job_id[:8], len(prompt))
+
+    t0     = time.time()
+    result = await loop.run_in_executor(
+        None,
+        lambda: state.backend._infer(prompt, params=params),
+    )
+    elapsed = time.time() - t0
+
+    try:
+        from translator.models.llamacpp_backend import get_token_stats
+        stats = get_token_stats()
+        comp  = stats.get("completion", 0)
+        job.tokens_gen = comp
+        if elapsed > 0:
+            job.tokens_per_sec = round(comp / elapsed, 2)
+            state.tps_history.append(job.tokens_per_sec)
+    except Exception:
+        pass
+
+    job.result   = result
+    job.progress = 1
+    log.info("Job %s (infer): done — raw len=%d", job.job_id[:8], len(result) if result else 0)
 
 
 async def _run_chat(job: JobRecord, state: ServerState, loop: asyncio.AbstractEventLoop) -> None:
@@ -496,6 +536,23 @@ def create_server_app(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @app.post("/infer")
+    async def infer(req: InferRequest):
+        """Accept a pre-built prompt and run raw inference. No prompt building on server side."""
+        if not _state.backend:
+            raise HTTPException(status_code=503, detail="Model not loaded")
+
+        job_id = str(uuid.uuid4())
+        job    = JobRecord(job_id, "infer", {
+            "prompt": req.prompt,
+            "params": req.params,
+        })
+        _state.add_job(job)
+        _state.queue_depth += 1
+        await _state.queue.put(job)
+
+        return {"job_id": job_id, "status": "queued"}
 
     @app.post("/translate")
     async def translate(req: TranslateRequest):

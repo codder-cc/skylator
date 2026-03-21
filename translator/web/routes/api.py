@@ -390,9 +390,9 @@ def translate_one_string(mod_name: str):
         from scripts.esp_engine import prepare_for_ai, restore_from_ai, validate_tokens
         ai_texts, ai_meta = prepare_for_ai([original])
         results       = translate_batch(ai_texts, context)
-        translated_r  = results[0] if results else ai_texts[0]
-        if not translated_r or translated_r == ai_texts[0]:
-            return jsonify({"ok": False, "error": "Translation failed — server returned original text unchanged"}), 500
+        translated_r  = results[0] if results else ""
+        if not translated_r:
+            return jsonify({"ok": False, "error": "Translation failed — empty response from AI"}), 500
         translated    = restore_from_ai([translated_r], ai_meta)[0]
         tok_ok, tok_issues = validate_tokens(original, translated)
         status = "translated" if tok_ok else "needs_review"

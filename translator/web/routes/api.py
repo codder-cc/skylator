@@ -347,6 +347,11 @@ def translate_one_string(mod_name: str):
     if not original or original.startswith("[LOC:"):
         return jsonify({"ok": False, "error": "Cannot translate this string"}), 400
 
+    from scripts.esp_engine import needs_translation as _needs_translation
+    if not _needs_translation(original):
+        log.info("[translate-one] %s | skipped — identifier/untranslatable: %s", key_str, original[:80])
+        return jsonify({"ok": False, "error": f"String is a code identifier or untranslatable: {original[:60]}"}), 400
+
     xlogs: list[str] = []  # step log forwarded to FE
 
     # ── Global dict fast-path ────────────────────────────────────────────────

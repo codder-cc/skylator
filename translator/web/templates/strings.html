@@ -87,10 +87,12 @@
       <tbody>
         {% for s in strings %}
         {% set is_loc = s.original.startswith('[LOC:') %}
+        {% set dict_match = s.dict_match if s.dict_match else '' %}
         <tr class="{% if s.status == 'pending' %}table-warning-subtle{% endif %}"
             data-key="{{ s.key | e }}"
             data-esp="{{ s.esp | e }}"
-            data-original="{{ s.original | e }}">
+            data-original="{{ s.original | e }}"
+            data-dict-match="{{ dict_match | e }}">
 
           <!-- FormID / ESP -->
           <td style="font-size:11px">
@@ -147,14 +149,21 @@
             {% endif %}
           </td>
 
-          <!-- AI translate button -->
-          <td class="text-end pe-2">
+          <!-- AI translate / use-existing buttons -->
+          <td class="text-end pe-2" style="white-space:nowrap">
             {% if is_loc %}
             <button class="btn btn-sm btn-outline-secondary ai-btn"
                     disabled title="Cannot translate localized string references">
               <i class="bi bi-lightning"></i>
             </button>
             {% else %}
+            {% if dict_match %}
+            <button class="btn btn-sm btn-outline-success dict-btn me-1"
+                    title="Use existing translation: {{ dict_match | e }}"
+                    onclick="useDictMatch(this)">
+              <i class="bi bi-book-fill"></i>
+            </button>
+            {% endif %}
             <button class="btn btn-sm btn-outline-warning ai-btn"
                     title="AI translate this string"
                     onclick="translateOne(this)">
@@ -264,6 +273,35 @@ function applyUpdate(key, translation, status, qs) {
   if (qc) qc.innerHTML = scoreBadge(qs);
 
   row.classList.toggle('table-warning-subtle', status !== 'translated');
+}
+
+// ── Use existing (global dict match) ─────────────────────────────────────────
+
+async function useDictMatch(btn) {
+  const row   = btn.closest('tr');
+  const key   = row.dataset.key;
+  const esp   = row.dataset.esp;
+  const match = row.dataset.dictMatch;
+  if (!match) return;
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+  // Save via the same update endpoint (no AI call)
+  const r = await POST(
+    `/mods/${encodeURIComponent(MOD_NAME)}/strings/update`,
+    { key, esp, translation: match }
+  );
+
+  if (r.ok) {
+    applyUpdate(key, match, 'translated', null);
+    btn.remove();   // dict button no longer needed once applied
+    toast('Applied existing translation', 'success');
+  } else {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-book-fill"></i>';
+    toast('Error: ' + (r.error || '?'), 'danger');
+  }
 }
 
 // ── Per-row AI translate ──────────────────────────────────────────────────────

@@ -55,6 +55,16 @@ def create_app(config_path: Path | None = None) -> Flask:
         )
     app.config["SCANNER"] = scanner
 
+    # ── Init global text dictionary ──────────────────────────────────────────
+    from translator.web.global_dict import GlobalTextDict
+    cache_dir = cfg.paths.translation_cache.parent if cfg else ROOT / "cache"
+    gd = GlobalTextDict(
+        mods_dir   = cfg.paths.mods_dir if cfg else Path("mods"),
+        cache_path = cache_dir / "_global_text_dict.json",
+    )
+    gd.load()  # fast — just reads existing JSON from disk
+    app.config["GLOBAL_DICT"] = gd
+
     # ── Init job manager ────────────────────────────────────────────────────
     from translator.web.job_manager import JobManager
     jm = JobManager.get()

@@ -123,10 +123,15 @@ class ModScanner:
             return info
         return None
 
-    def get_mod_strings(self, folder_name: str) -> list[dict]:
+    def get_mod_strings(self, folder_name: str,
+                        global_dict=None) -> list[dict]:
         """
         Extract strings from all ESP/ESM in a mod folder.
-        Returns list of dicts: {form_id, rec_type, field, original, translation, status}.
+        Returns list of dicts: {form_id, rec_type, field, original, translation,
+                                 status, key, quality_score, dict_match}.
+
+        dict_match: cross-mod existing translation from GlobalTextDict (or "").
+        global_dict: GlobalTextDict instance (optional).
 
         When a .trans.json file exists for an ESP, it is used as the primary source.
         This preserves original English text even after translations have been applied
@@ -158,17 +163,21 @@ class ModScanner:
                             translation = (s.get("translation") or
                                            mod_cache.get(key_str, ""))
                             status = "translated" if translation else "pending"
+                            orig = s["text"]
                             strings.append({
                                 "esp":           esp_path.name,
                                 "form_id":       s["form_id"],
                                 "rec_type":      s["rec_type"],
                                 "field":         s["field_type"],
                                 "idx":           s["field_index"],
-                                "original":      s["text"],      # always English
+                                "original":      orig,
                                 "translation":   translation,
                                 "status":        status,
                                 "key":           key_str,
                                 "quality_score": s.get("quality_score"),
+                                "dict_match":    (global_dict.get(orig)
+                                                  if global_dict and not translation
+                                                  else ""),
                             })
                     else:
                         # No .trans.json — parse ESP directly
@@ -180,17 +189,21 @@ class ModScanner:
                             key_str = str(key)
                             translated = mod_cache.get(key_str, "")
                             status = "translated" if translated else "pending"
+                            orig = entry["text"]
                             strings.append({
                                 "esp":           esp_path.name,
                                 "form_id":       entry["form_id"],
                                 "rec_type":      entry["rec_type"],
                                 "field":         entry["field_type"],
                                 "idx":           entry["field_index"],
-                                "original":      entry["text"],
+                                "original":      orig,
                                 "translation":   translated,
                                 "status":        status,
                                 "key":           key_str,
                                 "quality_score": None,
+                                "dict_match":    (global_dict.get(orig)
+                                                  if global_dict and not translated
+                                                  else ""),
                             })
                 except Exception as exc:
                     log.warning(f"String extract failed for {esp_path}: {exc}")

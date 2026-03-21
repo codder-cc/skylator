@@ -93,6 +93,7 @@ class TranslationConfig:
     preserve_tokens:    list
     min_latin_ratio:    float = 0.15
     max_cyrillic_ratio: float = 0.30
+    use_global_dict:    bool  = True   # reuse cross-mod translations without AI
 
 
 @dataclass
@@ -225,6 +226,7 @@ def load_config(config_file: Path = _CONFIG_FILE) -> TranslatorConfig:
         preserve_tokens    = tr.get("preserve_tokens", []),
         min_latin_ratio    = tr.get("min_latin_ratio", 0.15),
         max_cyrillic_ratio = tr.get("max_cyrillic_ratio", 0.30),
+        use_global_dict    = tr.get("use_global_dict", True),
     )
 
     lg = raw.get("logging", {})

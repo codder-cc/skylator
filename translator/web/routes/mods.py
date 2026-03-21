@@ -96,7 +96,8 @@ def mod_strings(mod_name: str):
     filter_status = request.args.get("status", "all")
     search        = request.args.get("q", "")
 
-    strings   = scanner.get_mod_strings(mod_name)
+    gd        = current_app.config.get("GLOBAL_DICT")
+    strings   = scanner.get_mod_strings(mod_name, global_dict=gd)
     total_all = len(strings)
     over_threshold = total_all > _STRINGS_LOAD_ALL_THRESHOLD
 

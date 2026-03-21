@@ -336,12 +336,26 @@ def translate_one_string(mod_name: str):
     if not cfg:
         return jsonify({"ok": False, "error": "No config"}), 500
 
-    data     = request.get_json() or {}
-    key_str  = data.get("key", "")
-    esp_name = data.get("esp", "")
-    original = data.get("original", "")
+    data       = request.get_json() or {}
+    key_str    = data.get("key", "")
+    esp_name   = data.get("esp", "")
+    original   = data.get("original", "")
+    force_ai   = data.get("force_ai", False)  # skip global dict when True
     if not original or original.startswith("[LOC:"):
         return jsonify({"ok": False, "error": "Cannot translate this string"}), 400
+
+    # ── Global dict fast-path ────────────────────────────────────────────────
+    use_gd = cfg.translation.use_global_dict and not force_ai
+    if use_gd:
+        gd = current_app.config.get("GLOBAL_DICT")
+        if gd:
+            existing = gd.get(original)
+            if existing:
+                from translator.web.workers import _save_single_to_cache
+                _save_single_to_cache(cfg.paths.translation_cache,
+                                      esp_name, key_str, existing)
+                return jsonify({"ok": True, "translation": existing,
+                                "quality_score": None, "from_dict": True})
 
     try:
         from scripts.esp_engine import translate_batch, quality_score
@@ -377,9 +391,83 @@ def translate_one_string(mod_name: str):
             return jsonify({"ok": False, "error": "Translation failed — server returned original text unchanged"}), 500
         qs         = quality_score(original, translated)
         _save_single_to_cache(cfg.paths.translation_cache, esp_name, key_str, translated)
-        return jsonify({"ok": True, "translation": translated, "quality_score": qs})
+        # Add to global dict so future identical strings skip AI
+        gd = current_app.config.get("GLOBAL_DICT")
+        if gd:
+            gd.add(original, translated)
+            gd.save()
+        return jsonify({"ok": True, "translation": translated, "quality_score": qs,
+                        "from_dict": False})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@bp.route("/global-dict/stats")
+def global_dict_stats():
+    """Return global text dictionary statistics."""
+    gd  = current_app.config.get("GLOBAL_DICT")
+    cfg = current_app.config.get("TRANSLATOR_CFG")
+    return jsonify({
+        "ok":             True,
+        "size":           gd.size() if gd else 0,
+        "use_global_dict": cfg.translation.use_global_dict if cfg else True,
+        "cache_path":     str(gd.cache_path) if gd else "",
+    })
+
+
+@bp.route("/global-dict/rebuild", methods=["POST"])
+def global_dict_rebuild():
+    """Trigger a background rebuild of the global text dictionary."""
+    gd = current_app.config.get("GLOBAL_DICT")
+    if not gd:
+        return jsonify({"ok": False, "error": "Global dict not initialized"}), 500
+
+    import threading
+    def _run():
+        try:
+            n = gd.rebuild()
+            import logging
+            logging.getLogger(__name__).info(
+                "GlobalTextDict rebuild complete: %d entries", n)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).error("GlobalTextDict rebuild failed: %s", exc)
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"ok": True, "message": "Rebuild started in background"})
+
+
+@bp.route("/global-dict/toggle", methods=["POST"])
+def global_dict_toggle():
+    """Enable or disable use_global_dict in config.yaml."""
+    data    = request.get_json() or {}
+    enabled = bool(data.get("enabled", True))
+
+    from pathlib import Path as _Path
+    import yaml as _yaml
+    config_file = _Path(__file__).parent.parent.parent.parent / "config.yaml"
+    if not config_file.exists():
+        return jsonify({"error": "config.yaml not found"}), 404
+    try:
+        raw    = config_file.read_text(encoding="utf-8")
+        parsed = _yaml.safe_load(raw)
+        if "translation" not in parsed or parsed["translation"] is None:
+            parsed["translation"] = {}
+        parsed["translation"]["use_global_dict"] = enabled
+        config_file.write_text(
+            _yaml.dump(parsed, allow_unicode=True, default_flow_style=False,
+                       sort_keys=False),
+            encoding="utf-8",
+        )
+        import translator.config as _tc
+        _tc._config = None
+        try:
+            current_app.config["TRANSLATOR_CFG"] = _tc.load_config()
+        except Exception:
+            pass
+        return jsonify({"ok": True, "use_global_dict": enabled})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 
 @bp.route("/remote/config", methods=["POST"])

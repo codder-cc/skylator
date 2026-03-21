@@ -537,12 +537,24 @@ def translate_strings_worker(job, cfg, mod_name: str,
     """
     from translator.web.job_manager import JobManager
     from translator.web.mod_scanner import ModScanner
+    from translator.web.global_dict import GlobalTextDict
     from scripts.esp_engine import translate_batch, quality_score
     from translator.context.builder import ContextBuilder
 
     jm      = JobManager.get()
     scanner = ModScanner(cfg.paths.mods_dir, cfg.paths.translation_cache,
                          cfg.paths.nexus_cache)
+
+    # Load global dict if enabled
+    use_gd = getattr(cfg.translation, "use_global_dict", True)
+    gd: GlobalTextDict | None = None
+    if use_gd:
+        gd = GlobalTextDict(
+            mods_dir   = cfg.paths.mods_dir,
+            cache_path = cfg.paths.translation_cache.parent / "_global_text_dict.json",
+        )
+        gd.load()
+
     strings = scanner.get_mod_strings(mod_name)
 
     if keys:
@@ -572,6 +584,32 @@ def translate_strings_worker(job, cfg, mod_name: str,
         if s.get("translation") and s["translation"] != s["original"]
     }
 
+    # ── Global dict fast-path ────────────────────────────────────────────────
+    if gd:
+        dict_saved = 0
+        remaining  = []
+        for s in strings:
+            existing = gd.get(s["original"])
+            if existing:
+                _save_single_to_cache(cfg.paths.translation_cache,
+                                      s["esp"], s["key"], existing)
+                jm.add_string_update(job, s["key"], s["esp"],
+                                     existing, "translated", None)
+                tm_pairs[s["original"]] = existing
+                dict_saved += 1
+            else:
+                remaining.append(s)
+        if dict_saved:
+            job.add_log(f"Reused {dict_saved} translations from global dict")
+        strings = remaining
+        total   = len(strings)
+        if total == 0:
+            jm.update_progress(job, dict_saved, dict_saved,
+                               "Done — all translations reused from dict")
+            job.result = f"All strings matched from global dict for {mod_name}"
+            return
+
+    gd_dirty = False
     CHUNK = 10
     done  = 0
     for chunk_start in range(0, total, CHUNK):
@@ -603,8 +641,14 @@ def translate_strings_worker(job, cfg, mod_name: str,
                                   s["esp"], s["key"], translation)
             jm.add_string_update(job, s["key"], s["esp"],
                                  translation, "translated", qs)
-            # Add to TM so subsequent chunks benefit from this translation
+            # Add to TM and global dict so subsequent chunks + future mods benefit
             tm_pairs[s["original"]] = translation
+            if gd:
+                gd.add(s["original"], translation)
+                gd_dirty = True
+
+    if gd and gd_dirty:
+        gd.save()
 
     jm.update_progress(job, total, total, "Done")
     job.result = f"Translated strings for {mod_name}"

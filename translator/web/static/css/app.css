@@ -264,24 +264,6 @@ body {
 .string-row-trans { color: var(--text-main); font-size: 13px; white-space: pre-wrap; word-break: break-word; }
 .string-row-trans.edited { color: var(--success); }
 
-/* ── In-cell edit: original (readonly) + translation stacked ── */
-
-.string-original-area {
-  display: block;
-  width: 100%;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-family: 'Consolas', 'Fira Code', monospace;
-  padding: 4px 8px;
-  resize: vertical;
-  min-height: 48px;
-  cursor: default;
-  margin-bottom: 4px;
-}
-
 .string-edit-area {
   display: block;
   width: 100%;

@@ -495,22 +495,24 @@ _INLINE_TOKEN_RE = re.compile(
 def prepare_for_ai(texts: list) -> tuple:
     """
     Prepare texts for AI translation:
-    1. Strip HTML formatting tags (font/p/br/img) — saved for reinsert
-    2. Mask inline game tokens (<Alias=...>, <mag>, %.0f etc.) as {T0}, {T1}...
-    Returns (ai_texts, metadata) where metadata[i] = {"fmt": orig_or_None, "tokens": [...]}
-    fmt is None if no format tags; tokens is [] if no inline tokens.
+    1. Replace HTML formatting tags (font/p/br/img/b/i/…) with ⟨H0⟩,⟨H1⟩,…
+       so the AI sees them as opaque tokens and preserves their exact positions.
+    2. Mask remaining inline game tokens (<Alias=…>, <mag>, %.0f…) as {T0},{T1},…
+    Returns (ai_texts, metadata) where metadata[i] = {"html_tags": […], "tokens": […]}.
     """
     ai_texts, metadata = [], []
     for text in texts:
-        has_fmt = bool(_FORMAT_TAG_RE.search(text))
-        fmt     = text if has_fmt else None
-        stripped = _FORMAT_TAG_RE.sub('', text).strip() if has_fmt else text.strip()
-        tokens   = _INLINE_TOKEN_RE.findall(stripped)
-        masked   = stripped
+        # Step 1: encode HTML display tags as ⟨H0⟩, ⟨H1⟩, …
+        html_tags = _FORMAT_TAG_RE.findall(text)
+        masked = text
+        for i, tag in enumerate(html_tags):
+            masked = masked.replace(tag, f'⟨H{i}⟩', 1)
+        # Step 2: mask remaining game tokens as {T0}, {T1}, …
+        tokens = _INLINE_TOKEN_RE.findall(masked)
         for i, tok in enumerate(tokens):
             masked = masked.replace(tok, f'{{T{i}}}', 1)
         ai_texts.append(masked)
-        metadata.append({"fmt": fmt, "tokens": tokens})
+        metadata.append({"html_tags": html_tags, "tokens": tokens})
     return ai_texts, metadata
 
 
@@ -531,64 +533,26 @@ def strip_echo(text: str) -> str:
 
 
 def restore_from_ai(translations: list, metadata: list) -> list:
-    """Reverse prepare_for_ai: unmask {T0},{T1}... then reinsert format structure."""
+    """Reverse prepare_for_ai: restore {T0}/{T1}/… and ⟨H0⟩/⟨H1⟩/… tokens."""
     result = []
     for trans, meta in zip(translations, metadata):
         trans = strip_echo(trans)
+        # Restore inline game tokens
         for i, tok in enumerate(meta["tokens"]):
             placeholder = f'{{T{i}}}'
             if placeholder not in trans:
                 log.warning("restore_from_ai: placeholder %s missing in translation: %s",
                             placeholder, trans[:120])
             trans = trans.replace(placeholder, tok)
-        if meta["fmt"] is not None:
-            trans = _reinsert_format(meta["fmt"], trans)
+        # Restore HTML formatting tags
+        for i, tag in enumerate(meta.get("html_tags", [])):
+            placeholder = f'⟨H{i}⟩'
+            if placeholder not in trans:
+                log.warning("restore_from_ai: html placeholder %s missing in translation: %s",
+                            placeholder, trans[:120])
+            trans = trans.replace(placeholder, tag)
         result.append(trans)
     return result
-
-
-def _reinsert_format(original: str, translated: str) -> str:
-    """Put translated into the HTML format structure of original.
-
-    When the original has multiple text blocks (e.g. <b>Title</b> … <font>Body</font>),
-    the translated text is split at paragraph breaks (\\n\\n) and each part is placed
-    into the corresponding original text segment.  This keeps <img>, <font>, etc. tags
-    at their correct structural positions instead of all ending up after the full text.
-    """
-    segments = _FORMAT_TAG_RE.split(original)
-    tags     = _FORMAT_TAG_RE.findall(original)
-    text_idx = [i for i, s in enumerate(segments) if s.strip()]
-    if not text_idx:
-        return original
-
-    result = list(segments)
-    if len(text_idx) == 1:
-        i     = text_idx[0]
-        lead  = segments[i][:len(segments[i]) - len(segments[i].lstrip())]
-        trail = segments[i][len(segments[i].rstrip()):]
-        result[i] = lead + translated + trail
-    else:
-        # Split translated text at double-newlines into paragraphs and
-        # distribute them across the original text segments.
-        parts_trans = re.split(r'\n{2,}', translated)
-        for j, i in enumerate(text_idx):
-            lead  = segments[i][:len(segments[i]) - len(segments[i].lstrip())]
-            trail = segments[i][len(segments[i].rstrip()):]
-            if j < len(text_idx) - 1 and j < len(parts_trans) - 1:
-                # Non-last segment: assign one paragraph
-                result[i] = lead + parts_trans[j] + trail
-            elif j == len(text_idx) - 1:
-                # Last segment: assign all remaining paragraphs
-                result[i] = lead + '\n\n'.join(parts_trans[j:]) + trail
-            else:
-                result[i] = lead + trail   # translated ran short — empty slot
-
-    out_parts = []
-    for i, seg in enumerate(result):
-        out_parts.append(seg)
-        if i < len(tags):
-            out_parts.append(tags[i])
-    return ''.join(out_parts)
 
 
 def extract_game_tokens(text: str) -> list:

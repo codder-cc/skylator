@@ -569,12 +569,9 @@ async function translateAll() {
 
 function enterEdit(cell, key, esp) {
   cell.classList.add('editing');
-  const current  = cell.dataset.translation || '';
-  const original = cell.closest('tr').dataset.original || '';
-  const rows     = calcRows(original);
+  const current = cell.dataset.translation || '';
+  const rows    = calcRows(current);
   cell.innerHTML = `
-    <textarea class="string-original-area" rows="${rows}" readonly
-              title="Original (read-only)">${escHtml(original)}</textarea>
     <textarea class="string-edit-area" rows="${rows}">${escHtml(current)}</textarea>
     <div class="mt-1 d-flex gap-1">
       <button class="btn btn-sm btn-primary"
@@ -582,7 +579,7 @@ function enterEdit(cell, key, esp) {
       <button class="btn btn-sm btn-outline-secondary"
               onclick="cancelEdit(this,${JSON.stringify(current)})">Cancel</button>
     </div>`;
-  cell.querySelector('.string-edit-area').focus();
+  cell.querySelector('textarea').focus();
 }
 
 async function saveEdit(btn, key, esp) {

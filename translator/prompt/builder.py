@@ -154,7 +154,9 @@ appears — translate the word or phrase after each ~ just like any other text.
 - Translate ALL words including proper nouns, NPC names, item names, ingredient names, and \
 place names — do NOT leave them in English unless they are untranslatable brand tokens.
 - Preserve formatting tokens, variable placeholders (<Alias=...>, %1, [PlayerName]) exactly.
-- ⟨NL⟩ represents a newline in the original — preserve every ⟨NL⟩ exactly where it appears.
+- ⟨NL⟩ represents a newline — preserve every ⟨NL⟩ exactly where it appears.
+- ⟨H0⟩, ⟨H1⟩, ⟨H2⟩… are HTML formatting tokens — keep each one exactly in place, \
+translate only the text around them.
 - Copy {{T0}}, {{T1}}... token placeholders verbatim — they are runtime-substituted game values.
 - Output ONLY the numbered translations — no commentary, no explanations.
 {terms}{preserve}{context_block}
@@ -229,7 +231,9 @@ appears — translate the word or phrase after each ~ just like any other text.
 - Translate ALL words including proper nouns, NPC names, item names, ingredient names, and \
 place names — do NOT leave them in English unless they are untranslatable brand tokens.
 - Preserve ALL formatting tokens: <Alias=...>, %1, [PlayerName] exactly.
-- ⟨NL⟩ represents a newline in the original — preserve every ⟨NL⟩ exactly where it appears.
+- ⟨NL⟩ represents a newline — preserve every ⟨NL⟩ exactly where it appears.
+- ⟨H0⟩, ⟨H1⟩, ⟨H2⟩… are HTML formatting tokens — keep each one exactly in place, \
+translate only the text around them.
 - Copy {{T0}}, {{T1}}... token placeholders exactly — they are runtime game values.
 - Output ONLY numbered translations, one per line.
 {terms}{preserve}{context_block}

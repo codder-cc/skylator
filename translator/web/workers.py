@@ -30,7 +30,8 @@ def _save_single_to_cache(cache_path: Path, esp_name: str,
 
 
 def _update_trans_json(mods_dir: Path, mod_name: str,
-                       esp_name: str, key_str: str, translation: str) -> None:
+                       esp_name: str, key_str: str, translation: str,
+                       quality_score: int = None, status: str = None) -> None:
     """Update translation in the .trans.json file if it exists.
     This is authoritative — mod_scanner reads .trans.json first and the
     central cache only as a fallback, so we must write here too."""
@@ -51,6 +52,10 @@ def _update_trans_json(mods_dir: Path, mod_name: str,
                           s.get("field_type"), s.get("field_index")))
                 if k == key_str:
                     s["translation"] = translation
+                    if quality_score is not None:
+                        s["quality_score"] = quality_score
+                    if status is not None:
+                        s["status"] = status
                     updated = True
                     break
             if updated:
@@ -210,7 +215,7 @@ def _save_swf_translation(cfg, mod_name: str, key_str: str, translation: str) ->
 
 def save_translation(mods_dir: Path, mod_name: str, cache_path: Path,
                      esp_name: str, key_str: str, translation: str,
-                     cfg=None) -> None:
+                     cfg=None, quality_score: int = None, status: str = None) -> None:
     """Unified dispatcher: routes save to the correct backend by key prefix."""
     if key_str.startswith("mcm:"):
         _save_mcm_translation(mods_dir, mod_name, key_str, translation)
@@ -226,7 +231,8 @@ def save_translation(mods_dir: Path, mod_name: str, cache_path: Path,
             log.warning("save_translation: cfg required for swf key")
     else:
         _save_single_to_cache(cache_path, esp_name, key_str, translation)
-        _update_trans_json(mods_dir, mod_name, esp_name, key_str, translation)
+        _update_trans_json(mods_dir, mod_name, esp_name, key_str, translation,
+                           quality_score=quality_score, status=status)
 
 
 def translate_mod_worker(job, cfg, mod_name: str,

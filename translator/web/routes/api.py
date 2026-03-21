@@ -450,7 +450,8 @@ def translate_one_string(mod_name: str):
 
         save_translation(cfg.paths.mods_dir, mod_name,
                          cfg.paths.translation_cache,
-                         esp_name, key_str, translated, cfg=cfg)
+                         esp_name, key_str, translated, cfg=cfg,
+                         quality_score=qs, status=status)
         # Add to global dict so future identical strings skip AI
         gd = current_app.config.get("GLOBAL_DICT")
         if gd:

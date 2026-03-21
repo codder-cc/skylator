@@ -28,6 +28,7 @@ class PathsConfig:
     backup_dir:         Optional[Path] = None
     bsarch_exe:         Optional[Path] = None
     temp_dir:           Optional[Path] = None
+    ffdec_jar:          Optional[Path] = None
 
 
 @dataclass
@@ -180,6 +181,7 @@ def load_config(config_file: Path = _CONFIG_FILE) -> TranslatorConfig:
         backup_dir        = Path(p["backup_dir"]) if p.get("backup_dir") else None,
         bsarch_exe        = Path(p["bsarch_exe"]) if p.get("bsarch_exe") else None,
         temp_dir          = Path(p["temp_dir"])   if p.get("temp_dir")   else None,
+        ffdec_jar         = Path(p["ffdec_jar"])  if p.get("ffdec_jar")  else None,
         skyrim_terms      = _resolve(root, p["skyrim_terms"]),
         log_file          = _resolve(root, p["log_file"]),
     )

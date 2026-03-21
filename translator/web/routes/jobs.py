@@ -117,8 +117,9 @@ def create_job():
     elif job_type == "translate_bsa" and mod_names:
         job = _create_translate_bsa_job(jm, cfg, mod_names[0], options)
     elif job_type == "translate_strings" and mod_names:
-        keys = data.get("keys")   # optional list of specific cache key strings
-        job  = _create_translate_strings_job(jm, cfg, mod_names[0], keys)
+        keys  = data.get("keys")   # optional list of specific cache key strings
+        scope = data.get("scope", "all")
+        job   = _create_translate_strings_job(jm, cfg, mod_names[0], keys, scope)
     else:
         return jsonify({"error": "Unknown job type"}), 400
 
@@ -246,21 +247,25 @@ def _create_translate_bsa_job(jm, cfg, mod_name: str, options: dict):
     )
 
 
-def _create_translate_strings_job(jm, cfg, mod_name: str, keys: list | None = None):
+def _create_translate_strings_job(jm, cfg, mod_name: str,
+                                   keys: list | None = None,
+                                   scope: str = "all"):
     def run(job):
         from translator.web.workers import translate_strings_worker
-        translate_strings_worker(job, cfg, mod_name, keys=keys)
+        translate_strings_worker(job, cfg, mod_name, keys=keys, scope=scope)
 
     if keys:
         n = len(keys)
         label = f"Translate {n} string{'s' if n != 1 else ''}: {mod_name}"
+    elif scope != "all":
+        label = f"Translate Strings [{scope.upper()}]: {mod_name}"
     else:
         label = f"Translate Strings: {mod_name}"
 
     return jm.create(
         name     = label,
         job_type = "translate_strings",
-        params   = {"mod_name": mod_name, "keys": keys},
+        params   = {"mod_name": mod_name, "keys": keys, "scope": scope},
         fn       = run,
     )
 

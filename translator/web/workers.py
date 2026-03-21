@@ -88,11 +88,109 @@ def _save_mcm_translation(mods_dir: Path, mod_name: str,
         log.warning("_save_mcm_translation failed for %s: %s", key_str, exc)
 
 
+def _save_bsa_mcm_translation(cfg, mod_name: str, key_str: str, translation: str) -> None:
+    """
+    Write a single BSA-embedded MCM translation to the BsaStringCache.
+
+    key_str format: "bsa-mcm:{bsa_name}:{rel_en_in_cache}:{line_idx}:{mcm_key}"
+    The cache dir already holds extracted *_english.txt; we write *_russian.txt there.
+    """
+    try:
+        parts       = key_str.split(":", 4)
+        bsa_name    = parts[1]
+        rel_en      = parts[2]
+        line_idx    = int(parts[3])
+        mcm_key     = parts[4] if len(parts) > 4 else ""
+
+        from translator.web.asset_cache import BsaStringCache
+        bsa_cache = BsaStringCache(
+            cache_root = cfg.paths.temp_dir,
+            bsarch_exe = str(cfg.paths.bsarch_exe) if cfg.paths.bsarch_exe else None,
+        )
+        cache_dir = bsa_cache._cache_dir(mod_name, bsa_name)
+        en_path   = cache_dir / rel_en
+        if not en_path.exists():
+            log.warning("BSA MCM save: english file not in cache: %s", en_path)
+            return
+
+        stem    = en_path.stem.replace("_english", "")
+        ru_path = en_path.parent / f"{stem}_russian.txt"
+
+        from scripts.translate_mcm import read_trans_file
+        en_pairs, bom = read_trans_file(en_path)
+
+        if ru_path.exists():
+            try:
+                ru_pairs, bom = read_trans_file(ru_path)
+            except Exception:
+                ru_pairs = list(en_pairs)
+        else:
+            ru_pairs = list(en_pairs)
+
+        with _CACHE_LOCK:
+            result = list(ru_pairs)
+            if line_idx < len(result):
+                result[line_idx] = (result[line_idx][0], translation)
+            elif mcm_key:
+                for i, (k, _) in enumerate(result):
+                    if k == mcm_key:
+                        result[i] = (k, translation)
+                        break
+
+            ru_path.parent.mkdir(parents=True, exist_ok=True)
+            lines   = [f"{k}\t{v}" if v else k for k, v in result]
+            content = '\r\n'.join(lines) + '\r\n'
+            ru_path.write_bytes(bom + content.encode('utf-16-le'))
+
+    except Exception as exc:
+        log.warning("_save_bsa_mcm_translation failed for %s: %s", key_str, exc)
+
+
+def _save_swf_translation(cfg, mod_name: str, key_str: str, translation: str) -> None:
+    """
+    Write a translated string to the SWF text cache as {chid}_ru.txt.
+
+    key_str format: "swf:{swf_rel}:{chid}"
+    """
+    try:
+        parts   = key_str.split(":", 2)
+        swf_rel = parts[1]
+        chid    = parts[2]
+
+        from translator.web.asset_cache import SwfStringCache
+        swf_cache = SwfStringCache(
+            cache_root = cfg.paths.temp_dir,
+            ffdec_jar  = str(cfg.paths.ffdec_jar) if cfg.paths.ffdec_jar else None,
+        )
+        cache_dir = swf_cache._cache_dir(mod_name, swf_rel)
+        if not cache_dir.exists():
+            log.warning("SWF save: cache dir not found for %s / %s", mod_name, swf_rel)
+            return
+
+        ru_path = cache_dir / f"{chid}_ru.txt"
+        with _CACHE_LOCK:
+            ru_path.write_text(translation, encoding="utf-8")
+
+    except Exception as exc:
+        log.warning("_save_swf_translation failed for %s: %s", key_str, exc)
+
+
 def save_translation(mods_dir: Path, mod_name: str, cache_path: Path,
-                     esp_name: str, key_str: str, translation: str) -> None:
-    """Unified dispatcher: routes to MCM or ESP save based on key prefix."""
+                     esp_name: str, key_str: str, translation: str,
+                     cfg=None) -> None:
+    """Unified dispatcher: routes save to the correct backend by key prefix."""
     if key_str.startswith("mcm:"):
         _save_mcm_translation(mods_dir, mod_name, key_str, translation)
+    elif key_str.startswith("bsa-mcm:"):
+        if cfg:
+            _save_bsa_mcm_translation(cfg, mod_name, key_str, translation)
+        else:
+            log.warning("save_translation: cfg required for bsa-mcm key")
+    elif key_str.startswith("swf:"):
+        if cfg:
+            _save_swf_translation(cfg, mod_name, key_str, translation)
+        else:
+            log.warning("save_translation: cfg required for swf key")
     else:
         _save_single_to_cache(cache_path, esp_name, key_str, translation)
 
@@ -613,12 +711,14 @@ def validate_translations_worker(job, cfg, mod_name: str):
 
 
 def translate_strings_worker(job, cfg, mod_name: str,
-                             keys: list | None = None):
+                             keys: list | None = None,
+                             scope: str = "all"):
     """
     Translate strings for a mod with real-time per-string SSE updates.
     Processes strings in chunks of 10 for efficient batching.
-    keys: if provided, translate only those specific cache key strings
-          (supports per-row re-translate from the strings editor).
+    keys:  if provided, translate only those specific cache key strings.
+    scope: "all" | "esp" | "mcm" | "bsa" | "swf" — limits which source
+           types are included when keys is None.
     """
     from translator.web.job_manager import JobManager
     from translator.web.mod_scanner import ModScanner
@@ -640,12 +740,34 @@ def translate_strings_worker(job, cfg, mod_name: str,
         )
         gd.load()
 
-    strings = scanner.get_mod_strings(mod_name)
+    from translator.web.asset_cache import BsaStringCache, SwfStringCache
+    _cache_root = cfg.paths.temp_dir if cfg.paths.temp_dir else cfg.paths.translation_cache.parent.parent / "temp"
+    bsa_cache = BsaStringCache(
+        cache_root = _cache_root,
+        bsarch_exe = str(cfg.paths.bsarch_exe) if cfg.paths.bsarch_exe else None,
+    )
+    swf_cache = SwfStringCache(
+        cache_root = _cache_root,
+        ffdec_jar  = str(cfg.paths.ffdec_jar) if cfg.paths.ffdec_jar else None,
+    )
+
+    strings = scanner.get_mod_strings(mod_name, bsa_cache=bsa_cache, swf_cache=swf_cache)
 
     if keys:
         key_set = set(keys)
         strings = [s for s in strings if s["key"] in key_set]
     else:
+        # Apply scope filter
+        _non_esp = ("mcm:", "bsa-mcm:", "swf:")
+        if scope == "esp":
+            strings = [s for s in strings if not any(s["key"].startswith(p) for p in _non_esp)]
+        elif scope == "mcm":
+            strings = [s for s in strings if s["key"].startswith("mcm:")]
+        elif scope == "bsa":
+            strings = [s for s in strings if s["key"].startswith("bsa-mcm:")]
+        elif scope == "swf":
+            strings = [s for s in strings if s["key"].startswith("swf:")]
+
         # Only untranslated, non-localized strings
         strings = [s for s in strings
                    if not s["translation"]
@@ -678,7 +800,7 @@ def translate_strings_worker(job, cfg, mod_name: str,
             if existing:
                 save_translation(cfg.paths.mods_dir, mod_name,
                                  cfg.paths.translation_cache,
-                                 s["esp"], s["key"], existing)
+                                 s["esp"], s["key"], existing, cfg=cfg)
                 jm.add_string_update(job, s["key"], s["esp"],
                                      existing, "translated", None)
                 tm_pairs[s["original"]] = existing
@@ -725,7 +847,7 @@ def translate_strings_worker(job, cfg, mod_name: str,
             qs = quality_score(s["original"], translation)
             save_translation(cfg.paths.mods_dir, mod_name,
                              cfg.paths.translation_cache,
-                             s["esp"], s["key"], translation)
+                             s["esp"], s["key"], translation, cfg=cfg)
             jm.add_string_update(job, s["key"], s["esp"],
                                  translation, "translated", qs)
             # Add to TM and global dict so subsequent chunks + future mods benefit

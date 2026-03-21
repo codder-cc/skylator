@@ -1,0 +1,10 @@
+# Ignore downloaded FFDec binaries (60MB) — download manually:
+# https://github.com/jindrapetrik/jpexs-decompiler/releases
+*.jar
+*.zip
+*.exe
+*.bat
+*.sh
+lib/
+ffdec_extracted/
+flashlib/

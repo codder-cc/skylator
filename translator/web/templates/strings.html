@@ -12,6 +12,32 @@
 
 {% block content %}
 
+{# Scope tab definitions #}
+{% set scope_tabs = [
+  ("all", "All",     scope_counts.all),
+  ("esp", "ESP",     scope_counts.esp),
+  ("mcm", "MCM",     scope_counts.mcm),
+  ("bsa", "BSA-MCM", scope_counts.bsa),
+  ("swf", "SWF",     scope_counts.swf),
+] %}
+
+<!-- Scope tabs -->
+<ul class="nav nav-pills mb-3 gap-1">
+  {% for tab_scope, tab_label, tab_count in scope_tabs %}
+  {% if tab_count > 0 or tab_scope == 'all' %}
+  <li class="nav-item">
+    <a class="nav-link py-1 px-3 {% if scope == tab_scope %}active{% endif %}"
+       href="?scope={{ tab_scope }}&status={{ filter_status }}&q={{ search }}">
+      {{ tab_label }}
+      <span class="badge ms-1 {% if scope == tab_scope %}bg-light text-dark{% else %}bg-secondary{% endif %}">
+        {{ tab_count }}
+      </span>
+    </a>
+  </li>
+  {% endif %}
+  {% endfor %}
+</ul>
+
 <!-- Toolbar -->
 <div class="d-flex flex-wrap gap-2 align-items-center mb-3">
   <!-- Stats badges -->
@@ -34,13 +60,14 @@
   </select>
 
   <div class="ms-auto d-flex gap-2">
-    <!-- Translate All -->
+    <!-- Translate All (scoped to current tab) -->
     <button id="btn-translate-all" class="btn btn-sm btn-primary" onclick="translateAll()">
-      <i class="bi bi-lightning-fill me-1"></i>Translate All
+      <i class="bi bi-lightning-fill me-1"></i>Translate
+      {% if scope != 'all' %}<span class="badge bg-light text-dark ms-1">{{ scope.upper() }}</span>{% endif %}
     </button>
 
     {% if over_threshold and not load_all %}
-    <a href="?all=1&status={{ filter_status }}&q={{ search }}"
+    <a href="?all=1&scope={{ scope }}&status={{ filter_status }}&q={{ search }}"
        class="btn btn-sm btn-outline-secondary">
       <i class="bi bi-list me-1"></i>Load All ({{ total_all }})
     </a>
@@ -75,6 +102,7 @@
       <thead>
         <tr>
           <th style="width:110px">FormID / ESP</th>
+          <th style="width:55px">Src</th>
           <th style="width:50px">Rec</th>
           <th style="width:50px">Field</th>
           <th>Original (EN)</th>
@@ -98,6 +126,19 @@
           <td style="font-size:11px">
             <div class="mono text-muted">{{ s.form_id }}</div>
             <div class="text-accent" style="font-size:10px">{{ s.esp }}</div>
+          </td>
+
+          <!-- Source type badge -->
+          <td style="font-size:10px">
+            {% if s.key.startswith('bsa-mcm:') %}
+              <span class="badge bg-info text-dark">BSA-MCM</span>
+            {% elif s.key.startswith('mcm:') %}
+              <span class="badge bg-purple" style="background:#6f42c1">MCM</span>
+            {% elif s.key.startswith('swf:') %}
+              <span class="badge bg-danger">SWF</span>
+            {% else %}
+              <span class="badge bg-secondary">ESP</span>
+            {% endif %}
           </td>
 
           <!-- Record type -->
@@ -196,19 +237,19 @@
   <ul class="pagination pagination-sm justify-content-center">
     {% if page > 1 %}
     <li class="page-item">
-      <a class="page-link" href="?page={{ page-1 }}&per={{ per_page }}&status={{ filter_status }}&q={{ search }}">
+      <a class="page-link" href="?page={{ page-1 }}&per={{ per_page }}&scope={{ scope }}&status={{ filter_status }}&q={{ search }}">
         <i class="bi bi-chevron-left"></i>
       </a>
     </li>
     {% endif %}
     {% for p in range([1, page-3]|max, [total_pages+1, page+4]|min) %}
     <li class="page-item {% if p == page %}active{% endif %}">
-      <a class="page-link" href="?page={{ p }}&per={{ per_page }}&status={{ filter_status }}&q={{ search }}">{{ p }}</a>
+      <a class="page-link" href="?page={{ p }}&per={{ per_page }}&scope={{ scope }}&status={{ filter_status }}&q={{ search }}">{{ p }}</a>
     </li>
     {% endfor %}
     {% if page < total_pages %}
     <li class="page-item">
-      <a class="page-link" href="?page={{ page+1 }}&per={{ per_page }}&status={{ filter_status }}&q={{ search }}">
+      <a class="page-link" href="?page={{ page+1 }}&per={{ per_page }}&scope={{ scope }}&status={{ filter_status }}&q={{ search }}">
         <i class="bi bi-chevron-right"></i>
       </a>
     </li>
@@ -221,7 +262,8 @@
 
 {% block scripts %}
 <script>
-const MOD_NAME = {{ mod.folder_name | tojson }};
+const MOD_NAME   = {{ mod.folder_name | tojson }};
+const CURR_SCOPE = {{ scope | tojson }};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -348,8 +390,9 @@ async function translateAll() {
   btn.disabled = true;
 
   const r = await POST('/jobs/create', {
-    type: 'translate_strings',
-    mods: [MOD_NAME],
+    type:  'translate_strings',
+    mods:  [MOD_NAME],
+    scope: CURR_SCOPE,
   });
 
   if (!r.job_id) {

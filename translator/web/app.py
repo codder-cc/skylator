@@ -55,6 +55,18 @@ def create_app(config_path: Path | None = None) -> Flask:
         )
     app.config["SCANNER"] = scanner
 
+    # ── Init BSA / SWF string caches ────────────────────────────────────────
+    from translator.web.asset_cache import BsaStringCache, SwfStringCache
+    _cache_root = cfg.paths.temp_dir if cfg and cfg.paths.temp_dir else ROOT / "temp"
+    app.config["BSA_CACHE"] = BsaStringCache(
+        cache_root = _cache_root,
+        bsarch_exe = str(cfg.paths.bsarch_exe) if cfg and cfg.paths.bsarch_exe else None,
+    )
+    app.config["SWF_CACHE"] = SwfStringCache(
+        cache_root = _cache_root,
+        ffdec_jar  = str(cfg.paths.ffdec_jar) if cfg and cfg.paths.ffdec_jar else None,
+    )
+
     # ── Init global text dictionary ──────────────────────────────────────────
     from translator.web.global_dict import GlobalTextDict
     cache_dir = cfg.paths.translation_cache.parent if cfg else ROOT / "cache"

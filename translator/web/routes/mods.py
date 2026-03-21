@@ -85,6 +85,36 @@ def mod_detail(mod_name: str):
 
 _STRINGS_LOAD_ALL_THRESHOLD = 5000
 
+# Scope → key prefix(es)
+_SCOPE_PREFIXES = {
+    "mcm": ("mcm:",),
+    "bsa": ("bsa-mcm:",),
+    "swf": ("swf:",),
+}
+
+
+def _filter_by_scope(strings: list, scope: str) -> list:
+    if scope == "all":
+        return strings
+    if scope == "esp":
+        non_esp = ("mcm:", "bsa-mcm:", "swf:")
+        return [s for s in strings if not any(s["key"].startswith(p) for p in non_esp)]
+    prefixes = _SCOPE_PREFIXES.get(scope)
+    if prefixes:
+        return [s for s in strings if any(s["key"].startswith(p) for p in prefixes)]
+    return strings
+
+
+def _scope_counts(strings: list) -> dict:
+    non_esp = ("mcm:", "bsa-mcm:", "swf:")
+    return {
+        "all": len(strings),
+        "esp": sum(1 for s in strings if not any(s["key"].startswith(p) for p in non_esp)),
+        "mcm": sum(1 for s in strings if s["key"].startswith("mcm:")),
+        "bsa": sum(1 for s in strings if s["key"].startswith("bsa-mcm:")),
+        "swf": sum(1 for s in strings if s["key"].startswith("swf:")),
+    }
+
 
 @bp.route("/<path:mod_name>/strings")
 def mod_strings(mod_name: str):
@@ -93,13 +123,21 @@ def mod_strings(mod_name: str):
     if mod is None:
         abort(404)
 
+    scope         = request.args.get("scope", "all")
     filter_status = request.args.get("status", "all")
     search        = request.args.get("q", "")
 
     gd        = current_app.config.get("GLOBAL_DICT")
-    strings   = scanner.get_mod_strings(mod_name, global_dict=gd)
-    total_all = len(strings)
+    bsa_cache = current_app.config.get("BSA_CACHE")
+    swf_cache = current_app.config.get("SWF_CACHE")
+    all_strings = scanner.get_mod_strings(mod_name, global_dict=gd,
+                                          bsa_cache=bsa_cache, swf_cache=swf_cache)
+
+    scope_counts   = _scope_counts(all_strings)
+    total_all      = scope_counts["all"]
     over_threshold = total_all > _STRINGS_LOAD_ALL_THRESHOLD
+
+    strings = _filter_by_scope(all_strings, scope)
 
     if filter_status != "all":
         strings = [s for s in strings if s["status"] == filter_status]
@@ -137,6 +175,8 @@ def mod_strings(mod_name: str):
         search         = search,
         load_all       = load_all,
         over_threshold = over_threshold,
+        scope          = scope,
+        scope_counts   = scope_counts,
     )
 
 
@@ -156,7 +196,7 @@ def update_string(mod_name: str):
         esp_name = data.get("esp", "")
         save_translation(cfg.paths.mods_dir, mod_name,
                          cfg.paths.translation_cache,
-                         esp_name, key_str, new_text)
+                         esp_name, key_str, new_text, cfg=cfg)
         return jsonify({"ok": True})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500

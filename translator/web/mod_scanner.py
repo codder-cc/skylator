@@ -124,14 +124,18 @@ class ModScanner:
         return None
 
     def get_mod_strings(self, folder_name: str,
-                        global_dict=None) -> list[dict]:
+                        global_dict=None,
+                        bsa_cache=None,
+                        swf_cache=None) -> list[dict]:
         """
-        Extract strings from all ESP/ESM in a mod folder.
+        Extract strings from ESP/ESM, loose MCM, BSA-embedded MCM, and SWF.
         Returns list of dicts: {form_id, rec_type, field, original, translation,
                                  status, key, quality_score, dict_match}.
 
         dict_match: cross-mod existing translation from GlobalTextDict (or "").
         global_dict: GlobalTextDict instance (optional).
+        bsa_cache: BsaStringCache instance (optional) — enables BSA-embedded MCM.
+        swf_cache: SwfStringCache instance (optional) — enables SWF text strings.
 
         When a .trans.json file exists for an ESP, it is used as the primary source.
         This preserves original English text even after translations have been applied
@@ -252,6 +256,105 @@ class ModScanner:
                         "quality_score": None,
                         "dict_match":    (global_dict.get(en_text)
                                           if global_dict and not translation
+                                          else ""),
+                    })
+
+        # ── BSA-embedded MCM (via BsaStringCache) ────────────────────────────
+        if bsa_cache and read_trans_file:
+            for bsa_path in folder.glob("*.bsa"):
+                cd = bsa_cache.ensure_extracted(bsa_path, folder_name)
+                if cd is None:
+                    continue
+                bsa_rel = bsa_path.name
+                for en_txt in bsa_cache.get_english_files(folder_name, bsa_rel):
+                    ru_txt = bsa_cache.russian_path_for(en_txt)
+                    try:
+                        en_pairs, _ = read_trans_file(en_txt)
+                    except Exception as exc:
+                        log.warning("BSA MCM read failed for %s: %s", en_txt, exc)
+                        continue
+
+                    ru_dict: dict[str, str] = {}
+                    if ru_txt.exists():
+                        try:
+                            ru_pairs, _ = read_trans_file(ru_txt)
+                            ru_dict = {k: v for k, v in ru_pairs if k and v}
+                        except Exception:
+                            pass
+
+                    # rel path of english.txt relative to cache dir (for key)
+                    try:
+                        from translator.web.asset_cache import BsaStringCache as _BSC
+                        cache_dir = bsa_cache._cache_dir(folder_name, bsa_rel)
+                        rel_in_cache = str(en_txt.relative_to(cache_dir)).replace("\\", "/")
+                    except Exception:
+                        rel_in_cache = en_txt.name
+
+                    for line_idx, (mcm_key, en_text) in enumerate(en_pairs):
+                        if not en_text or not needs_translation(en_text):
+                            continue
+                        translation = ru_dict.get(mcm_key, "")
+                        key_str = f"bsa-mcm:{bsa_rel}:{rel_in_cache}:{line_idx}:{mcm_key}"
+                        strings.append({
+                            "esp":           f"{bsa_rel}/{en_txt.name}",
+                            "form_id":       mcm_key or f"line{line_idx}",
+                            "rec_type":      "BSA-MCM",
+                            "field":         "TEXT",
+                            "idx":           line_idx,
+                            "original":      en_text,
+                            "translation":   translation,
+                            "status":        "translated" if translation else "pending",
+                            "key":           key_str,
+                            "quality_score": None,
+                            "dict_match":    (global_dict.get(en_text)
+                                              if global_dict and not translation
+                                              else ""),
+                        })
+
+        # ── SWF text strings (via SwfStringCache) ────────────────────────────
+        if swf_cache:
+            from scripts.esp_engine import needs_translation as _needs_trans
+            for swf_path in folder.rglob("*.swf"):
+                try:
+                    swf_rel = str(swf_path.relative_to(folder)).replace("\\", "/")
+                except ValueError:
+                    swf_rel = swf_path.name
+
+                cd = swf_cache.ensure_extracted(swf_path, folder_name, swf_rel)
+                if cd is None:
+                    continue
+
+                for en_file in swf_cache.get_english_files(folder_name, swf_rel):
+                    try:
+                        orig = en_file.read_text(encoding="utf-8", errors="replace").strip()
+                    except Exception:
+                        continue
+                    if not orig or not _needs_trans(orig):
+                        continue
+
+                    chid = en_file.stem.replace("_en", "")
+                    ru_file = swf_cache.russian_path_for(en_file)
+                    trans = ""
+                    if ru_file.exists():
+                        try:
+                            trans = ru_file.read_text(encoding="utf-8", errors="replace").strip()
+                        except Exception:
+                            pass
+
+                    key_str = f"swf:{swf_rel}:{chid}"
+                    strings.append({
+                        "esp":           swf_path.name,
+                        "form_id":       chid,
+                        "rec_type":      "SWF",
+                        "field":         "TEXT",
+                        "idx":           0,
+                        "original":      orig,
+                        "translation":   trans,
+                        "status":        "translated" if trans else "pending",
+                        "key":           key_str,
+                        "quality_score": None,
+                        "dict_match":    (global_dict.get(orig)
+                                          if global_dict and not trans
                                           else ""),
                     })
 

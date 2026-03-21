@@ -354,7 +354,7 @@ def translate_one_string(mod_name: str):
                 from translator.web.workers import save_translation
                 save_translation(cfg.paths.mods_dir, mod_name,
                                  cfg.paths.translation_cache,
-                                 esp_name, key_str, existing)
+                                 esp_name, key_str, existing, cfg=cfg)
                 return jsonify({"ok": True, "translation": existing,
                                 "quality_score": None, "from_dict": True})
 
@@ -393,7 +393,7 @@ def translate_one_string(mod_name: str):
         qs         = quality_score(original, translated)
         save_translation(cfg.paths.mods_dir, mod_name,
                          cfg.paths.translation_cache,
-                         esp_name, key_str, translated)
+                         esp_name, key_str, translated, cfg=cfg)
         # Add to global dict so future identical strings skip AI
         gd = current_app.config.get("GLOBAL_DICT")
         if gd:

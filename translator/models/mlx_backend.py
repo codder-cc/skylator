@@ -66,8 +66,16 @@ class MlxBackend(BaseBackend):
             )
 
         log.info("MlxBackend: loading %s via MLX (Apple Silicon)...", self._repo_id)
-        # tokenizer_config: suppress mistral regex warning for non-mistral models
-        self._model, self._tokenizer = mlx_lm.load(self._repo_id)
+        # Download to project cache dir if specified, then load from local path
+        load_path = self._repo_id
+        if self._local_cache_dir:
+            from huggingface_hub import snapshot_download
+            load_path = snapshot_download(
+                self._repo_id,
+                cache_dir=str(self._local_cache_dir),
+            )
+            log.info("MlxBackend: cached to %s", load_path)
+        self._model, self._tokenizer = mlx_lm.load(load_path)
         self._state = ModelState.LOADED
         log.info("MlxBackend: model loaded into unified memory")
 

@@ -87,12 +87,14 @@ def main():
                 break
 
     backend_type = "llamacpp"
+    cache_dir    = None
     if config_file and config_file.exists():
         from translator.config import load_config
         cfg             = load_config(config_file)
         model_cfg       = cfg.ensemble.model_b
         translation_cfg = cfg.translation
         backend_type    = cfg.ensemble.backend_type
+        cache_dir       = cfg.paths.model_cache_dir
         log.info("Config loaded: %s", config_file)
     else:
         log.warning("No config file found — model must be specified via --model-path")
@@ -126,6 +128,7 @@ def main():
         model_cfg       = model_cfg,
         translation_cfg = translation_cfg,
         backend_type    = backend_type,
+        cache_dir       = cache_dir,
         mdns_enabled    = not args.no_mdns,
         mdns_host       = args.host if args.host != "0.0.0.0" else "",
         mdns_port       = args.port,

@@ -83,9 +83,10 @@ class EnsemblePipeline:
 
         else:
             # Default: local — pick backend based on backend_type
-            self._model_full = self._make_backend(ens_cfg.model_b, ens_cfg, cfg.translation)
+            cache_dir = cfg.paths.model_cache_dir
+            self._model_full = self._make_backend(ens_cfg.model_b, ens_cfg, cfg.translation, cache_dir)
             self._model_lite = (
-                self._make_backend(ens_cfg.model_b_lite, ens_cfg, cfg.translation)
+                self._make_backend(ens_cfg.model_b_lite, ens_cfg, cfg.translation, cache_dir)
                 if ens_cfg.model_b_lite else None
             )
             log.info("EnsemblePipeline: local mode (%s)", ens_cfg.backend_type)
@@ -174,19 +175,20 @@ class EnsemblePipeline:
         return results  # type: ignore[return-value]
 
     @staticmethod
-    def _make_backend(model_cfg, ens_cfg, translation_cfg):
+    def _make_backend(model_cfg, ens_cfg, translation_cfg, cache_dir=None):
         """Instantiate the correct backend class based on ensemble.backend_type."""
         backend_type = getattr(ens_cfg, "backend_type", "llamacpp")
         if backend_type == "mlx":
             from translator.models.mlx_backend import MlxBackend
             return MlxBackend(
-                repo_id     = model_cfg.repo_id,
-                source_lang = translation_cfg.source_lang,
-                target_lang = translation_cfg.target_lang,
-                max_tokens  = model_cfg.max_new_tokens,
-                temperature = model_cfg.temperature,
-                top_p       = model_cfg.top_p,
+                repo_id           = model_cfg.repo_id,
+                source_lang       = translation_cfg.source_lang,
+                target_lang       = translation_cfg.target_lang,
+                max_tokens        = model_cfg.max_new_tokens,
+                temperature       = model_cfg.temperature,
+                top_p             = model_cfg.top_p,
                 repetition_penalty = model_cfg.repetition_penalty,
+                local_cache_dir   = cache_dir,
             )
         # Default: llamacpp
         return LlamaCppBackend(model_cfg=model_cfg, translation_cfg=translation_cfg)

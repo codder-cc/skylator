@@ -153,6 +153,7 @@ def create_server_app(
     model_cfg=None,
     translation_cfg=None,
     backend_type: str = "llamacpp",
+    cache_dir=None,
     mdns_enabled: bool = True,
     mdns_host: str = "",
     mdns_port: int = 8765,
@@ -194,7 +195,7 @@ def create_server_app(
         from types import SimpleNamespace
         from translator.ensemble.pipeline import EnsemblePipeline
         ens_cfg = SimpleNamespace(backend_type=backend_type)
-        _state.backend = EnsemblePipeline._make_backend(model_cfg, ens_cfg, translation_cfg)
+        _state.backend = EnsemblePipeline._make_backend(model_cfg, ens_cfg, translation_cfg, cache_dir)
         _state.backend.load()
         log.info("Model loaded on %s (%s)", platform.system(), _state.gpu_label)
 

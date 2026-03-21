@@ -140,25 +140,28 @@ def enrich_context(
 
 # ── HY-MT prompt ──────────────────────────────────────────────────────────────
 
-_HYMT_TMPL = """\
-You are a professional video game translator specializing in The Elder Scrolls V: Skyrim.
-Translate each numbered item from {src} to {tgt}.
-
+_CRITICAL_RULES = """\
 CRITICAL RULES — violating any of these is an error:
 - Translate the COMPLETE text. Do NOT summarize, shorten, paraphrase, or omit any part.
-- Every sentence, clause, list item, and word in the original must appear in the translation.
+- Every sentence, clause, list item, and word must appear in the translation.
 - If the original contains N sentences or N items separated by ~ or newlines, \
 the translation MUST also contain exactly N sentences or N items.
 - The ~ character is a Skyrim UI line-separator/bullet. Preserve every ~ exactly where it \
 appears — translate the word or phrase after each ~ just like any other text.
 - Translate ALL words including proper nouns, NPC names, item names, ingredient names, and \
 place names — do NOT leave them in English unless they are untranslatable brand tokens.
-- Preserve formatting tokens, variable placeholders (<Alias=...>, %1, [PlayerName]) exactly.
+- Preserve formatting tokens and variable placeholders (<Alias=...>, %1, [PlayerName]) exactly.
 - ⟨NL⟩ represents a newline — preserve every ⟨NL⟩ exactly where it appears.
 - ⟨H0⟩, ⟨H1⟩, ⟨H2⟩… are HTML formatting tokens — keep each one exactly in place, \
 translate only the text around them.
 - Copy {{T0}}, {{T1}}... token placeholders verbatim — they are runtime-substituted game values.
-- Output ONLY the numbered translations — no commentary, no explanations.
+- Output ONLY the numbered translations — no commentary, no explanations."""
+
+_HYMT_TMPL = """\
+You are a professional video game translator specializing in The Elder Scrolls V: Skyrim.
+Translate each numbered item from {src} to {tgt}.
+
+""" + _CRITICAL_RULES + """
 {terms}{preserve}{context_block}
 Strings to translate:
 {numbered_texts}"""
@@ -221,21 +224,7 @@ _QWEN_SYSTEM = (
 _QWEN_USER_TMPL = """\
 Translate each numbered string from {src} to {tgt}.
 
-CRITICAL RULES — violating any of these is an error:
-- Translate the COMPLETE text. Do NOT summarize, shorten, paraphrase, or omit any part.
-- Every sentence, clause, list item, and word must appear in the translation.
-- If the original contains N sentences or N items separated by ~ or newlines, \
-the translation MUST also contain exactly N sentences or N items.
-- The ~ character is a Skyrim UI line-separator/bullet. Preserve every ~ exactly where it \
-appears — translate the word or phrase after each ~ just like any other text.
-- Translate ALL words including proper nouns, NPC names, item names, ingredient names, and \
-place names — do NOT leave them in English unless they are untranslatable brand tokens.
-- Preserve ALL formatting tokens: <Alias=...>, %1, [PlayerName] exactly.
-- ⟨NL⟩ represents a newline — preserve every ⟨NL⟩ exactly where it appears.
-- ⟨H0⟩, ⟨H1⟩, ⟨H2⟩… are HTML formatting tokens — keep each one exactly in place, \
-translate only the text around them.
-- Copy {{T0}}, {{T1}}... token placeholders exactly — they are runtime game values.
-- Output ONLY numbered translations, one per line.
+""" + _CRITICAL_RULES + """
 {terms}{preserve}{context_block}
 Strings:
 {numbered_texts}"""

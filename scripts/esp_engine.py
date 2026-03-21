@@ -591,15 +591,66 @@ def validate_tokens(original: str, translation: str) -> tuple:
 
 # ── Translation ───────────────────────────────────────────────────────────────
 
-def translate_batch(texts: list, context: str = '', progress_cb=None,
+def translate_batch(texts: list, context: str = '', params=None, progress_cb=None,
                     force: bool = False) -> list:
     """Delegate to translator.pipeline (ensemble)."""
     try:
         from translator.pipeline import translate_batch as _tb
-        return _tb(texts, context, progress_cb=progress_cb, force=force)
+        return _tb(texts, context, params=params, progress_cb=progress_cb, force=force)
     except Exception:
         log.exception("translate_batch error")
         return list(texts)
+
+
+def translate_texts(texts: list[str], context: str = '', params=None, force: bool = False,
+                    progress_cb=None) -> list[dict]:
+    """
+    Core translation pipeline shared by single-string and batch flows.
+
+    Steps: needs_translation filter (skipped items returned as-is) →
+           prepare_for_ai → translate_batch (with params) → restore_from_ai →
+           validate_tokens → quality_score → status
+
+    Returns one dict per input string::
+
+        {
+            "translation":   str | None,   # None if skipped
+            "status":        str,           # "translated" | "needs_review" | "skipped"
+            "quality_score": int | None,
+            "token_issues":  list[str],
+            "skipped":       bool,
+        }
+
+    params: InferenceParams with per-call overrides (None = model config defaults).
+    force=True bypasses the in-memory pipeline cache (⚡ single-shot).
+    """
+    results: list[dict] = [
+        {"translation": None, "status": "skipped", "quality_score": None,
+         "token_issues": [], "skipped": True}
+        for _ in texts
+    ]
+    indices = [i for i, t in enumerate(texts) if needs_translation(t)]
+    if not indices:
+        return results
+
+    subset = [texts[i] for i in indices]
+    ai_texts, ai_meta = prepare_for_ai(subset)
+    raw_results = translate_batch(ai_texts, context, params=params, force=force,
+                                  progress_cb=progress_cb)
+    translated  = restore_from_ai(raw_results, ai_meta)
+
+    for idx, orig, trans in zip(indices, subset, translated):
+        tok_ok, tok_issues = validate_tokens(orig, trans)
+        qs = quality_score(orig, trans)
+        status = "translated" if (tok_ok and qs > 70) else "needs_review"
+        results[idx] = {
+            "translation":   trans,
+            "status":        status,
+            "quality_score": qs,
+            "token_issues":  tok_issues,
+            "skipped":       False,
+        }
+    return results
 
 
 def needs_translation(text: str) -> bool:
@@ -641,13 +692,20 @@ def quality_score(original: str, translation: str) -> int:
     if not translation or not translation.strip():
         return 0
     score = 100
-    # Length ratio — Russian is typically 10-30% longer than English
-    ratio = len(translation) / max(len(original), 1)
+    # Length ratio — strip format tags and inline tokens first so HTML wrappers
+    # don't mask truncated content (e.g. <font>...</font> around short translation)
+    def _plain(s: str) -> str:
+        return _INLINE_TOKEN_RE.sub('', _FORMAT_TAG_RE.sub('', s)).strip()
+    orig_plain = _plain(original)
+    trans_plain = _plain(translation)
+    ratio = len(trans_plain) / max(len(orig_plain), 1)
     if ratio > 5.0 or ratio < 0.15:
         score -= 40
-    elif ratio > 3.0 or ratio < 0.3:
+    elif ratio > 3.0 or ratio < 0.25:
+        score -= 30
+    elif ratio > 2.0 or ratio < 0.4:
         score -= 20
-    elif ratio > 2.0 or ratio < 0.5:
+    elif ratio > 1.8 or ratio < 0.5:
         score -= 10
     # Skyrim inline token preservation
     token_re = re.compile(r'<[A-Za-z][^>]*>|\[PageBreak\]|\\n|%[dis%]|\[CRLF\]', re.IGNORECASE)
@@ -677,6 +735,7 @@ def translate_strings(strings: list, progress_path: Path = None, context: str = 
     """
     Translate all strings in one pipeline call (model loads once, not per batch).
     progress_cb(done, total) called after translation completes.
+    Uses translate_texts() as the shared core pipeline.
     """
     # Load incremental progress from disk
     done: dict[str, str] = {}
@@ -695,33 +754,45 @@ def translate_strings(strings: list, progress_path: Path = None, context: str = 
     log.info("Strings needing translation: %d / %d  (%d cached)",
              len(to_do), len(strings), len(to_do) - len(uncached))
 
+    # done_results maps text → full result dict (for newly translated strings)
+    done_results: dict[str, dict] = {}
+
     if uncached:
-        texts_full = [s['text'] for _, s in uncached]
-        ai_texts, ai_meta = prepare_for_ai(texts_full)
-        log.info("Sending %d strings to pipeline (model loads once)...", len(ai_texts))
+        texts_full   = [s['text'] for _, s in uncached]
         cached_count = len(to_do) - len(uncached)
         total_todo   = len(to_do)
+        log.info("Sending %d strings to pipeline (model loads once)...", len(texts_full))
 
         def _inner_cb(batch_done, _batch_total):
             if progress_cb:
                 progress_cb(cached_count + batch_done, total_todo)
 
-        translated_raw = translate_batch(ai_texts, context, progress_cb=_inner_cb)
-        translated     = restore_from_ai(translated_raw, ai_meta)
-        for (i, s), t in zip(uncached, translated):
-            done[s['text']] = t
+        new_results = translate_texts(texts_full, context=context, progress_cb=_inner_cb)
+        for (i, s), r in zip(uncached, new_results):
+            if not r["skipped"]:
+                done[s['text']] = r["translation"]
+                done_results[s['text']] = r
 
-    # Apply all translations back
+    # Apply all translations back; use pre-computed result dict where available
     for i, s in to_do:
-        if s['text'] in done:
-            t = done[s['text']]
-            strings[i]['translation'] = t
+        t = done.get(s['text'])
+        if not t:
+            continue
+        strings[i]['translation'] = t
+        if s['text'] in done_results:
+            r = done_results[s['text']]
+            strings[i]['quality_score'] = r['quality_score']
+            strings[i]['status']        = r['status']
+        else:
+            # From progress cache — recompute
             tok_ok, _ = validate_tokens(s['text'], t)
-            strings[i]['status'] = 'translated' if tok_ok else 'needs_review'
+            qs = quality_score(s['text'], t)
+            strings[i]['quality_score'] = qs
+            strings[i]['status'] = 'translated' if (tok_ok and qs > 70) else 'needs_review'
 
-    # Add quality scores to all translated strings
+    # Strings that were already translated before this run (not in to_do)
     for s in strings:
-        if s.get('translation'):
+        if s.get('translation') and 'quality_score' not in s:
             s['quality_score'] = quality_score(s['text'], s['translation'])
 
     if progress_path:

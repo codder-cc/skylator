@@ -22,17 +22,18 @@ def _get_pipeline():
 
 
 def translate_batch(texts: list[str], context: str = "",
-                    progress_cb=None, force: bool = False) -> list[str]:
+                    params=None, progress_cb=None, force: bool = False) -> list[str]:
     """
     Translate a batch of strings using the ensemble pipeline.
     Returns list of same length. Never raises — returns originals on failure.
     progress_cb(done, total) called after each inner batch completes.
     force=True bypasses the in-memory translation cache.
+    params: InferenceParams with per-call overrides (None = use model config defaults).
     """
     if not texts:
         return []
     try:
-        return _get_pipeline().translate(texts, context=context,
+        return _get_pipeline().translate(texts, context=context, params=params,
                                          progress_cb=progress_cb, force=force)
     except Exception as exc:
         log.exception("translate_batch failed")

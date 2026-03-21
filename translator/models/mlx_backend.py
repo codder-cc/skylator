@@ -93,12 +93,17 @@ class MlxBackend(BaseBackend):
         self,
         texts: list[str],
         context: str = "",
+        params=None,
         progress_cb=None,
     ) -> list[str]:
         """
-        Translate strings one by one using mlx_lm.generate().
+        Translate strings using mlx_lm.generate().
         Returns originals on any error. Never raises.
+        params: InferenceParams with per-call overrides (None = use constructor defaults).
         """
+        from translator.models.inference_params import InferenceParams
+        params = params or InferenceParams.defaults()
+
         if not texts:
             return []
         if not self.is_loaded:
@@ -109,50 +114,34 @@ class MlxBackend(BaseBackend):
         from translator.prompt.builder import build_prompt
         from translator.prompt.parser import parse_numbered_output
 
-        # Build sampler once (temperature + top_p)
-        sampler = make_sampler(temp=self._temperature, top_p=self._top_p)
-        # Repetition penalty processor
-        logits_processors = make_logits_processors(
-            repetition_penalty=self._repetition_penalty,
-        )
+        temperature        = params.temperature        if params.temperature        is not None else self._temperature
+        top_p              = params.top_p              if params.top_p              is not None else self._top_p
+        repetition_penalty = params.repetition_penalty if params.repetition_penalty is not None else self._repetition_penalty
+        max_tokens         = params.max_tokens         if params.max_tokens         is not None else self._max_tokens
+        batch_size         = params.batch_size         if params.batch_size         is not None else 4
+
+        sampler            = make_sampler(temp=temperature, top_p=top_p)
+        logits_processors  = make_logits_processors(repetition_penalty=repetition_penalty)
 
         results: list[str] = []
-        batch_size = 4  # process in batches of 4 strings per inference call
 
         for i in range(0, len(texts), batch_size):
             batch = texts[i: i + batch_size]
             try:
-                prompt = build_prompt(
-                    texts      = batch,
-                    src_lang   = self._source_lang,
-                    tgt_lang   = self._target_lang,
-                    context    = context,
-                    model_type = "qwen",
+                formatted = build_prompt(
+                    texts         = batch,
+                    src_lang      = self._source_lang,
+                    tgt_lang      = self._target_lang,
+                    context       = context,
+                    model_type    = "qwen",
+                    system_prompt = params.system_prompt,
+                    thinking      = params.thinking,
                 )
-                # Format as chat using tokenizer's chat template
-                messages = [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a professional video game translator specializing "
-                            "in The Elder Scrolls V: Skyrim. Follow instructions exactly."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ]
-                formatted = self._tokenizer.apply_chat_template(
-                    messages,
-                    add_generation_prompt=True,
-                    tokenize=False,
-                )
-                # Pre-fill </think> to skip chain-of-thought (same trick as LlamaCppBackend)
-                formatted += "</think>\n\n"
-
                 raw = mlx_lm.generate(
                     self._model,
                     self._tokenizer,
                     prompt            = formatted,
-                    max_tokens        = self._max_tokens,
+                    max_tokens        = max_tokens,
                     sampler           = sampler,
                     logits_processors = logits_processors,
                     verbose           = False,

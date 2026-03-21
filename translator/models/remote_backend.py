@@ -64,12 +64,16 @@ class RemoteBackend(BaseBackend):
         self,
         texts: list[str],
         context: str = "",
+        params=None,
         progress_cb=None,
     ) -> list[str]:
         """
         Translate via remote server. Returns originals on any network/server error.
         Never raises.
+        params: InferenceParams — forwarded to server so remote inference uses same config.
         """
+        from translator.models.inference_params import InferenceParams
+        params = params or InferenceParams.defaults()
         if not texts:
             return []
         try:
@@ -78,6 +82,7 @@ class RemoteBackend(BaseBackend):
                 source_lang = self._source_lang,
                 target_lang = self._target_lang,
                 context     = context,
+                params      = params,
             )
             if len(translations) != len(texts):
                 log.warning(

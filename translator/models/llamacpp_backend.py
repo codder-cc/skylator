@@ -110,21 +110,23 @@ class LlamaCppBackend(BaseBackend):
         self._model = None
 
     def translate(self, texts: list[str], context: str = "",
-                  progress_cb=None) -> list[str]:
+                  params=None, progress_cb=None) -> list[str]:
+        from translator.models.inference_params import InferenceParams
+        params = params or InferenceParams.defaults()
         if not self.is_loaded:
             self.load()
 
         results: list[str] = []
-        batch_size = self._mcfg.batch_size
+        batch_size = params.batch_size if params.batch_size is not None else self._mcfg.batch_size
         done = 0
 
         for i in range(0, len(texts), batch_size):
             batch = texts[i : i + batch_size]
             try:
-                results.extend(self._translate_batch(batch, context))
+                results.extend(self._translate_batch(batch, context, params))
             except Exception as exc:
                 log.error(f"LlamaCppBackend batch {i // batch_size} failed: {exc}")
-                results.extend(batch)  # fallback: return original
+                results.extend(batch)
             done += len(batch)
             if progress_cb:
                 progress_cb(done, len(texts))
@@ -137,19 +139,23 @@ class LlamaCppBackend(BaseBackend):
         candidates_a: list[str],
         candidates_b: list[str],
         context: str = "",
+        params=None,
     ) -> list[str]:
         """Pick the best translation given two candidates."""
+        from translator.models.inference_params import InferenceParams
+        params = params or InferenceParams.defaults()
         if not self.is_loaded:
             self.load()
 
         results: list[str] = []
-        batch_size = self._mcfg.batch_size
+        batch_size = params.batch_size if params.batch_size is not None else self._mcfg.batch_size
 
         for i in range(0, len(texts), batch_size):
             sl = slice(i, i + batch_size)
             try:
                 results.extend(
-                    self._arbitrate_batch(texts[sl], candidates_a[sl], candidates_b[sl], context)
+                    self._arbitrate_batch(texts[sl], candidates_a[sl], candidates_b[sl],
+                                          context, params)
                 )
             except Exception as exc:
                 log.error(f"LlamaCppBackend arbitrate batch {i // batch_size} failed: {exc}")
@@ -159,28 +165,17 @@ class LlamaCppBackend(BaseBackend):
 
     # ── internals ─────────────────────────────────────────────────────────────
 
-    _SYSTEM_PROMPT = (
-        "You are a professional video game translator specializing "
-        "in The Elder Scrolls V: Skyrim. Follow instructions exactly."
-    )
-
-    def _chat(self, user_prompt: str, temperature: float | None = None) -> str:
-        # Build raw prompt with </think> pre-filled to skip chain-of-thought reasoning.
-        # Qwen3.5's chat template forces <think> on every assistant turn; pre-filling
-        # </think> immediately closes the think block (same as Ollama's think=False).
-        prompt = (
-            f"<|im_start|>system\n{self._SYSTEM_PROMPT}<|im_end|>\n"
-            f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
-            f"<|im_start|>assistant\n</think>\n\n"
-        )
+    def _chat(self, formatted_prompt: str, params=None) -> str:
+        # formatted_prompt is fully assembled by builder.py — system+user+think_prefix included.
         t0   = _time.time()
+        p    = params  # shorthand
         resp = self._model.create_completion(
-            prompt,
-            max_tokens=self._mcfg.max_new_tokens,
-            temperature=temperature if temperature is not None else self._mcfg.temperature,
-            top_k=self._mcfg.top_k,
-            top_p=self._mcfg.top_p,
-            repeat_penalty=self._mcfg.repetition_penalty,
+            formatted_prompt,
+            max_tokens   = p.max_tokens         if p and p.max_tokens         is not None else self._mcfg.max_new_tokens,
+            temperature  = p.temperature        if p and p.temperature        is not None else self._mcfg.temperature,
+            top_k        = p.top_k              if p and p.top_k              is not None else self._mcfg.top_k,
+            top_p        = p.top_p              if p and p.top_p              is not None else self._mcfg.top_p,
+            repeat_penalty = p.repetition_penalty if p and p.repetition_penalty is not None else self._mcfg.repetition_penalty,
             stop=["<|im_end|>", "<|im_start|>"],
             echo=False,
         )
@@ -209,17 +204,19 @@ class LlamaCppBackend(BaseBackend):
             )
         return resp["choices"][0]["text"].strip()
 
-    def _translate_batch(self, batch: list[str], context: str) -> list[str]:
+    def _translate_batch(self, batch: list[str], context: str, params=None) -> list[str]:
         from translator.prompt import build_prompt, parse_numbered_output
 
         prompt = build_prompt(
-            texts=batch,
-            src_lang=self._tcfg.source_lang,
-            tgt_lang=self._tcfg.target_lang,
-            context=context,
-            model_type="qwen",
+            texts         = batch,
+            src_lang      = self._tcfg.source_lang,
+            tgt_lang      = self._tcfg.target_lang,
+            context       = context,
+            model_type    = "qwen",
+            system_prompt = params.system_prompt if params else None,
+            thinking      = params.thinking      if params else False,
         )
-        raw = self._chat(prompt)
+        raw = self._chat(prompt, params)
         return parse_numbered_output(raw, len(batch))
 
     def _arbitrate_batch(
@@ -228,16 +225,30 @@ class LlamaCppBackend(BaseBackend):
         cands_a: list[str],
         cands_b: list[str],
         context: str,
+        params=None,
     ) -> list[str]:
         from translator.prompt import build_arbiter_prompt, parse_numbered_output
 
         prompt = build_arbiter_prompt(
-            texts=texts,
-            candidates_a=cands_a,
-            candidates_b=cands_b,
-            src_lang=self._tcfg.source_lang,
-            tgt_lang=self._tcfg.target_lang,
-            context=context,
+            texts         = texts,
+            candidates_a  = cands_a,
+            candidates_b  = cands_b,
+            src_lang      = self._tcfg.source_lang,
+            tgt_lang      = self._tcfg.target_lang,
+            context       = context,
+            system_prompt = params.system_prompt if params else None,
+            thinking      = params.thinking      if params else False,
         )
-        raw = self._chat(prompt, temperature=0.2)
+        # Arbiter uses lower temperature for deterministic selection
+        from translator.models.inference_params import InferenceParams
+        arb_params = InferenceParams(
+            system_prompt      = params.system_prompt      if params else None,
+            thinking           = params.thinking           if params else False,
+            temperature        = 0.2,
+            top_p              = params.top_p              if params else None,
+            top_k              = params.top_k              if params else None,
+            max_tokens         = params.max_tokens         if params else None,
+            repetition_penalty = params.repetition_penalty if params else None,
+        )
+        raw = self._chat(prompt, arb_params)
         return parse_numbered_output(raw, len(texts))

@@ -67,6 +67,12 @@
       <i class="bi bi-lightning-fill me-1"></i>Translate
       {% if scope != 'all' %}<span class="badge bg-light text-dark ms-1">{{ scope.upper() }}</span>{% endif %}
     </button>
+    <!-- AI inference settings toggle -->
+    <button class="btn btn-sm btn-outline-secondary" type="button"
+            data-bs-toggle="collapse" data-bs-target="#ai-settings-panel"
+            title="AI inference settings">
+      <i class="bi bi-sliders"></i>
+    </button>
 
     {% if over_threshold and not load_all %}
     <a href="?all=1&scope={{ scope }}&status={{ filter_status }}&q={{ search }}"
@@ -79,6 +85,66 @@
        class="btn btn-sm btn-outline-secondary">
       <i class="bi bi-arrow-left me-1"></i>Back
     </a>
+  </div>
+</div>
+
+<!-- AI inference settings panel (collapsed by default) -->
+<div class="collapse mb-3" id="ai-settings-panel">
+  <div class="card card-body py-2 px-3">
+    <div class="row g-2 align-items-end">
+      <div class="col-auto">
+        <label class="form-label mb-1 small text-muted">Temperature</label>
+        <input type="number" id="ai-temperature" class="form-control form-control-sm"
+               style="width:90px" min="0" max="2" step="0.05" value=""
+               placeholder="default">
+      </div>
+      <div class="col-auto">
+        <label class="form-label mb-1 small text-muted">Top-p</label>
+        <input type="number" id="ai-top-p" class="form-control form-control-sm"
+               style="width:90px" min="0" max="1" step="0.05" value=""
+               placeholder="default">
+      </div>
+      <div class="col-auto">
+        <label class="form-label mb-1 small text-muted">Top-k</label>
+        <input type="number" id="ai-top-k" class="form-control form-control-sm"
+               style="width:80px" min="1" max="200" step="1" value=""
+               placeholder="default">
+      </div>
+      <div class="col-auto">
+        <label class="form-label mb-1 small text-muted">Max tokens</label>
+        <input type="number" id="ai-max-tokens" class="form-control form-control-sm"
+               style="width:100px" min="128" max="16384" step="128" value=""
+               placeholder="default">
+      </div>
+      <div class="col-auto">
+        <label class="form-label mb-1 small text-muted">Rep. penalty</label>
+        <input type="number" id="ai-rep-penalty" class="form-control form-control-sm"
+               style="width:90px" min="1" max="2" step="0.01" value=""
+               placeholder="default">
+      </div>
+      <div class="col-auto">
+        <label class="form-label mb-1 small text-muted">Batch size</label>
+        <input type="number" id="ai-batch-size" class="form-control form-control-sm"
+               style="width:80px" min="1" max="64" step="1" value=""
+               placeholder="default">
+      </div>
+      <div class="col-auto">
+        <div class="form-check form-switch mb-1">
+          <input class="form-check-input" type="checkbox" id="ai-thinking" role="switch">
+          <label class="form-check-label small" for="ai-thinking">Thinking</label>
+        </div>
+      </div>
+      <div class="col-12">
+        <label class="form-label mb-1 small text-muted">System prompt override
+          <span class="text-muted fw-normal">(empty = use default)</span>
+        </label>
+        <textarea id="ai-system-prompt" class="form-control form-control-sm font-monospace"
+                  rows="2" placeholder="Leave empty to use the built-in system prompt…"></textarea>
+      </div>
+      <div class="col-auto">
+        <button class="btn btn-sm btn-outline-secondary" onclick="aiSettingsReset()">Reset defaults</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -350,6 +416,34 @@ async function useDictMatch(btn) {
   }
 }
 
+// ── AI inference settings helpers ─────────────────────────────────────────────
+
+function getAiParams() {
+  // Read inference settings panel; omit fields left blank (use backend defaults).
+  const p = {};
+  const num = (id) => { const v = parseFloat(document.getElementById(id)?.value); return isNaN(v) ? null : v; };
+  const int = (id) => { const v = parseInt(document.getElementById(id)?.value, 10); return isNaN(v) ? null : v; };
+  if (num('ai-temperature') !== null)  p.temperature        = num('ai-temperature');
+  if (num('ai-top-p')       !== null)  p.top_p              = num('ai-top-p');
+  if (int('ai-top-k')       !== null)  p.top_k              = int('ai-top-k');
+  if (int('ai-max-tokens')  !== null)  p.max_tokens         = int('ai-max-tokens');
+  if (num('ai-rep-penalty') !== null)  p.repetition_penalty = num('ai-rep-penalty');
+  if (int('ai-batch-size')  !== null)  p.batch_size         = int('ai-batch-size');
+  p.thinking = !!(document.getElementById('ai-thinking')?.checked);
+  const sp = document.getElementById('ai-system-prompt')?.value.trim();
+  if (sp) p.system_prompt = sp;
+  return p;
+}
+
+function aiSettingsReset() {
+  ['ai-temperature','ai-top-p','ai-top-k','ai-max-tokens','ai-rep-penalty','ai-batch-size']
+    .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  const th = document.getElementById('ai-thinking');
+  if (th) th.checked = false;
+  const sp = document.getElementById('ai-system-prompt');
+  if (sp) sp.value = '';
+}
+
 // ── Per-row AI translate ──────────────────────────────────────────────────────
 
 async function translateOne(btn) {
@@ -368,7 +462,7 @@ async function translateOne(btn) {
 
   const r = await POST(
     `/api/mods/${encodeURIComponent(MOD_NAME)}/strings/translate-one`,
-    { key, esp, original, force_ai: true }
+    { key, esp, original, force_ai: true, params: getAiParams() }
   );
 
   // Always dump BE logs to browser console
@@ -416,9 +510,10 @@ async function translateAll() {
   btn.disabled = true;
 
   const r = await POST('/jobs/create', {
-    type:  'translate_strings',
-    mods:  [MOD_NAME],
-    scope: CURR_SCOPE,
+    type:   'translate_strings',
+    mods:   [MOD_NAME],
+    scope:  CURR_SCOPE,
+    params: getAiParams(),
   });
 
   if (!r.job_id) {

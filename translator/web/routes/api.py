@@ -344,6 +344,11 @@ def translate_one_string(mod_name: str):
     esp_name   = data.get("esp", "")
     original   = data.get("original", "")
     force_ai   = data.get("force_ai", False)  # skip global dict when True
+
+    # Per-call inference overrides from frontend (all optional — defaults from config)
+    from translator.models.inference_params import InferenceParams
+    params = InferenceParams.from_dict(data.get("params") or {})
+
     if not original or original.startswith("[LOC:"):
         return jsonify({"ok": False, "error": "Cannot translate this string"}), 400
 
@@ -380,7 +385,7 @@ def translate_one_string(mod_name: str):
 
     try:
         from pathlib import Path
-        from scripts.esp_engine import translate_batch, quality_score
+        from scripts.esp_engine import translate_texts, prepare_for_ai
         from translator.context.builder import ContextBuilder
         from translator.prompt.builder import build_tm_block, enrich_context
         from translator.web.workers import save_translation
@@ -410,41 +415,41 @@ def translate_one_string(mod_name: str):
                 pass
         context = enrich_context(context, build_tm_block(tm_pairs, [original]), [original])
 
-        from scripts.esp_engine import prepare_for_ai, restore_from_ai, validate_tokens
-        ai_texts, ai_meta = prepare_for_ai([original])
-        masked = ai_texts[0]
+        # Log masked form for debugging (compute before calling core)
+        ai_preview, _ = prepare_for_ai([original])
+        masked = ai_preview[0]
         if masked != original.strip():
             xlogs.append(f"masked: {masked[:100]}")
             log.info("[translate-one] %s | masked: %s", key_str, masked[:200])
 
-        results      = translate_batch(ai_texts, context, force=True)
-        raw          = results[0] if results else ""
-        xlogs.append(f"ai_raw: {raw[:120]}" if raw else "ai_raw: (empty)")
-        log.info("[translate-one] %s | ai_raw: %s", key_str, raw[:300] if raw else "(empty)")
+        # ── Core pipeline (same as batch) ─────────────────────────────────────
+        core = translate_texts([original], context=context, params=params, force=True)
+        r    = core[0]
+        # ──────────────────────────────────────────────────────────────────────
 
-        if not raw:
+        if r["skipped"]:
+            # needs_translation() returned False — shouldn't happen (checked above)
+            return jsonify({"ok": False, "error": "String skipped by pipeline", "logs": xlogs}), 400
+
+        translated  = r["translation"]
+        status      = r["status"]
+        qs          = r["quality_score"]
+        tok_issues  = r["token_issues"]
+
+        if not translated:
             log.error("[translate-one] %s | empty response from AI", key_str)
             return jsonify({"ok": False, "error": "Empty response from AI", "logs": xlogs}), 500
 
         # Detect silent remote failure: backend returned masked input unchanged
-        # (only meaningful when tokens were present — pure text proper nouns are ok)
-        if raw == masked and masked != original.strip():
+        if translated.strip() == masked and masked != original.strip():
             xlogs.append("error: remote returned masked input unchanged — translation failed silently")
             log.error("[translate-one] %s | remote backend returned input unchanged (silent failure)", key_str)
             return jsonify({"ok": False, "error": "Remote server failed — returned input unchanged", "logs": xlogs}), 500
 
-        translated = restore_from_ai([raw], ai_meta)[0]
-        if translated != raw:
-            xlogs.append(f"restored: {translated[:120]}")
-            log.info("[translate-one] %s | restored: %s", key_str, translated[:200])
-
-        tok_ok, tok_issues = validate_tokens(original, translated)
-        if not tok_ok:
+        xlogs.append(f"translated: {translated[:120]}")
+        if tok_issues:
             xlogs.append(f"token_issues: {'; '.join(tok_issues)}")
             log.warning("[translate-one] %s | token issues: %s", key_str, '; '.join(tok_issues))
-
-        status = "translated" if tok_ok else "needs_review"
-        qs     = quality_score(original, translated)
         xlogs.append(f"status={status} qs={qs}")
         log.info("[translate-one] %s | done — status=%s qs=%s", key_str, status, qs)
 

@@ -92,7 +92,7 @@ class EnsemblePipeline:
             log.info("EnsemblePipeline: local mode (%s)", ens_cfg.backend_type)
 
     def translate(self, texts: list[str], context: str = "",
-                  progress_cb=None, force: bool = False) -> list[str]:
+                  params=None, progress_cb=None, force: bool = False) -> list[str]:
         if not texts:
             return []
 
@@ -116,7 +116,8 @@ class EnsemblePipeline:
             uncached_texts = list(texts)
 
         if uncached_texts:
-            translated = self._run(uncached_texts, context, progress_cb=progress_cb)
+            translated = self._run(uncached_texts, context, params=params,
+                                   progress_cb=progress_cb)
             for i, idx in enumerate(uncached_idx):
                 results[idx] = translated[i]
                 if self._use_cache:
@@ -127,12 +128,12 @@ class EnsemblePipeline:
     # ── internals ─────────────────────────────────────────────────────────────
 
     def _run(self, texts: list[str], context: str,
-             progress_cb=None) -> list[str]:
+             params=None, progress_cb=None) -> list[str]:
         """Route each text to lite (14B) or full (32B) based on length."""
         if not self._model_lite or self._threshold <= 0:
             # No lite model — use full for everything
             return self._translate_with(texts, context, self._model_full,
-                                        progress_cb=progress_cb)
+                                        params=params, progress_cb=progress_cb)
 
         short_idx = [i for i, t in enumerate(texts) if len(t) < self._threshold]
         long_idx  = [i for i, t in enumerate(texts) if len(t) >= self._threshold]
@@ -145,7 +146,6 @@ class EnsemblePipeline:
         results: list[str | None] = [None] * len(texts)
         total = len(texts)
 
-        # Short strings → 14B (load, translate, unload)
         if short_idx:
             short_texts = [texts[i] for i in short_idx]
 
@@ -154,11 +154,10 @@ class EnsemblePipeline:
                     progress_cb(done, total)
 
             short_res = self._translate_with(short_texts, context, self._model_lite,
-                                             progress_cb=_short_cb)
+                                             params=params, progress_cb=_short_cb)
             for pos, idx in enumerate(short_idx):
                 results[idx] = short_res[pos]
 
-        # Long strings → 32B (load, translate, unload)
         if long_idx:
             long_texts = [texts[i] for i in long_idx]
             short_done = len(short_idx)
@@ -168,7 +167,7 @@ class EnsemblePipeline:
                     progress_cb(short_done + done, total)
 
             long_res = self._translate_with(long_texts, context, self._model_full,
-                                            progress_cb=_long_cb)
+                                            params=params, progress_cb=_long_cb)
             for pos, idx in enumerate(long_idx):
                 results[idx] = long_res[pos]
 
@@ -203,14 +202,15 @@ class EnsemblePipeline:
 
     def _translate_with(
         self, texts: list[str], context: str, backend,
-        progress_cb=None,
+        params=None, progress_cb=None,
     ) -> list[str]:
         import time as _time
         label = self._backend_label(backend)
         log.info(f"Translating {len(texts)} strings with {label}")
         t0 = _time.time()
         with backend:
-            results = backend.translate(texts, context, progress_cb=progress_cb)
+            results = backend.translate(texts, context, params=params,
+                                        progress_cb=progress_cb)
         elapsed = _time.time() - t0
         spm = len(texts) / elapsed if elapsed > 0 else 0
         log.info("Throughput: %.1f strings/min using %s", spm * 60, label.split('/')[-1])

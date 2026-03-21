@@ -142,22 +142,40 @@ def enrich_context(
 
 _HYMT_TMPL = """\
 You are a professional video game translator specializing in The Elder Scrolls V: Skyrim.
-Translate each numbered item from {src} to {tgt}. Preserve formatting tokens, variable \
-placeholders (like <Alias=...>, %1, [PlayerName]), and newlines exactly.
-Copy {{T0}}, {{T1}}... token placeholders verbatim — they are runtime-substituted game values.
-Output ONLY the numbered translations — no commentary, no explanations.
+Translate each numbered item from {src} to {tgt}.
+
+CRITICAL RULES — violating any of these is an error:
+- Translate the COMPLETE text. Do NOT summarize, shorten, paraphrase, or omit any part.
+- Every sentence, clause, list item, and word in the original must appear in the translation.
+- Translate ALL words including proper nouns, NPC names, item names, ingredient names, and \
+place names — do NOT leave them in English unless they are untranslatable brand tokens.
+- Preserve formatting tokens, variable placeholders (<Alias=...>, %1, [PlayerName]), and \
+newlines exactly.
+- Copy {{T0}}, {{T1}}... token placeholders verbatim — they are runtime-substituted game values.
+- Output ONLY the numbered translations — no commentary, no explanations.
 {terms}{preserve}{context_block}
 Strings to translate:
 {numbered_texts}"""
 
 
 def build_prompt(
-    texts:       list[str],
-    src_lang:    str,
-    tgt_lang:    str,
-    context:     str = "",
-    model_type:  str = "hymt",
+    texts:         list[str],
+    src_lang:      str,
+    tgt_lang:      str,
+    context:       str = "",
+    model_type:    str = "hymt",
+    system_prompt: str | None = None,
+    thinking:      bool = False,
 ) -> str:
+    """
+    Build the full inference prompt.
+
+    Parameters
+    ----------
+    system_prompt : override the default _QWEN_SYSTEM block (None = use default).
+    thinking      : if False (default), appends ``</think>`` in the assistant
+                    opener to disable Qwen3 chain-of-thought reasoning.
+    """
     cfg = get_config()
     preserve = _preserve_note(cfg.translation.preserve_tokens)
     terms    = _terms_block(tgt_lang)
@@ -167,7 +185,8 @@ def build_prompt(
     numbered = "\n".join(f"{i+1}. {t}" for i, t in enumerate(texts))
 
     if model_type == "qwen":
-        return _build_qwen_prompt(texts, src_lang, tgt_lang, context, preserve, terms)
+        return _build_qwen_prompt(texts, src_lang, tgt_lang, context, preserve, terms,
+                                  system_prompt=system_prompt, thinking=thinking)
 
     return _HYMT_TMPL.format(
         src=src_lang,
@@ -184,13 +203,20 @@ def build_prompt(
 _QWEN_SYSTEM = (
     "You are a professional video game translator specializing in "
     "The Elder Scrolls V: Skyrim (Нолвус modpack). "
-    "You produce accurate, natural-sounding Russian translations that fit "
-    "Skyrim's lore and UI conventions."
+    "You produce complete, accurate, natural-sounding Russian translations that fit "
+    "Skyrim's lore and UI conventions. "
+    "You NEVER summarize, shorten, or omit any part of the source text — "
+    "every word must be translated, including names, items, and ingredients."
 )
 
 _QWEN_USER_TMPL = """\
 Translate each numbered string from {src} to {tgt}.
-Rules:
+
+CRITICAL RULES — violating any of these is an error:
+- Translate the COMPLETE text. Do NOT summarize, shorten, paraphrase, or omit any part.
+- Every sentence, clause, list item, and word must appear in the translation.
+- Translate ALL words including proper nouns, NPC names, item names, ingredient names, and \
+place names — do NOT leave them in English unless they are untranslatable brand tokens.
 - Preserve ALL formatting tokens: <Alias=...>, %1, [PlayerName], \\n, etc.
 - Copy {{T0}}, {{T1}}... token placeholders exactly — they are runtime game values.
 - Do not add or remove newlines.
@@ -201,12 +227,14 @@ Strings:
 
 
 def _build_qwen_prompt(
-    texts:     list[str],
-    src_lang:  str,
-    tgt_lang:  str,
-    context:   str,
-    preserve:  str,
-    terms:     str,
+    texts:         list[str],
+    src_lang:      str,
+    tgt_lang:      str,
+    context:       str,
+    preserve:      str,
+    terms:         str,
+    system_prompt: str | None = None,
+    thinking:      bool = False,
 ) -> str:
     ctx_block  = f"\nContext: {context}\n" if context else ""
     numbered   = "\n".join(f"{i+1}. {t}" for i, t in enumerate(texts))
@@ -220,11 +248,15 @@ def _build_qwen_prompt(
         numbered_texts=numbered,
     )
 
-    # Qwen uses ChatML format
+    system = system_prompt or _QWEN_SYSTEM
+    # When thinking is disabled, pre-fill </think> in the assistant turn so
+    # Qwen3 skips chain-of-thought reasoning immediately.
+    think_prefix = "" if thinking else "</think>\n\n"
+
     return (
-        f"<|im_start|>system\n{_QWEN_SYSTEM}<|im_end|>\n"
+        f"<|im_start|>system\n{system}<|im_end|>\n"
         f"<|im_start|>user\n{user_msg}<|im_end|>\n"
-        f"<|im_start|>assistant\n"
+        f"<|im_start|>assistant\n{think_prefix}"
     )
 
 
@@ -243,12 +275,14 @@ Items (format: N. Original | TranslatorA | TranslatorB):
 
 
 def build_arbiter_prompt(
-    texts:        list[str],
-    candidates_a: list[str],
-    candidates_b: list[str],
-    src_lang:     str,
-    tgt_lang:     str,
-    context:      str = "",
+    texts:         list[str],
+    candidates_a:  list[str],
+    candidates_b:  list[str],
+    src_lang:      str,
+    tgt_lang:      str,
+    context:       str = "",
+    system_prompt: str | None = None,
+    thinking:      bool = False,
 ) -> str:
     ctx_block = f"\nContext: {context}\n" if context else ""
 
@@ -265,8 +299,11 @@ def build_arbiter_prompt(
         numbered_items=numbered_items,
     )
 
+    system       = system_prompt or _QWEN_SYSTEM
+    think_prefix = "" if thinking else "</think>\n\n"
+
     return (
-        f"<|im_start|>system\n{_QWEN_SYSTEM}<|im_end|>\n"
+        f"<|im_start|>system\n{system}<|im_end|>\n"
         f"<|im_start|>user\n{user_msg}<|im_end|>\n"
-        f"<|im_start|>assistant\n"
+        f"<|im_start|>assistant\n{think_prefix}"
     )

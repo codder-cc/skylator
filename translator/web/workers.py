@@ -475,7 +475,7 @@ def translate_bsa_worker(job, cfg, mod_name: str, dry_run: bool = False):
     job.result = f"BSA/SWF translated: {mod_name}"
 
 
-def _translate_swf_texts(job, swf_path: Path, ffdec_jar: str, cfg, dry_run: bool = False):
+def _translate_swf_texts(job, swf_path: Path, ffdec_jar: str, cfg, dry_run: bool = False, params=None):
     """Extract text strings from SWF using FFDec, translate, reimport."""
     import subprocess, json as _json, shutil as _shutil
     texts_dir = swf_path.parent / f"_swftexts_{swf_path.stem}"
@@ -506,8 +506,7 @@ def _translate_swf_texts(job, swf_path: Path, ffdec_jar: str, cfg, dry_run: bool
     if not text_files:
         return
 
-    from scripts.esp_engine import (needs_translation, translate_batch,
-                                    prepare_for_ai, restore_from_ai, validate_tokens)
+    from scripts.esp_engine import needs_translation, translate_texts
     from translator.pipeline import get_mod_context
 
     context = ''
@@ -534,20 +533,17 @@ def _translate_swf_texts(job, swf_path: Path, ffdec_jar: str, cfg, dry_run: bool
                 new_lines.append(line)
 
         if originals and not dry_run:
-            ai_texts, ai_meta = prepare_for_ai(originals)
-            raw_results = translate_batch(ai_texts, context)
-            translated  = restore_from_ai(raw_results, ai_meta)
+            core_results = translate_texts(originals, context=context, params=params)
             swf_pairs: list[tuple[str, str]] = []
-            for (i, offset), orig, ai_orig, trans in zip(indices, originals, ai_texts, translated):
-                if not trans or trans == ai_orig:
+            for (i, offset), orig, r in zip(indices, originals, core_results):
+                if r["skipped"] or not r["translation"]:
                     continue
-                tok_ok, tok_issues = validate_tokens(orig, trans)
-                if not tok_issues:
-                    new_lines[i] = f"{offset} | {trans}"
-                    changed = True
-                    swf_pairs.append((orig, trans))
-                else:
-                    job.add_log(f"SWF token mismatch [{orig[:40]}]: {'; '.join(tok_issues)}")
+                if r["token_issues"]:
+                    job.add_log(f"SWF token mismatch [{orig[:40]}]: {'; '.join(r['token_issues'])}")
+                    continue
+                new_lines[i] = f"{offset} | {r['translation']}"
+                changed = True
+                swf_pairs.append((orig, r["translation"]))
             # Feed global dict with SWF translations
             if swf_pairs:
                 try:
@@ -768,7 +764,8 @@ def validate_translations_worker(job, cfg, mod_name: str):
 
 def translate_strings_worker(job, cfg, mod_name: str,
                              keys: list | None = None,
-                             scope: str = "all"):
+                             scope: str = "all",
+                             params=None):
     """
     Translate strings for a mod with real-time per-string SSE updates.
     Processes strings in chunks of 10 for efficient batching.
@@ -779,8 +776,7 @@ def translate_strings_worker(job, cfg, mod_name: str,
     from translator.web.job_manager import JobManager
     from translator.web.mod_scanner import ModScanner
     from translator.web.global_dict import GlobalTextDict
-    from scripts.esp_engine import (translate_batch, quality_score,
-                                    prepare_for_ai, restore_from_ai, validate_tokens)
+    from scripts.esp_engine import translate_texts, prepare_for_ai
     from translator.context.builder import ContextBuilder
 
     jm      = JobManager.get()
@@ -887,35 +883,33 @@ def translate_strings_worker(job, cfg, mod_name: str,
         jm.update_progress(job, done, total,
                            f"Translating {done + 1}–{end_idx} / {total}")
 
-        # Strip format tags + mask game tokens before AI; restore after
-        ai_originals, ai_meta = prepare_for_ai(originals)
-
         # Enrich context with relevant terms + TM for this chunk
-        chunk_context = enrich_context(context, build_tm_block(tm_pairs, ai_originals), ai_originals)
+        # (prepare_for_ai here only for masked text needed by enrich_context)
+        ai_originals_preview, _ = prepare_for_ai(originals)
+        chunk_context = enrich_context(context, build_tm_block(tm_pairs, ai_originals_preview),
+                                       ai_originals_preview)
+
+        # Core pipeline: mask → AI → unmask → validate → quality_score → status
         try:
-            raw_results = translate_batch(ai_originals, chunk_context)
+            core_results = translate_texts(originals, context=chunk_context, params=params)
         except Exception as exc:
             for s in chunk:
                 job.add_log(f"ERROR chunk at {s['key']}: {exc}")
             done += len(chunk)
             continue
 
-        results = restore_from_ai(raw_results, ai_meta)
-
-        for s, ai_orig, translation in zip(chunk, ai_originals, results):
+        for s, r in zip(chunk, core_results):
             done += 1
-            if not translation or translation == ai_orig:
+            if r["skipped"] or not r["translation"]:
                 continue
-            tok_ok, tok_issues = validate_tokens(s["original"], translation)
-            status = "translated" if tok_ok else "needs_review"
-            if not tok_ok:
-                job.add_log(f"Token mismatch [{s['key']}]: {'; '.join(tok_issues)}")
-            qs = quality_score(s["original"], translation)
+            translation = r["translation"]
+            if r["token_issues"]:
+                job.add_log(f"Token mismatch [{s['key']}]: {'; '.join(r['token_issues'])}")
             save_translation(cfg.paths.mods_dir, mod_name,
                              cfg.paths.translation_cache,
                              s["esp"], s["key"], translation, cfg=cfg)
             jm.add_string_update(job, s["key"], s["esp"],
-                                 translation, status, qs)
+                                 translation, r["status"], r["quality_score"])
             # Add to TM and global dict so subsequent chunks + future mods benefit
             tm_pairs[s["original"]] = translation
             if gd:

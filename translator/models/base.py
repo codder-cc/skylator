@@ -4,6 +4,10 @@ from __future__ import annotations
 import gc
 from abc import ABC, abstractmethod
 from enum import Enum, auto
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from translator.models.inference_params import InferenceParams
 
 
 class ModelState(Enum):
@@ -32,11 +36,15 @@ class BaseBackend(ABC):
         """Load model weights into VRAM."""
 
     @abstractmethod
-    def translate(self, texts: list[str], context: str = "") -> list[str]:
+    def translate(self, texts: list[str], context: str = "",
+                  params: "InferenceParams | None" = None) -> list[str]:
         """
         Translate a list of strings.
         Returns a list of the same length.
         Never raises — returns original texts on error.
+
+        params: per-call overrides for sampling, system prompt, thinking, etc.
+                None = use backend's ModelConfig defaults.
         """
 
     def unload(self) -> None:

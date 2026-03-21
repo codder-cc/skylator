@@ -346,6 +346,32 @@ code {
   word-break: break-word;
 }
 
+/* ── AI inference settings panel ─────────────────────── */
+
+#ai-settings-panel .card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+}
+
+#ai-settings-panel .form-control,
+#ai-settings-panel .form-control-sm {
+  background: var(--bg-input, #161b22);
+  color: var(--text-main);
+  border-color: var(--border);
+  font-size: 12px;
+}
+
+#ai-settings-panel .form-control::placeholder {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+#ai-settings-panel .form-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 /* ── Responsive ───────────────────────────────────────── */
 @media (max-width: 768px) {
   .sidebar { width: 200px; }

@@ -97,6 +97,9 @@ def create_job():
     job_type  = data.get("type", "translate_mod")
     mod_names = data.get("mods", [])
     options   = data.get("options", {})
+    # Per-call inference overrides (optional — all fields default to model config)
+    from translator.models.inference_params import InferenceParams
+    inf_params = InferenceParams.from_dict(data.get("params") or {})
 
     if job_type == "translate_all":
         job = _create_translate_all_job(jm, cfg, options)
@@ -119,7 +122,7 @@ def create_job():
     elif job_type == "translate_strings" and mod_names:
         keys  = data.get("keys")   # optional list of specific cache key strings
         scope = data.get("scope", "all")
-        job   = _create_translate_strings_job(jm, cfg, mod_names[0], keys, scope)
+        job   = _create_translate_strings_job(jm, cfg, mod_names[0], keys, scope, inf_params)
     else:
         return jsonify({"error": "Unknown job type"}), 400
 
@@ -249,10 +252,11 @@ def _create_translate_bsa_job(jm, cfg, mod_name: str, options: dict):
 
 def _create_translate_strings_job(jm, cfg, mod_name: str,
                                    keys: list | None = None,
-                                   scope: str = "all"):
+                                   scope: str = "all",
+                                   params=None):
     def run(job):
         from translator.web.workers import translate_strings_worker
-        translate_strings_worker(job, cfg, mod_name, keys=keys, scope=scope)
+        translate_strings_worker(job, cfg, mod_name, keys=keys, scope=scope, params=params)
 
     if keys:
         n = len(keys)

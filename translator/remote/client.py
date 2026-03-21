@@ -57,14 +57,20 @@ class TranslationClient:
         source_lang: str = "English",
         target_lang: str = "Russian",
         context: str = "",
+        params=None,
     ) -> str:
-        """POST /translate → returns job_id."""
-        data = self._post("/translate", {
+        """POST /translate → returns job_id.
+        params: InferenceParams — forwarded so server uses same sampling config."""
+        from translator.models.inference_params import InferenceParams
+        payload: dict = {
             "texts":       texts,
             "context":     context,
             "source_lang": source_lang,
             "target_lang": target_lang,
-        })
+        }
+        if params is not None:
+            payload["params"] = params.as_dict()
+        data = self._post("/translate", payload)
         return data["job_id"]
 
     def submit_chat(self, prompt: str, temperature: float = 0.2) -> str:
@@ -191,6 +197,7 @@ class TranslationClient:
         source_lang: str = "English",
         target_lang: str = "Russian",
         context: str = "",
+        params=None,
     ) -> list[str]:
         """
         Submit a translate job and block until complete.
@@ -198,7 +205,7 @@ class TranslationClient:
         Returns list of translated strings (same order as input).
         Raises on network failure or if the job ends in error.
         """
-        job_id = self.submit_translate(texts, source_lang, target_lang, context)
+        job_id = self.submit_translate(texts, source_lang, target_lang, context, params=params)
         job    = self.poll_job_liveness(job_id, liveness_timeout=45.0, absolute_timeout=600.0)
         if job.get("status") == "error":
             raise RuntimeError(f"Remote translate job failed: {job.get('error')}")

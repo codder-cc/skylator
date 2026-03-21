@@ -36,6 +36,8 @@ class TranslateRequest(BaseModel):
     context:     str = ""
     source_lang: str = "English"
     target_lang: str = "Russian"
+    # Per-call inference overrides — None fields fall back to server's model config.
+    params:      dict = {}   # serialised InferenceParams.as_dict()
 
 
 class ChatRequest(BaseModel):
@@ -280,9 +282,11 @@ async def _worker(state: ServerState) -> None:
 
 
 async def _run_translate(job: JobRecord, state: ServerState, loop: asyncio.AbstractEventLoop) -> None:
+    from translator.models.inference_params import InferenceParams
     payload = job.payload
     texts   = payload["texts"]
     context = payload.get("context", "")
+    params  = InferenceParams.from_dict(payload.get("params") or {})
     job.total    = len(texts)
     job.progress = 0
     log.info("Job %s: translating %d string(s) | first: %s",
@@ -301,7 +305,8 @@ async def _run_translate(job: JobRecord, state: ServerState, loop: asyncio.Abstr
     t0 = time.time()
     results = await loop.run_in_executor(
         None,
-        lambda: state.backend.translate(texts, context=context, progress_cb=_progress_cb),
+        lambda: state.backend.translate(texts, context=context, params=params,
+                                        progress_cb=_progress_cb),
     )
     elapsed = time.time() - t0
 
@@ -503,6 +508,7 @@ def create_server_app(
             "context":     req.context,
             "source_lang": req.source_lang,
             "target_lang": req.target_lang,
+            "params":      req.params,   # InferenceParams dict — passed to backend
         })
         _state.add_job(job)
         _state.queue_depth += 1

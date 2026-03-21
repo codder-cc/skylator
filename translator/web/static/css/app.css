@@ -257,11 +257,23 @@ body {
 .string-row-orig {
   color: var(--text-muted);
   font-size: 12px;
-  white-space: pre-wrap;
+  max-height: 100px;
+  overflow: auto;
   word-break: break-word;
 }
 
-.string-row-trans { color: var(--text-main); font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+.string-row-trans {
+  display: block;
+  color: var(--text-main);
+  font-size: 13px;
+  max-height: 100px;
+  overflow: auto;
+  word-break: break-word;
+}
+
+/* Prevent rendered HTML tags (<font size='20'>, <h1>, etc.) from overriding cell font */
+.string-row-orig *, .string-row-trans * { font-size: inherit !important; }
+
 .string-row-trans.edited { color: var(--success); }
 
 .string-edit-area {

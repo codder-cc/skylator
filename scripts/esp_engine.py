@@ -490,10 +490,18 @@ def translate_batch(texts: list, context: str = '', progress_cb=None) -> list:
 def needs_translation(text: str) -> bool:
     if not text or not text.strip():
         return False
-    cyrillic = sum(1 for c in text if '\u0400' <= c <= '\u04ff')
-    if cyrillic > len(text) * 0.3:
+    t = text.strip()
+    # MCM $KEY tokens — resolved at runtime from MCM txt files, not AI-translatable
+    if t.startswith('$'):
         return False
-    return bool(re.search(r'[a-zA-Z]', text))
+    # Pure code identifiers: only letters/digits/underscores with no spaces
+    # e.g. "SKI_FavoritesManagerInstance", "ACL_SettingsQuest"
+    if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]+', t):
+        return False
+    cyrillic = sum(1 for c in t if '\u0400' <= c <= '\u04ff')
+    if cyrillic > len(t) * 0.3:
+        return False
+    return bool(re.search(r'[a-zA-Z]', t))
 
 
 def quality_score(original: str, translation: str) -> int:

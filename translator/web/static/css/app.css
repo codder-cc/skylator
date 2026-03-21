@@ -254,40 +254,31 @@ body {
 
 /* ── String diff view ─────────────────────────────────── */
 
-.string-row-orig {
-  color: var(--text-muted);
-  font-size: 12px;
-  max-height: 100px;
-  overflow: auto;
-  word-break: break-word;
-}
-
-.string-row-trans {
-  display: block;
-  color: var(--text-main);
-  font-size: 13px;
-  max-height: 100px;
-  overflow: auto;
-  word-break: break-word;
-}
-
-/* Prevent rendered HTML tags (<font size='20'>, <h1>, etc.) from overriding cell font */
-.string-row-orig *, .string-row-trans * { font-size: inherit !important; }
-
-.string-row-trans.edited { color: var(--success); }
-
-.string-edit-area {
-  display: block;
+.str-box {
   width: 100%;
   background: var(--bg-card2);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text-main);
-  font-size: 13px;
-  padding: 4px 8px;
+  font-size: 12px;
+  font-family: 'Consolas', 'Fira Code', monospace;
+  padding: 4px 6px;
   resize: vertical;
-  min-height: 48px;
+  min-height: 52px;
+  box-sizing: border-box;
 }
+
+.str-orig {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.str-trans {
+  border-color: var(--border);
+}
+
+.str-actions { margin-top: 4px; display: flex; gap: 4px; }
+.btn-xs { font-size: 11px; padding: 2px 8px; }
 
 /* ── Pipeline flow ────────────────────────────────────── */
 

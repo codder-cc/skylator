@@ -217,23 +217,24 @@
 
           <!-- Original -->
           <td>
-            <div class="string-row-orig">
-              {% if is_loc %}
-                <span class="text-muted fst-italic">{{ s.original }}</span>
-                <span class="badge bg-secondary ms-1" style="font-size:9px">Localized</span>
-              {% else %}
-                {# Populated via JS textContent — never rendered as HTML #}
-                <span class="orig-display" data-raw="{{ s.original | e }}"></span>
-              {% endif %}
-            </div>
+            {% if is_loc %}
+              <span class="text-muted fst-italic" style="font-size:11px">{{ s.original }}</span>
+              <span class="badge bg-secondary ms-1" style="font-size:9px">Localized</span>
+            {% else %}
+              <textarea class="str-box str-orig" readonly rows="3">{{ s.original | e }}</textarea>
+            {% endif %}
           </td>
 
-          <!-- Translation (click-to-edit) -->
-          <td class="trans-cell"
-              data-translation="{{ s.translation | e }}"
-              style="cursor:pointer;min-width:160px">
-            {# Populated via JS textContent on load — never rendered as HTML #}
-            <span class="trans-display"></span>
+          <!-- Translation -->
+          <td class="trans-cell" data-translation="{{ s.translation | e }}" style="min-width:160px">
+            <textarea class="str-box str-trans"
+                      data-key="{{ s.key | e }}"
+                      data-esp="{{ s.esp | e }}"
+                      rows="3">{{ s.translation | e }}</textarea>
+            <div class="str-actions" style="display:none">
+              <button class="btn btn-xs btn-primary str-save">Save</button>
+              <button class="btn btn-xs btn-outline-secondary str-cancel">Cancel</button>
+            </div>
           </td>
 
           <!-- Status -->
@@ -366,20 +367,12 @@ function applyUpdate(key, translation, status, qs) {
   if (!row) return;
 
   const tc = row.querySelector('.trans-cell');
-  if (tc && !tc.classList.contains('editing')) {
+  if (tc) {
     tc.dataset.translation = translation || '';
-    const display = tc.querySelector('.trans-display');
-    if (display) {
-      if (translation) {
-        display.className = 'string-row-trans trans-display';
-        display.style.fontSize = '';
-        display.textContent = translation.length > 1200 ? translation.slice(0,1200)+'…' : translation;
-      } else {
-        display.className = 'text-muted trans-display';
-        display.style.fontSize = '11px';
-        display.innerHTML = '<em>not translated</em>';
-      }
-    }
+    const ta = tc.querySelector('.str-trans');
+    if (ta) ta.value = translation || '';
+    const actions = tc.querySelector('.str-actions');
+    if (actions) actions.style.display = 'none';
   }
 
   const sc = row.querySelector('.status-cell');
@@ -559,110 +552,41 @@ async function translateAll() {
   toast('Bulk translate started', 'info');
 }
 
-// ── Click-to-edit translation cells ──────────────────────────────────────────
+// ── Translation textarea: show Save/Cancel on change, save on click ───────────
 
-function enterEdit(cell, key, esp) {
-  cell.classList.add('editing');
-  const current = cell.dataset.translation || '';
-  const rows    = calcRows(current);
-  cell.innerHTML = `
-    <textarea class="string-edit-area" rows="${rows}">${escHtml(current)}</textarea>
-    <div class="mt-1 d-flex gap-1">
-      <button class="btn btn-sm btn-primary"
-              onclick="saveEdit(this,${JSON.stringify(key)},${JSON.stringify(esp)})">Save</button>
-      <button class="btn btn-sm btn-outline-secondary"
-              onclick="cancelEdit(this,${JSON.stringify(current)})">Cancel</button>
-    </div>`;
-  cell.querySelector('textarea').focus();
-}
+document.querySelectorAll('.str-trans').forEach(ta => {
+  const cell    = ta.closest('.trans-cell');
+  const actions = cell.querySelector('.str-actions');
+  const saved   = () => cell.dataset.translation || '';
 
-async function saveEdit(btn, key, esp) {
-  const cell = btn.closest('td');
-  const text = cell.querySelector('textarea').value;
-  const r    = await POST(
-    `/mods/${encodeURIComponent(MOD_NAME)}/strings/update`,
-    { key, esp, translation: text }
-  );
-  if (r.ok) {
-    cell.classList.remove('editing');
-    cell.dataset.translation = text;
-    const status = text.trim() ? 'translated' : 'pending';
-    if (text.trim()) {
-      const sp = document.createElement('span');
-      sp.className = 'string-row-trans trans-display';
-      sp.textContent = text.length > 1200 ? text.slice(0, 1200) + '…' : text;
-      cell.appendChild(sp);
+  ta.addEventListener('input', () => {
+    actions.style.display = ta.value !== saved() ? '' : 'none';
+  });
+
+  cell.querySelector('.str-save').addEventListener('click', async () => {
+    const key  = ta.dataset.key;
+    const esp  = ta.dataset.esp;
+    const text = ta.value;
+    const r    = await POST(`/mods/${encodeURIComponent(MOD_NAME)}/strings/update`,
+                            { key, esp, translation: text });
+    if (r.ok) {
+      cell.dataset.translation = text;
+      actions.style.display = 'none';
+      const status = text.trim() ? 'translated' : 'pending';
+      const row = cell.closest('tr');
+      row.querySelector('.status-cell').innerHTML = statusBadge(status);
+      row.classList.toggle('table-warning',        status === 'needs_review');
+      row.classList.toggle('table-warning-subtle', status === 'pending');
+      toast('Saved', 'success');
     } else {
-      cell.innerHTML = '<span class="text-muted trans-display" style="font-size:11px"><em>not translated</em></span>';
+      toast('Save failed: ' + (r.error || 'unknown'), 'danger');
     }
-    // Update status cell
-    const row = cell.closest('tr');
-    const sc = row.querySelector('.status-cell');
-    if (sc) sc.innerHTML = statusBadge(status);
-    row.classList.toggle('table-warning',        status === 'needs_review');
-  row.classList.toggle('table-warning-subtle', status === 'pending');
-    toast('Saved', 'success');
-    // Re-attach click listener
-    attachEditListener(cell, key, esp);
-  } else {
-    toast('Save failed: ' + (r.error || 'unknown'), 'danger');
-  }
-}
+  });
 
-function cancelEdit(btn, original) {
-  const cell = btn.closest('td');
-  cell.classList.remove('editing');
-  const key = cell.closest('tr').dataset.key;
-  const esp = cell.closest('tr').dataset.esp;
-  cell.dataset.translation = original;
-  if (original) {
-    const sp = document.createElement('span');
-    sp.className = 'string-row-trans trans-display';
-    sp.textContent = original.length > 1200 ? original.slice(0, 1200) + '…' : original;
-    cell.appendChild(sp);
-  } else {
-    cell.innerHTML = '<span class="text-muted trans-display" style="font-size:11px"><em>not translated</em></span>';
-  }
-  attachEditListener(cell, key, esp);
-}
-
-function attachEditListener(cell, key, esp) {
-  cell.addEventListener('click', function handler(e) {
-    if (cell.classList.contains('editing')) return;
-    if (e.target.closest('button')) return;
-    cell.removeEventListener('click', handler);
-    enterEdit(cell, key, esp);
-  }, { once: true });
-}
-
-
-// ── Populate display cells via textContent (prevents HTML rendering) ─────────
-
-document.querySelectorAll('.orig-display[data-raw]').forEach(el => {
-  const raw = el.dataset.raw || '';
-  el.textContent = raw.length > 1200 ? raw.slice(0, 1200) + '…' : raw;
-});
-
-document.querySelectorAll('.trans-cell').forEach(cell => {
-  const translation = cell.dataset.translation || '';
-  const display = cell.querySelector('.trans-display');
-  if (!display) return;
-  if (translation) {
-    display.className = 'string-row-trans trans-display';
-    display.textContent = translation.length > 1200 ? translation.slice(0, 1200) + '…' : translation;
-  } else {
-    display.className = 'text-muted trans-display';
-    display.innerHTML = '<em>not translated</em>';
-  }
-});
-
-// ── Attach click-to-edit listeners on page load ───────────────────────────────
-
-document.querySelectorAll('.trans-cell').forEach(cell => {
-  const key = cell.closest('tr').dataset.key;
-  const esp = cell.closest('tr').dataset.esp;
-  if (!key) return;
-  attachEditListener(cell, key, esp);
+  cell.querySelector('.str-cancel').addEventListener('click', () => {
+    ta.value = saved();
+    actions.style.display = 'none';
+  });
 });
 
 // ── Client-side live search ───────────────────────────────────────────────────

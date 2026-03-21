@@ -584,8 +584,8 @@ def translate_strings_worker(job, cfg, mod_name: str,
         jm.update_progress(job, done, total,
                            f"Translating {done + 1}–{end_idx} / {total}")
 
-        # Enrich context with TM relevant to this chunk
-        chunk_context = enrich_context(context, build_tm_block(tm_pairs, originals))
+        # Enrich context with relevant terms + TM for this chunk
+        chunk_context = enrich_context(context, build_tm_block(tm_pairs, originals), originals)
         try:
             results = translate_batch(originals, chunk_context)
         except Exception as exc:

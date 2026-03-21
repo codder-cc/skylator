@@ -27,12 +27,42 @@ _load_terms()
 
 
 def _terms_block(tgt_lang: str) -> str:
+    """Legacy: fixed first-30 terms for local prompt templates."""
     if not _TERMS:
         return ""
     lines = [f"  {en} → {ru}" for en, ru in list(_TERMS.items())[:30]]
     return (
         f"\nKey terminology ({tgt_lang}):\n" + "\n".join(lines) + "\n"
     )
+
+
+def _terms_relevant(current_texts: list[str], max_entries: int = 10) -> str:
+    """
+    Return Skyrim terminology entries relevant to current_texts.
+
+    Scores by word-overlap — only terms that share words with the texts being
+    translated are included.  This is used to inject the glossary into the
+    context string so remote backends also benefit.
+    """
+    if not _TERMS or not current_texts:
+        return ""
+
+    query_words: set[str] = set()
+    for t in current_texts:
+        query_words.update(w.lower() for w in t.split() if len(w) > 2)
+
+    def _score(item: tuple[str, str]) -> int:
+        return len(set(w.lower() for w in item[0].split()) & query_words)
+
+    scored = [(k, v, _score((k, v))) for k, v in _TERMS.items()]
+    relevant = [(k, v) for k, v, s in scored if s > 0]
+    relevant.sort(key=lambda x: -_score(x))
+
+    if not relevant:
+        return ""
+
+    lines = [f"  {en} → {ru}" for en, ru in relevant[:max_entries]]
+    return "Terminology:\n" + "\n".join(lines)
 
 
 def _preserve_note(preserve_tokens: list[str]) -> str:
@@ -42,52 +72,70 @@ def _preserve_note(preserve_tokens: list[str]) -> str:
     return f"\nDo NOT translate these tokens (keep as-is): {tokens}\n"
 
 
+_TM_MAX_ENTRY_CHARS = 80   # cap both sides of a TM entry to avoid long dialogue bloat
+
+
 def build_tm_block(
     pairs: dict[str, str],
     current_texts: list[str],
-    max_entries: int = 15,
+    max_entries: int = 10,
 ) -> str:
     """
     Build a translation memory (TM) block from already-translated pairs.
 
-    Selects entries most relevant to current_texts (word-overlap scoring)
-    so the model can be consistent with prior translations.
-
-    Args:
-        pairs:         {original_english: russian_translation} from .trans.json
-        current_texts: the strings about to be translated (used for scoring)
-        max_entries:   max reference lines to include in the prompt
-
-    Returns:
-        A formatted string like
-        "Reference translations (for consistency):\\n  X → Y\\n..."
-        or "" if no useful pairs.
+    Only includes entries with non-zero word-overlap with current_texts,
+    capped at max_entries.  Long entries are skipped to avoid token bloat.
     """
     if not pairs:
         return ""
 
-    # Build query word set from current batch (ignore very short words)
     query_words: set[str] = set()
     for t in current_texts:
         query_words.update(w.lower() for w in t.split() if len(w) > 2)
 
-    def _score(item: tuple[str, str]) -> int:
-        orig_words = set(w.lower() for w in item[0].split())
-        return len(orig_words & query_words)
+    relevant: list[tuple[str, str, int]] = []
+    for orig, trans in pairs.items():
+        # Skip very long strings — they're expensive and rarely help consistency
+        if len(orig) > _TM_MAX_ENTRY_CHARS or len(trans) > _TM_MAX_ENTRY_CHARS:
+            continue
+        score = len(set(w.lower() for w in orig.split()) & query_words)
+        if score > 0:
+            relevant.append((orig, trans, score))
 
-    scored = sorted(pairs.items(), key=_score, reverse=True)[:max_entries]
-    if not scored:
+    if not relevant:
         return ""
 
-    lines = [f"  {orig} → {trans}" for orig, trans in scored]
+    relevant.sort(key=lambda x: -x[2])
+    lines = [f"  {orig} → {trans}" for orig, trans, _ in relevant[:max_entries]]
     return "Reference translations (for consistency):\n" + "\n".join(lines)
 
 
-def enrich_context(context: str, tm_block: str) -> str:
-    """Append TM block to an existing context string."""
-    if not tm_block:
-        return context
-    return (context.rstrip() + "\n\n" + tm_block).strip()
+def enrich_context(
+    context: str,
+    tm_block: str,
+    current_texts: list[str] | None = None,
+) -> str:
+    """
+    Build the full context string sent to the translation backend.
+
+    Appends:
+      1. Relevant Skyrim terminology (filtered by word-overlap) — this ensures
+         remote backends receive the glossary, not just local prompt templates.
+      2. The translation memory block.
+
+    Both sections are only added when non-empty, so no tokens are wasted.
+    """
+    parts = [context.strip()] if context.strip() else []
+
+    if current_texts:
+        terms = _terms_relevant(current_texts, max_entries=10)
+        if terms:
+            parts.append(terms)
+
+    if tm_block:
+        parts.append(tm_block)
+
+    return "\n\n".join(parts)
 
 
 # ── HY-MT prompt ──────────────────────────────────────────────────────────────

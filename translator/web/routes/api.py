@@ -369,7 +369,7 @@ def translate_one_string(mod_name: str):
                             and s["translation"] != s["text"]}
             except Exception:
                 pass
-        context = enrich_context(context, build_tm_block(tm_pairs, [original]))
+        context = enrich_context(context, build_tm_block(tm_pairs, [original]), [original])
 
         results    = translate_batch([original], context)
         translated = results[0] if results else original

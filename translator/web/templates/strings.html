@@ -368,7 +368,7 @@ async function translateOne(btn) {
 
   const r = await POST(
     `/api/mods/${encodeURIComponent(MOD_NAME)}/strings/translate-one`,
-    { key, esp, original }
+    { key, esp, original, force_ai: true }
   );
 
   // Always dump BE logs to browser console

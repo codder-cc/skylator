@@ -73,13 +73,12 @@ class RemoteBackend(BaseBackend):
         if not texts:
             return []
         try:
-            resp = self._client.translate(
+            translations = self._client.translate(
                 texts       = texts,
                 source_lang = self._source_lang,
                 target_lang = self._target_lang,
                 context     = context,
             )
-            translations = resp.get("translations", [])
             if len(translations) != len(texts):
                 log.warning(
                     "RemoteBackend: expected %d translations, got %d — returning originals",
@@ -89,8 +88,8 @@ class RemoteBackend(BaseBackend):
             if progress_cb:
                 progress_cb(len(texts), len(texts))
             log.info(
-                "RemoteBackend: translated %d strings  tokens_used=%s",
-                len(texts), resp.get("tokens_used", "?"),
+                "RemoteBackend: translated %d strings",
+                len(texts),
             )
             return translations
         except Exception as exc:

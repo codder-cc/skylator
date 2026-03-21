@@ -89,7 +89,8 @@
         {% set is_loc = s.original.startswith('[LOC:') %}
         <tr class="{% if s.status == 'pending' %}table-warning-subtle{% endif %}"
             data-key="{{ s.key | e }}"
-            data-esp="{{ s.esp | e }}">
+            data-esp="{{ s.esp | e }}"
+            data-original="{{ s.original | e }}">
 
           <!-- FormID / ESP -->
           <td style="font-size:11px">
@@ -156,10 +157,7 @@
             {% else %}
             <button class="btn btn-sm btn-outline-warning ai-btn"
                     title="AI translate this string"
-                    onclick="translateOne(this,
-                      {{ s.key | tojson }},
-                      {{ s.esp | tojson }},
-                      {{ s.original | tojson }})">
+                    onclick="translateOne(this)">
               <i class="bi bi-lightning-fill"></i>
             </button>
             {% endif %}
@@ -270,7 +268,12 @@ function applyUpdate(key, translation, status, qs) {
 
 // ── Per-row AI translate ──────────────────────────────────────────────────────
 
-async function translateOne(btn, key, esp, original) {
+async function translateOne(btn) {
+  const row = btn.closest('tr');
+  const key      = row.dataset.key;
+  const esp      = row.dataset.esp;
+  const original = row.dataset.original;
+
   btn.disabled = true;
   const orig  = btn.innerHTML;
   btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';

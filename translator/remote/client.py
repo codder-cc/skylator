@@ -199,7 +199,7 @@ class TranslationClient:
         Raises on network failure or if the job ends in error.
         """
         job_id = self.submit_translate(texts, source_lang, target_lang, context)
-        job    = self.poll_job(job_id, timeout=self.timeout)
+        job    = self.poll_job_liveness(job_id, liveness_timeout=45.0, absolute_timeout=600.0)
         if job.get("status") == "error":
             raise RuntimeError(f"Remote translate job failed: {job.get('error')}")
         result = job.get("result") or []
@@ -215,7 +215,7 @@ class TranslationClient:
         Raises on network failure or if the job ends in error.
         """
         job_id = self.submit_chat(prompt, temperature)
-        job    = self.poll_job(job_id, timeout=self.timeout)
+        job    = self.poll_job_liveness(job_id, liveness_timeout=45.0, absolute_timeout=600.0)
         if job.get("status") == "error":
             raise RuntimeError(f"Remote chat job failed: {job.get('error')}")
         result = job.get("result") or ""

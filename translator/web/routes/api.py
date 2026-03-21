@@ -352,6 +352,8 @@ def translate_one_string(mod_name: str):
         context    = ContextBuilder().get_mod_context(mod_folder, force=False)
         results    = translate_batch([original], context)
         translated = results[0] if results else original
+        if not translated or translated == original:
+            return jsonify({"ok": False, "error": "Translation failed — server returned original text unchanged"}), 500
         qs         = quality_score(original, translated)
         _save_single_to_cache(cfg.paths.translation_cache, esp_name, key_str, translated)
         return jsonify({"ok": True, "translation": translated, "quality_score": qs})

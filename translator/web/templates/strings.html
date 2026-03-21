@@ -379,8 +379,7 @@ function applyUpdate(key, translation, status, qs) {
       if (translation) {
         display.className = 'string-row-trans trans-display';
         display.style.fontSize = '';
-        const plain = stripTags(translation);
-        display.innerHTML = `<span class="trans-plain">${escHtml(plain.length > 500 ? plain.slice(0,500)+'…' : plain)}</span>`;
+        display.textContent = translation.length > 500 ? translation.slice(0,500)+'…' : translation;
       } else {
         display.className = 'text-muted trans-display';
         display.style.fontSize = '11px';
@@ -597,10 +596,8 @@ async function saveEdit(btn, key, esp) {
     cell.classList.remove('editing');
     cell.dataset.translation = text;
     const status = text.trim() ? 'translated' : 'pending';
-    // Rebuild display span (strip game HTML tags for clean preview)
-    const plain = stripTags(text);
     cell.innerHTML = text.trim()
-      ? `<span class="string-row-trans trans-display"><span class="trans-plain">${escHtml(plain.slice(0,500))}${plain.length>500?'…':''}</span></span>`
+      ? `<span class="string-row-trans trans-display">${escHtml(text.slice(0,500))}${text.length>500?'…':''}</span>`
       : `<span class="text-muted trans-display" style="font-size:11px"><em>not translated</em></span>`;
     // Update status cell
     const row = cell.closest('tr');
@@ -622,9 +619,8 @@ function cancelEdit(btn, original) {
   const key = cell.closest('tr').dataset.key;
   const esp = cell.closest('tr').dataset.esp;
   cell.dataset.translation = original;
-  const plain = stripTags(original);
   cell.innerHTML = original
-    ? `<span class="string-row-trans trans-display"><span class="trans-plain">${escHtml(plain.slice(0,500))}${plain.length>500?'…':''}</span></span>`
+    ? `<span class="string-row-trans trans-display">${escHtml(original.slice(0,500))}${original.length>500?'…':''}</span>`
     : `<span class="text-muted trans-display" style="font-size:11px"><em>not translated</em></span>`;
   attachEditListener(cell, key, esp);
 }
@@ -638,17 +634,6 @@ function attachEditListener(cell, key, esp) {
   }, { once: true });
 }
 
-// ── Strip HTML tags from display cells on page load ───────────────────────────
-
-document.querySelectorAll('.orig-display').forEach(el => {
-  const raw = el.textContent;
-  el.textContent = stripTags(raw) || raw;
-});
-
-document.querySelectorAll('.trans-plain').forEach(el => {
-  const raw = el.textContent;
-  el.textContent = stripTags(raw) || raw;
-});
 
 // ── Attach click-to-edit listeners on page load ───────────────────────────────
 

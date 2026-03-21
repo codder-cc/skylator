@@ -714,7 +714,10 @@ def translate_strings(strings: list, progress_path: Path = None, context: str = 
     # Apply all translations back
     for i, s in to_do:
         if s['text'] in done:
-            strings[i]['translation'] = done[s['text']]
+            t = done[s['text']]
+            strings[i]['translation'] = t
+            tok_ok, _ = validate_tokens(s['text'], t)
+            strings[i]['status'] = 'translated' if tok_ok else 'needs_review'
 
     # Add quality scores to all translated strings
     for s in strings:

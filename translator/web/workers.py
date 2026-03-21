@@ -458,7 +458,8 @@ def _translate_swf_texts(job, swf_path: Path, ffdec_jar: str, cfg, dry_run: bool
     if not text_files:
         return
 
-    from scripts.esp_engine import needs_translation, translate_batch
+    from scripts.esp_engine import (needs_translation, translate_batch,
+                                    prepare_for_ai, restore_from_ai, validate_tokens)
     from translator.pipeline import get_mod_context
 
     context = ''
@@ -485,13 +486,20 @@ def _translate_swf_texts(job, swf_path: Path, ffdec_jar: str, cfg, dry_run: bool
                 new_lines.append(line)
 
         if originals and not dry_run:
-            translated = translate_batch(originals, context)
+            ai_texts, ai_meta = prepare_for_ai(originals)
+            raw_results = translate_batch(ai_texts, context)
+            translated  = restore_from_ai(raw_results, ai_meta)
             swf_pairs: list[tuple[str, str]] = []
-            for (i, offset), orig, trans in zip(indices, originals, translated):
-                new_lines[i] = f"{offset} | {trans}"
-                changed = True
-                if trans and trans != orig:
+            for (i, offset), orig, ai_orig, trans in zip(indices, originals, ai_texts, translated):
+                if not trans or trans == ai_orig:
+                    continue
+                tok_ok, tok_issues = validate_tokens(orig, trans)
+                if not tok_issues:
+                    new_lines[i] = f"{offset} | {trans}"
+                    changed = True
                     swf_pairs.append((orig, trans))
+                else:
+                    job.add_log(f"SWF token mismatch [{orig[:40]}]: {'; '.join(tok_issues)}")
             # Feed global dict with SWF translations
             if swf_pairs:
                 try:

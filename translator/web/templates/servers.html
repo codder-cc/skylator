@@ -4,6 +4,83 @@
 
 {% block content %}
 <div class="row g-3 mb-4">
+  <!-- Backend Configuration -->
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <span><i class="bi bi-cpu me-2 text-accent"></i>Backend Configuration</span>
+        <span id="backend-save-status" class="badge bg-secondary" style="display:none">Saved</span>
+      </div>
+      <div class="card-body">
+        <div class="row g-3">
+          <!-- Mode selector -->
+          <div class="col-md-3">
+            <label class="form-label">Translation Mode</label>
+            <div class="btn-group w-100" role="group" id="mode-group">
+              <input type="radio" class="btn-check" name="mode" id="mode-local"   value="local"  autocomplete="off">
+              <label class="btn btn-outline-secondary" for="mode-local">Local</label>
+              <input type="radio" class="btn-check" name="mode" id="mode-remote"  value="remote" autocomplete="off">
+              <label class="btn btn-outline-primary"   for="mode-remote">Remote</label>
+              <input type="radio" class="btn-check" name="mode" id="mode-auto"    value="auto"   autocomplete="off">
+              <label class="btn btn-outline-warning"   for="mode-auto">Auto</label>
+            </div>
+            <div class="text-muted mt-1" style="font-size:11px">
+              Local = GPU here &nbsp;|&nbsp; Remote = LAN server &nbsp;|&nbsp; Auto = try remote, fall back to local
+            </div>
+          </div>
+
+          <!-- Remote URL -->
+          <div class="col-md-6">
+            <label class="form-label">Remote Server URL</label>
+            <div class="input-group">
+              <input type="text" class="form-control mono" id="server-url-input"
+                     placeholder="http://192.168.1.x:8765"
+                     value="{{ cfg.remote.server_url if cfg else '' }}">
+              <button class="btn btn-outline-secondary" onclick="testActiveServer()">
+                <i class="bi bi-plug me-1"></i>Test
+              </button>
+            </div>
+          </div>
+
+          <!-- Save button -->
+          <div class="col-md-3 d-flex align-items-end">
+            <button class="btn btn-primary w-100" onclick="saveBackendConfig()">
+              <i class="bi bi-save me-2"></i>Save Backend Settings
+            </button>
+          </div>
+        </div>
+
+        <!-- Model info panels -->
+        <div class="row g-3 mt-2" id="model-info-panels">
+          <!-- Local model -->
+          <div class="col-md-6">
+            <div class="border border-secondary rounded p-3">
+              <div class="fw-semibold mb-2"><i class="bi bi-hdd me-2 text-accent"></i>Local Models</div>
+              <div id="local-model-info" class="text-muted" style="font-size:12px">
+                Loading...
+              </div>
+            </div>
+          </div>
+          <!-- Remote model -->
+          <div class="col-md-6">
+            <div class="border border-secondary rounded p-3">
+              <div class="fw-semibold mb-2"><i class="bi bi-hdd-network me-2 text-accent"></i>Remote Server Model</div>
+              <div id="remote-model-info" class="text-muted" style="font-size:12px">
+                {% if cfg and cfg.remote.server_url %}
+                  Checking <code>{{ cfg.remote.server_url }}</code>...
+                {% else %}
+                  No server URL configured.
+                {% endif %}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3 mb-4">
   <div class="col-12">
     <div class="card">
       <div class="card-header d-flex align-items-center justify-content-between">
@@ -61,6 +138,10 @@
                         onclick="testServer('{{ s.url }}')">
                   <i class="bi bi-plug me-1"></i>Test
                 </button>
+                <button class="btn btn-sm btn-outline-success"
+                        onclick="useServer('{{ s.url }}')">
+                  <i class="bi bi-check-circle me-1"></i>Use
+                </button>
                 <button class="btn btn-sm btn-outline-primary"
                         onclick="copyUrl('{{ s.url }}')">
                   <i class="bi bi-clipboard me-1"></i>Copy URL
@@ -114,6 +195,111 @@ remote:
 
 {% block scripts %}
 <script>
+// ── Backend Configuration ────────────────────────────────────────────────────
+
+async function loadBackendInfo() {
+  try {
+    const d = await fetch('/api/remote/config').then(r => r.json());
+    if (!d.ok) return;
+
+    // Set mode radio
+    const modeInput = document.getElementById('mode-' + d.mode);
+    if (modeInput) modeInput.checked = true;
+
+    // Set URL
+    document.getElementById('server-url-input').value = d.server_url || '';
+
+    // Local models
+    const localEl = document.getElementById('local-model-info');
+    if (d.local_models && d.local_models.length) {
+      localEl.innerHTML = d.local_models.map(m => `
+        <div class="mb-2">
+          <span class="badge ${m.exists ? 'bg-success' : 'bg-danger'} me-2">
+            ${m.exists ? 'Ready' : 'Not found'}
+          </span>
+          <strong>${m.label}:</strong> ${m.name}
+          <div class="text-muted" style="font-size:11px">
+            ctx: ${m.n_ctx} &nbsp;|&nbsp; gpu_layers: ${m.gpu_layers === -1 ? 'all' : m.gpu_layers}
+            <br><span class="mono">${m.path}</span>
+          </div>
+        </div>`).join('');
+    } else {
+      localEl.innerHTML = '<span class="text-warning">No models configured</span>';
+    }
+
+    // Remote model
+    const remoteEl = document.getElementById('remote-model-info');
+    if (d.remote_info) {
+      remoteEl.innerHTML = `
+        <span class="badge bg-success me-2">Connected</span>
+        <strong>Model:</strong> ${d.remote_info.model || '—'}
+        <div class="text-muted mt-1" style="font-size:11px">
+          Platform: ${d.remote_info.platform || '—'} &nbsp;|&nbsp;
+          GPU: ${d.remote_info.gpu || '—'}
+        </div>`;
+    } else if (d.server_url) {
+      remoteEl.innerHTML = `<span class="badge bg-danger me-2">Unreachable</span><code>${d.server_url}</code>`;
+    } else {
+      remoteEl.innerHTML = 'No server URL configured.';
+    }
+  } catch (e) {
+    console.warn('loadBackendInfo failed:', e);
+  }
+}
+
+async function saveBackendConfig() {
+  const mode = document.querySelector('input[name="mode"]:checked')?.value;
+  const url  = document.getElementById('server-url-input').value.trim();
+  if (!mode) { toast('Select a mode first', 'warning'); return; }
+
+  const r = await POST('/api/remote/config', { mode, server_url: url });
+  if (r.ok) {
+    const badge = document.getElementById('backend-save-status');
+    badge.style.display = '';
+    badge.className = 'badge bg-success';
+    badge.textContent = 'Saved';
+    toast(`Backend: ${mode.toUpperCase()}${url ? ' → ' + url : ''}`, 'success');
+    setTimeout(() => loadBackendInfo(), 500);
+    setTimeout(() => { badge.style.display = 'none'; }, 3000);
+  } else {
+    toast('Save failed: ' + r.error, 'danger');
+  }
+}
+
+async function testActiveServer() {
+  const url = document.getElementById('server-url-input').value.trim();
+  if (!url) { toast('Enter a server URL first', 'warning'); return; }
+  toast(`Testing ${url}...`, 'info');
+  try {
+    const r = await fetch('/api/servers/test?url=' + encodeURIComponent(url));
+    const d = await r.json();
+    if (d.ok) {
+      toast(`Server OK — model_loaded: ${d.model_loaded}, queue: ${d.queue_depth}`, 'success');
+      // Refresh remote info panel
+      document.getElementById('server-url-input').value = url;
+      setTimeout(() => loadBackendInfo(), 200);
+    } else {
+      toast(`Server unreachable: ${d.error}`, 'danger');
+    }
+  } catch(e) {
+    toast(`Test failed: ${e.message}`, 'danger');
+  }
+}
+
+// Load on page init
+document.addEventListener('DOMContentLoaded', loadBackendInfo);
+
+// Allow discovered servers to be set as active
+function useServer(url) {
+  document.getElementById('server-url-input').value = url;
+  const remoteRadio = document.getElementById('mode-remote');
+  if (remoteRadio) remoteRadio.checked = true;
+  toast(`Server URL set — click Save Backend Settings to apply`, 'info');
+  window.scrollTo({top: 0, behavior: 'smooth'});
+}
+
+// ── LAN Discovery ────────────────────────────────────────────────────────────
+
 async function scanLan() {
   document.getElementById('scan-btn').disabled = true;
   document.getElementById('scan-status').textContent = 'Scanning...';
@@ -176,6 +362,9 @@ function renderServers(servers) {
       <div class="d-flex gap-2">
         <button class="btn btn-sm btn-outline-secondary" onclick="testServer('${s.url}')">
           <i class="bi bi-plug me-1"></i>Test
+        </button>
+        <button class="btn btn-sm btn-outline-success" onclick="useServer('${s.url}')">
+          <i class="bi bi-check-circle me-1"></i>Use
         </button>
         <button class="btn btn-sm btn-outline-primary" onclick="copyUrl('${s.url}')">
           <i class="bi bi-clipboard me-1"></i>Copy URL

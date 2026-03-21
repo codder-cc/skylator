@@ -69,6 +69,22 @@ class TranslationClient:
         r.raise_for_status()
         return r.json()
 
+    def chat(self, prompt: str, temperature: float = 0.2) -> str:
+        """
+        POST /chat
+        Body: {"prompt": "...", "temperature": 0.2}
+        Returns: {"result": "..."}
+        Raises requests.RequestException on failure.
+        """
+        payload = {"prompt": prompt, "temperature": temperature}
+        r = self._session.post(
+            f"{self.base_url}/chat",
+            json=payload,
+            timeout=self.timeout,
+        )
+        r.raise_for_status()
+        return r.json().get("result", "")
+
     def is_reachable(self) -> bool:
         """Non-raising connectivity check."""
         try:

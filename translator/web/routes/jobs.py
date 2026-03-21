@@ -110,7 +110,8 @@ def create_job():
         esp_path = data.get("esp_path", "")
         job = _create_translate_esp_job(jm, cfg, esp_path, options)
     elif job_type == "scan_mods":
-        job = _create_scan_job(jm, current_app.config["SCANNER"])
+        scan_mod = mod_names[0] if mod_names else None
+        job = _create_scan_job(jm, current_app.config["SCANNER"], mod_name=scan_mod)
     elif job_type == "apply_mod" and mod_names:
         job = _create_apply_mod_job(jm, cfg, mod_names[0], options)
     elif job_type == "translate_bsa" and mod_names:
@@ -242,14 +243,17 @@ def _create_translate_bsa_job(jm, cfg, mod_name: str, options: dict):
     )
 
 
-def _create_scan_job(jm, scanner):
+def _create_scan_job(jm, scanner, mod_name: str | None = None):
     def run(job):
-        job.add_log("Scanning mod directory and counting ESP strings...")
+        if mod_name:
+            job.add_log(f"Scanning strings for mod: {mod_name}...")
+        else:
+            job.add_log("Scanning mod directory and counting ESP strings...")
 
-        def progress(done, total, mod_name):
-            jm.update_progress(job, done, total, f"Scanning: {mod_name}")
+        def progress(done, total, name):
+            jm.update_progress(job, done, total, f"Scanning: {name}")
 
-        result = scanner.scan_string_counts(progress_cb=progress)
+        result = scanner.scan_string_counts(progress_cb=progress, mod_name=mod_name)
         msg = (f"Done: {result['scanned']} mods, "
                f"{result['esp_files']} ESP files, "
                f"{result['total_strings']} strings")
@@ -257,9 +261,10 @@ def _create_scan_job(jm, scanner):
         jm.update_progress(job, result["scanned"], result["scanned"], msg)
         job.result = msg
 
+    name = f"Scan: {mod_name}" if mod_name else "Scan Mod Directory"
     return jm.create(
-        name     = "Scan Mod Directory",
+        name     = name,
         job_type = "scan_mods",
-        params   = {},
+        params   = {"mod_name": mod_name} if mod_name else {},
         fn       = run,
     )

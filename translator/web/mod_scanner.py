@@ -290,16 +290,21 @@ class ModScanner:
 
         return info
 
-    def scan_string_counts(self, progress_cb=None) -> dict:
+    def scan_string_counts(self, progress_cb=None, mod_name: str | None = None) -> dict:
         """
         Explicit (user-triggered) deep scan: parse every ESP and cache string counts.
         progress_cb(done, total, mod_name) is called for each mod if provided.
+        mod_name: if given, scan only that specific mod folder.
         Returns a summary dict.
         """
         if not self.mods_dir.is_dir():
             return {"scanned": 0, "esp_files": 0, "total_strings": 0}
 
-        folders = [f for f in sorted(self.mods_dir.iterdir()) if f.is_dir()]
+        if mod_name:
+            folder = self.mods_dir / mod_name
+            folders = [folder] if folder.is_dir() else []
+        else:
+            folders = [f for f in sorted(self.mods_dir.iterdir()) if f.is_dir()]
         counts_cache = self._load_counts_cache()
         counts_dirty = False
         n_esp = 0
@@ -332,7 +337,10 @@ class ModScanner:
             self._save_counts_cache(counts_cache)
 
         # Invalidate in-memory mod cache so next load uses fresh counts
-        self._cache.clear()
+        if mod_name:
+            self._cache.pop(mod_name, None)
+        else:
+            self._cache.clear()
 
         return {"scanned": len(folders), "esp_files": n_esp, "total_strings": n_strings}
 

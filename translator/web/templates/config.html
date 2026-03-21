@@ -62,8 +62,24 @@
         <div class="mb-2">
           <label class="form-label">Models</label>
           <div style="font-size:12px">
-            <div>Model A: {{ cfg.ensemble.model_a.local_dir_name }}</div>
+            {% if cfg.ensemble.model_a %}<div>Model A: {{ cfg.ensemble.model_a.local_dir_name }}</div>{% endif %}
             <div>Model B: {{ cfg.ensemble.model_b.local_dir_name }}</div>
+            {% if cfg.ensemble.model_b_lite %}<div>Lite: {{ cfg.ensemble.model_b_lite.local_dir_name }}</div>{% endif %}
+          </div>
+        </div>
+        <hr class="border-subtle">
+        <div class="mb-2">
+          <label class="form-label">Backend Mode</label>
+          <div style="font-size:12px">
+            <span class="badge {% if cfg.remote.mode == 'local' %}bg-secondary{% elif cfg.remote.mode == 'remote' %}bg-primary{% else %}bg-warning text-dark{% endif %}">
+              {{ cfg.remote.mode | upper }}
+            </span>
+            {% if cfg.remote.server_url %}
+            <div class="text-muted mt-1 mono" style="font-size:11px">{{ cfg.remote.server_url }}</div>
+            {% endif %}
+            <a href="{{ url_for('servers_rt.servers_page') }}" class="btn btn-sm btn-outline-secondary mt-1">
+              <i class="bi bi-cpu me-1"></i>Change
+            </a>
           </div>
         </div>
         {% else %}

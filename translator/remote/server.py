@@ -34,6 +34,16 @@ class TranslateResponse(BaseModel):
     tokens_used:  int
 
 
+class ChatRequest(BaseModel):
+    prompt:      str
+    temperature: float = 0.2
+
+
+class ChatResponse(BaseModel):
+    result: str
+    model:  str
+
+
 class HealthResponse(BaseModel):
     status:       str  = "ok"
     model_loaded: bool = False
@@ -223,6 +233,32 @@ def create_server_app(
             gpu      = _state.gpu_label,
             model    = _state.model_label,
         )
+
+    @app.post("/chat", response_model=ChatResponse)
+    async def chat(req: ChatRequest):
+        if not _state.backend:
+            raise HTTPException(status_code=503, detail="Model not loaded")
+
+        async with _state.lock:
+            _state.queue_depth += 1
+            try:
+                loop = asyncio.get_running_loop()
+                if hasattr(_state.backend, "_chat"):
+                    result = await loop.run_in_executor(
+                        None,
+                        lambda: _state.backend._chat(req.prompt, temperature=req.temperature),
+                    )
+                else:
+                    # Fallback: use translate() with the prompt as a single item
+                    results = await loop.run_in_executor(
+                        None,
+                        lambda: _state.backend.translate([req.prompt]),
+                    )
+                    result = results[0] if results else ""
+            finally:
+                _state.queue_depth -= 1
+
+        return ChatResponse(result=result, model=_state.model_label)
 
     @app.post("/translate", response_model=TranslateResponse)
     async def translate(req: TranslateRequest):

@@ -56,9 +56,35 @@ class NeuralSummarizer:
         return _extractive_summarize(text, self._max_chars)
 
     def _llm_summarize(self, text: str) -> str:
-        """Use the lite Qwen model to generate a rich summary."""
+        """Use the LLM to generate a rich summary.
+        Routes to the configured remote server when mode is 'remote' or 'auto',
+        otherwise loads the model locally.
+        """
         try:
-            cfg       = get_config()
+            cfg     = get_config()
+            trimmed = text[:4000]
+            prompt  = _SUMMARIZE_PROMPT.format(text=trimmed)
+
+            # Use remote server if configured — avoids loading the model locally
+            remote = cfg.remote
+            if remote.mode in ("remote", "auto") and remote.server_url:
+                from translator.remote.client import TranslationClient
+                client = TranslationClient(remote.server_url, timeout=remote.timeout_sec)
+                try:
+                    log.info("Summarizing via remote server: %s", remote.server_url)
+                    result = client.chat(prompt, temperature=0.2)
+                    client.close()
+                    if result:
+                        return result.strip()
+                    # Fall through to local if remote returned empty
+                except Exception as exc:
+                    client.close()
+                    log.warning("Remote summarizer failed (%s)", exc)
+                    if remote.mode == "remote":
+                        return ""   # strict remote mode — don't fall back to local
+                    # auto mode falls through to local
+
+            # Local model path
             model_cfg = cfg.ensemble.model_b_lite or cfg.ensemble.model_b
             if model_cfg is None:
                 return ""
@@ -66,10 +92,7 @@ class NeuralSummarizer:
             from translator.models.llamacpp_backend import LlamaCppBackend
             backend = LlamaCppBackend(model_cfg=model_cfg)
 
-            trimmed = text[:4000]
-            prompt  = _SUMMARIZE_PROMPT.format(text=trimmed)
-
-            log.info("Summarizing mod description with LLM (%d chars input)...", len(trimmed))
+            log.info("Summarizing mod description with local LLM (%d chars input)...", len(trimmed))
             with backend:
                 result = backend._chat(prompt, temperature=0.2)
 

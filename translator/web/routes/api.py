@@ -224,3 +224,95 @@ def servers_scan():
     """Trigger a background LAN scan."""
     from translator.web.routes.servers_rt import trigger_scan
     return trigger_scan()
+
+
+@bp.route("/remote/config")
+def remote_config_get():
+    """Return current remote/local backend configuration and model info."""
+    cfg = current_app.config.get("TRANSLATOR_CFG")
+    if not cfg:
+        return jsonify({"ok": False, "error": "No config"})
+
+    from pathlib import Path as _Path
+
+    # Local model info
+    local_models = []
+    for label, mc in [("Primary", cfg.ensemble.model_b),
+                      ("Lite",    cfg.ensemble.model_b_lite)]:
+        if mc is None:
+            continue
+        gguf = _Path(cfg.paths.model_cache_dir) / mc.local_dir_name / mc.gguf_filename
+        local_models.append({
+            "label":    label,
+            "name":     mc.gguf_filename or mc.local_dir_name,
+            "dir":      mc.local_dir_name,
+            "path":     str(gguf),
+            "exists":   gguf.exists(),
+            "n_ctx":    mc.n_ctx,
+            "gpu_layers": mc.n_gpu_layers,
+        })
+
+    # Remote server info (non-blocking)
+    remote_info = None
+    if cfg.remote.server_url:
+        try:
+            import requests as _req
+            r = _req.get(f"{cfg.remote.server_url.rstrip('/')}/info", timeout=3.0)
+            if r.status_code == 200:
+                remote_info = r.json()
+        except Exception:
+            pass
+
+    return jsonify({
+        "ok":           True,
+        "mode":         cfg.remote.mode,
+        "server_url":   cfg.remote.server_url,
+        "local_models": local_models,
+        "remote_info":  remote_info,
+    })
+
+
+@bp.route("/remote/config", methods=["POST"])
+def remote_config_set():
+    """Save remote.mode and remote.server_url to config.yaml and reload config."""
+    data       = request.get_json() or {}
+    new_mode   = data.get("mode", "").strip()
+    new_url    = data.get("server_url", "").strip()
+
+    if new_mode not in ("local", "remote", "auto"):
+        return jsonify({"error": "mode must be local, remote, or auto"}), 400
+
+    from pathlib import Path as _Path
+    import yaml as _yaml
+
+    config_file = _Path(__file__).parent.parent.parent.parent / "config.yaml"
+    if not config_file.exists():
+        return jsonify({"error": "config.yaml not found"}), 404
+
+    try:
+        raw    = config_file.read_text(encoding="utf-8")
+        parsed = _yaml.safe_load(raw)
+
+        if "remote" not in parsed or parsed["remote"] is None:
+            parsed["remote"] = {}
+        parsed["remote"]["mode"]       = new_mode
+        parsed["remote"]["server_url"] = new_url
+
+        config_file.write_text(
+            _yaml.dump(parsed, allow_unicode=True, default_flow_style=False, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        # Reload config singleton
+        import translator.config as _tc
+        _tc._config = None
+        # Also update the Flask app config reference
+        try:
+            new_cfg = _tc.load_config()
+            current_app.config["TRANSLATOR_CFG"] = new_cfg
+        except Exception:
+            pass
+
+        return jsonify({"ok": True, "mode": new_mode, "server_url": new_url})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500

@@ -471,7 +471,7 @@ async function loadContext() {
 async function runStep(step, btn) {
   if (step === 'scan') {
     stepBusy(btn);
-    const r = await POST('/jobs/create', { type: 'scan_mods' });
+    const r = await POST('/jobs/create', { type: 'scan_mods', mods: [MOD_NAME] });
     if (r.job_id) location.assign('/jobs/' + r.job_id);
     else { stepDone(btn, 'status-scan', false, r.error); toast('Scan failed: ' + r.error, 'danger'); }
     return;

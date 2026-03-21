@@ -549,23 +549,46 @@ def restore_from_ai(translations: list, metadata: list) -> list:
 
 def _reinsert_format(original: str, translated: str) -> str:
     """Put translated into the HTML format structure of original.
-    Uses _FORMAT_TAG_RE (not all <...>) so game tokens in text segments are preserved."""
+
+    When the original has multiple text blocks (e.g. <b>Title</b> … <font>Body</font>),
+    the translated text is split at paragraph breaks (\\n\\n) and each part is placed
+    into the corresponding original text segment.  This keeps <img>, <font>, etc. tags
+    at their correct structural positions instead of all ending up after the full text.
+    """
     segments = _FORMAT_TAG_RE.split(original)
     tags     = _FORMAT_TAG_RE.findall(original)
     text_idx = [i for i, s in enumerate(segments) if s.strip()]
     if not text_idx:
         return original
+
     result = list(segments)
-    for j, i in enumerate(text_idx):
+    if len(text_idx) == 1:
+        i     = text_idx[0]
         lead  = segments[i][:len(segments[i]) - len(segments[i].lstrip())]
         trail = segments[i][len(segments[i].rstrip()):]
-        result[i] = (lead + translated + trail) if j == 0 else (lead + trail)
-    parts = []
+        result[i] = lead + translated + trail
+    else:
+        # Split translated text at double-newlines into paragraphs and
+        # distribute them across the original text segments.
+        parts_trans = re.split(r'\n{2,}', translated)
+        for j, i in enumerate(text_idx):
+            lead  = segments[i][:len(segments[i]) - len(segments[i].lstrip())]
+            trail = segments[i][len(segments[i].rstrip()):]
+            if j < len(text_idx) - 1 and j < len(parts_trans) - 1:
+                # Non-last segment: assign one paragraph
+                result[i] = lead + parts_trans[j] + trail
+            elif j == len(text_idx) - 1:
+                # Last segment: assign all remaining paragraphs
+                result[i] = lead + '\n\n'.join(parts_trans[j:]) + trail
+            else:
+                result[i] = lead + trail   # translated ran short — empty slot
+
+    out_parts = []
     for i, seg in enumerate(result):
-        parts.append(seg)
+        out_parts.append(seg)
         if i < len(tags):
-            parts.append(tags[i])
-    return ''.join(parts)
+            out_parts.append(tags[i])
+    return ''.join(out_parts)
 
 
 def extract_game_tokens(text: str) -> list:

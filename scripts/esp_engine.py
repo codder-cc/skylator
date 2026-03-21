@@ -494,9 +494,18 @@ def needs_translation(text: str) -> bool:
     # MCM $KEY tokens — resolved at runtime from MCM txt files, not AI-translatable
     if t.startswith('$'):
         return False
-    # Pure code identifiers: only letters/digits/underscores with no spaces
-    # e.g. "SKI_FavoritesManagerInstance", "ACL_SettingsQuest"
+    # Code identifiers: single token with underscore OR internal CamelCase uppercase
+    # e.g. "SKI_FavoritesManagerInstance", "ACL_SettingsQuest", "SkyUI", "TES5Edit"
+    # NOT: "Whiterun", "Falkreath" (simple capitalized proper nouns)
     if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]+', t):
+        if '_' in t or re.search(r'[A-Z]', t[1:]):
+            return False
+    # All-uppercase labels / abbreviations (≥2 letters): "SKY UI", "SKI MCM", "N/A", "SKSE"
+    letters = [c for c in t if c.isalpha()]
+    if len(letters) >= 2 and all(c.isupper() for c in letters):
+        return False
+    # Version strings: "v1.2.3", "1.0.2b"
+    if re.fullmatch(r'v?\d+(\.\d+)+\w*', t, re.IGNORECASE):
         return False
     cyrillic = sum(1 for c in t if '\u0400' <= c <= '\u04ff')
     if cyrillic > len(t) * 0.3:

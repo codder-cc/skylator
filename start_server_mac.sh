@@ -2,35 +2,13 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Skylator — Start remote worker (Mac / Apple Silicon)
 # Usage:
-#   ./start_server_mac.sh                                    # no model, load via UI
+#   ./start_server_mac.sh                                        # no model, load via UI
 #   ./start_server_mac.sh --host-url http://192.168.1.104:5000   # connect to host
 #   HOST_URL=http://192.168.1.104:5000 ./start_server_mac.sh     # via env var
 # ─────────────────────────────────────────────────────────────────────────────
 set -e
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKER_DIR="$REPO_DIR/remote_worker"
 
-# Venv is inside remote_worker/ (created by setup.sh or remote_worker/setup.sh)
-VENV="$REPO_DIR/remote_worker/venv"
-
-if [ ! -d "$VENV" ]; then
-  echo "Virtual environment not found at remote_worker/venv"
-  echo "Run first:  bash remote_worker/setup.sh"
-  echo "  or:       curl http://HOST_IP:5000/setup.sh | bash"
-  exit 1
-fi
-
-source "$VENV/bin/activate"
-
-HOST="${HOST:-0.0.0.0}"
-PORT="${PORT:-8765}"
-HOST_URL="${HOST_URL:-}"
-
-echo "=== Skylator Remote Worker ==="
-echo "URL:    http://$HOST:$PORT"
-echo "Docs:   http://localhost:$PORT/docs"
-[ -n "$HOST_URL" ] && echo "Host:   $HOST_URL  (pull-mode)"
-echo ""
-
-cd "$REPO_DIR/remote_worker"
-exec python server.py --host "$HOST" --port "$PORT" \
-  ${HOST_URL:+--host-url "$HOST_URL"} "$@"
+# Delegate to remote_worker/start.sh which handles pyenv + venv correctly
+exec bash "$WORKER_DIR/start.sh" "$@"

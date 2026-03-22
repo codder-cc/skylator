@@ -116,50 +116,154 @@ def nexus_test():
 
 @bp.route("/mods/<path:mod_name>/context")
 def mod_context_api(mod_name: str):
-    """Return the summarized AI context string for a mod.
+    """Return the AI context for a mod.
 
-    ?force=true  — bypass cache, regenerate via LLM (runs in background thread,
-                   may take up to 150s for a remote 27B model).
-    (no param)   — return disk cache immediately; "" if nothing cached yet.
+    Returns both:
+      auto_context — BART/LLM summary of Nexus description (read-only, auto-generated)
+      context      — custom user-written context from context.txt
+
+    ?force=1  — bypass cache, regenerate auto_context via LLM.
     """
     import concurrent.futures
-    cfg     = current_app.config.get("TRANSLATOR_CFG")
-    scanner = current_app.config["SCANNER"]
+    cfg = current_app.config.get("TRANSLATOR_CFG")
     if not cfg:
         return jsonify({"ok": False, "error": "No config"})
-    mod = scanner.get_mod(mod_name)
-    if mod is None:
-        return jsonify({"ok": False, "error": "Mod not found"}), 404
 
     folder = cfg.paths.mods_dir / mod_name
-    force  = request.args.get("force", "").lower() in ("1", "true", "yes")
+    if not folder.is_dir():
+        return jsonify({"ok": False, "error": "Mod not found"}), 404
+
+    force = request.args.get("force", "").lower() in ("1", "true", "yes")
+
+    # Custom context from context.txt
+    custom_txt = folder / "context.txt"
+    custom_context = custom_txt.read_text(encoding="utf-8") if custom_txt.exists() else ""
 
     if not force:
-        # Fast path: return disk cache only, no LLM
         from translator.context.builder import ContextBuilder
-        context = ContextBuilder().get_mod_context(folder, force=False)
-        return jsonify({"ok": True, "context": context or "", "from_cache": True})
+        auto_context = ContextBuilder().get_mod_context(folder, force=False)
+        return jsonify({
+            "ok":           True,
+            "context":      custom_context,
+            "auto_context": auto_context or "",
+            "from_cache":   True,
+        })
 
     # Force regeneration — run in thread so Flask isn't blocked.
-    # The summarizer uses heartbeat-based polling and will only fail if the
-    # remote server goes silent — the outer timeout is just a safety backstop.
     def _regenerate():
         from translator.context.builder import ContextBuilder
         return ContextBuilder().get_mod_context(folder, force=True)
 
-    # 660s = 10 min absolute cap (poll_job_liveness) + 60s buffer
-    wait_sec = 660
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            context = pool.submit(_regenerate).result(timeout=wait_sec)
-        return jsonify({"ok": True, "context": context or "", "from_cache": False})
-    except concurrent.futures.TimeoutError:
+            auto_context = pool.submit(_regenerate).result(timeout=660)
         return jsonify({
-            "ok":    False,
-            "error": "Generation timed out — server may be unreachable.",
-        }), 504
+            "ok":           True,
+            "context":      custom_context,
+            "auto_context": auto_context or "",
+            "from_cache":   False,
+        })
+    except concurrent.futures.TimeoutError:
+        return jsonify({"ok": False, "error": "Generation timed out — server may be unreachable."}), 504
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@bp.route("/mods/<path:mod_name>/nexus")
+def mod_nexus_raw(mod_name: str):
+    """Return the raw Nexus mod description from disk cache (no API call).
+    Returns {ok, mod_id, name, description, fetched_at} or {ok:false, error}.
+    """
+    cfg = current_app.config.get("TRANSLATOR_CFG")
+    if not cfg:
+        return jsonify({"ok": False, "error": "No config"})
+
+    import configparser, json as _json, time as _time
+    folder = cfg.paths.mods_dir / mod_name
+    meta   = folder / "meta.ini"
+
+    mod_id = None
+    if meta.exists():
+        cp = configparser.ConfigParser()
+        try:
+            cp.read(meta, encoding="utf-8")
+            mid = cp.get("General", "modid", fallback=None)
+            if mid and mid.isdigit() and int(mid) > 0:
+                mod_id = int(mid)
+        except Exception:
+            pass
+
+    if mod_id is None:
+        return jsonify({"ok": False, "error": "No Nexus mod ID found in meta.ini"})
+
+    cache_file = cfg.paths.nexus_cache / f"{mod_id}.json"
+    if not cache_file.exists():
+        return jsonify({"ok": False, "error": "Not cached yet — use Fetch to download"})
+
+    try:
+        data = _json.loads(cache_file.read_text(encoding="utf-8"))
+        age_h = (_time.time() - data.get("_fetched_at", 0)) / 3600
+        return jsonify({
+            "ok":          True,
+            "mod_id":      mod_id,
+            "name":        data.get("name", ""),
+            "description": data.get("summary", ""),
+            "fetched_at":  data.get("_fetched_at"),
+            "age_hours":   round(age_h, 1),
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)})
+
+
+@bp.route("/mods/<path:mod_name>/nexus/fetch", methods=["POST"])
+def mod_nexus_fetch(mod_name: str):
+    """Synchronously fetch (or re-fetch) the raw Nexus description for a mod.
+    Fast — no LLM involved, just an API call to nexusmods.com.
+    Returns {ok, mod_id, name, description}.
+    """
+    cfg = current_app.config.get("TRANSLATOR_CFG")
+    if not cfg:
+        return jsonify({"ok": False, "error": "No config"})
+
+    folder = cfg.paths.mods_dir / mod_name
+    if not folder.is_dir():
+        return jsonify({"ok": False, "error": "Mod folder not found"}), 404
+
+    try:
+        from translator.context.nexus_fetcher import NexusFetcher
+        import configparser, json as _json
+
+        fetcher = NexusFetcher()
+        description = fetcher.fetch_mod_description(folder)
+        if description is None:
+            return jsonify({"ok": False, "error": "Could not fetch — check Nexus API key and meta.ini"})
+
+        # Read back cache to get mod_id + name
+        import configparser as _cp
+        meta  = folder / "meta.ini"
+        mod_id = None
+        cp = _cp.ConfigParser()
+        if meta.exists():
+            try:
+                cp.read(meta, encoding="utf-8")
+                mid = cp.get("General", "modid", fallback=None)
+                if mid and mid.isdigit():
+                    mod_id = int(mid)
+            except Exception:
+                pass
+
+        name = ""
+        if mod_id:
+            cache_file = cfg.paths.nexus_cache / f"{mod_id}.json"
+            if cache_file.exists():
+                try:
+                    name = _json.loads(cache_file.read_text(encoding="utf-8")).get("name", "")
+                except Exception:
+                    pass
+
+        return jsonify({"ok": True, "mod_id": mod_id, "name": name, "description": description})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)})
 
 
 @bp.route("/mods/<path:mod_name>/context", methods=["POST"])

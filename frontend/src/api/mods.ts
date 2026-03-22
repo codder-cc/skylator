@@ -78,4 +78,14 @@ export const modsApi = {
     apiFetch<{ ok: boolean; error?: string; [key: string]: unknown }>(
       `/api/mods/${encodeURIComponent(name)}/validation`,
     ),
+
+  getNexusRaw: (name: string) =>
+    apiFetch<{ ok: boolean; mod_id?: number; name?: string; description?: string; fetched_at?: number; age_hours?: number; error?: string }>(
+      `/api/mods/${encodeURIComponent(name)}/nexus`,
+    ),
+
+  fetchNexus: (name: string) =>
+    apiPost<{ ok: boolean; mod_id?: number; name?: string; description?: string; error?: string }>(
+      `/api/mods/${encodeURIComponent(name)}/nexus/fetch`,
+    ),
 }

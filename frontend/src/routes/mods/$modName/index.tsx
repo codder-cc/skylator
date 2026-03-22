@@ -17,6 +17,9 @@ import {
   Cpu,
   ChevronDown,
   ChevronUp,
+  Download,
+  Wand2,
+  ExternalLink,
 } from 'lucide-react'
 import { useState } from 'react'
 import { modsApi } from '@/api/mods'
@@ -236,17 +239,43 @@ function ValidationPanel({ modName }: { modName: string }) {
   )
 }
 
-// ── Context summary panel ─────────────────────────────────────────────────────
+// ── Nexus + Context panel ─────────────────────────────────────────────────────
 
-function ContextPanel({ modName, encodedName }: { modName: string; encodedName: string }) {
+function NexusContextPanel({ modName, encodedName }: { modName: string; encodedName: string }) {
   const [expanded, setExpanded] = useState(false)
+  const [showRaw, setShowRaw] = useState(false)
+  const qc = useQueryClient()
 
-  const { data, isLoading } = useQuery({
+  // Raw Nexus description (fast — just reads disk cache)
+  const nexusQ = useQuery({
+    queryKey: QK.modNexus(modName),
+    queryFn: () => modsApi.getNexusRaw(modName),
+    enabled: expanded,
+    staleTime: 300_000,
+  })
+
+  // AI summary + custom context
+  const contextQ = useQuery({
     queryKey: QK.modContext(modName),
     queryFn: () => modsApi.getContext(modName),
     enabled: expanded,
     staleTime: 60_000,
   })
+
+  // Fetch from Nexus API (no LLM, fast)
+  const fetchMut = useMutation({
+    mutationFn: () => modsApi.fetchNexus(modName),
+    onSuccess: () => qc.invalidateQueries({ queryKey: QK.modNexus(modName) }),
+  })
+
+  // Regenerate AI summary (slow — calls LLM)
+  const summarizeMut = useMutation({
+    mutationFn: () => modsApi.getContext(modName, true),
+    onSuccess: () => qc.invalidateQueries({ queryKey: QK.modContext(modName) }),
+  })
+
+  const nexus   = nexusQ.data
+  const context = contextQ.data
 
   return (
     <div className="card overflow-hidden">
@@ -254,37 +283,139 @@ function ContextPanel({ modName, encodedName }: { modName: string; encodedName: 
         onClick={() => setExpanded((v) => !v)}
         className="w-full flex items-center gap-2 px-4 py-3 hover:bg-bg-card2 transition-colors text-left"
       >
-        <BookOpen size={14} className="text-accent shrink-0" />
+        <Globe size={14} className="text-accent shrink-0" />
         <span className="text-sm font-semibold text-text-main uppercase tracking-wide flex-1">
-          AI Context / Nexus Summary
+          Nexus &amp; AI Context
         </span>
+        {nexus?.ok && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-success/20 text-success border border-success/30 font-mono mr-1">
+            cached {nexus.age_hours}h ago
+          </span>
+        )}
         {expanded
           ? <ChevronUp size={14} className="text-text-muted" />
           : <ChevronDown size={14} className="text-text-muted" />}
       </button>
 
       {expanded && (
-        <div className="border-t border-border-subtle p-4 space-y-3">
-          {isLoading ? (
-            <p className="text-sm text-text-muted">Loading…</p>
-          ) : data?.auto_context ? (
-            <pre className="text-xs text-text-muted font-mono whitespace-pre-wrap bg-bg-base p-3 rounded-md max-h-40 overflow-auto">
-              {data.auto_context}
-            </pre>
-          ) : data?.context ? (
-            <pre className="text-xs text-text-muted font-mono whitespace-pre-wrap bg-bg-base p-3 rounded-md max-h-40 overflow-auto">
-              {data.context}
-            </pre>
-          ) : (
-            <p className="text-sm text-text-muted italic">No context yet.</p>
-          )}
-          <Link
-            to="/mods/$modName/context"
-            params={{ modName: encodedName }}
-            className="text-xs text-accent hover:underline"
-          >
-            Edit context →
-          </Link>
+        <div className="border-t border-border-subtle divide-y divide-border-subtle">
+
+          {/* ── Section 1: Raw Nexus description ───────────────────────────── */}
+          <div className="p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <Globe size={13} className="text-text-muted" />
+              <span className="text-xs font-semibold text-text-muted uppercase tracking-wide flex-1">
+                Nexus Description (original)
+              </span>
+              {nexus?.ok && nexus.mod_id && (
+                <a
+                  href={`https://www.nexusmods.com/skyrimspecialedition/mods/${nexus.mod_id}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1 text-[10px] text-accent hover:underline"
+                >
+                  <ExternalLink size={10} />
+                  Nexus page
+                </a>
+              )}
+              <button
+                onClick={() => fetchMut.mutate()}
+                disabled={fetchMut.isPending}
+                className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-bg-card2 border border-border-subtle text-text-muted hover:text-text-main disabled:opacity-50 transition-colors"
+              >
+                {fetchMut.isPending
+                  ? <RefreshCw size={10} className="animate-spin" />
+                  : <Download size={10} />}
+                {fetchMut.isPending ? 'Fetching…' : 'Fetch from Nexus'}
+              </button>
+            </div>
+
+            {fetchMut.isError && (
+              <p className="text-xs text-danger">{String((fetchMut.error as Error)?.message)}</p>
+            )}
+
+            {nexusQ.isLoading ? (
+              <p className="text-xs text-text-muted">Loading…</p>
+            ) : !nexus?.ok ? (
+              <p className="text-xs text-text-muted italic">
+                {nexus?.error ?? 'Not cached yet.'}
+                {' '}Click "Fetch from Nexus" to download.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {nexus.name && (
+                  <p className="text-sm font-semibold text-text-main">{nexus.name}</p>
+                )}
+                <button
+                  onClick={() => setShowRaw((v) => !v)}
+                  className="text-xs text-accent hover:underline flex items-center gap-1"
+                >
+                  {showRaw ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
+                  {showRaw ? 'Hide' : 'Show'} original description
+                </button>
+                {showRaw && nexus.description && (
+                  <pre className="text-xs text-text-muted font-mono whitespace-pre-wrap bg-bg-base p-3 rounded-md max-h-48 overflow-auto leading-relaxed">
+                    {nexus.description}
+                  </pre>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* ── Section 2: AI Summary ────────────────────────────────────────── */}
+          <div className="p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <Wand2 size={13} className="text-text-muted" />
+              <span className="text-xs font-semibold text-text-muted uppercase tracking-wide flex-1">
+                AI Summary (auto-generated)
+              </span>
+              <button
+                onClick={() => summarizeMut.mutate()}
+                disabled={summarizeMut.isPending}
+                className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-bg-card2 border border-border-subtle text-text-muted hover:text-text-main disabled:opacity-50 transition-colors"
+                title="Re-generate summary using LLM (slow — up to 10 min)"
+              >
+                {summarizeMut.isPending
+                  ? <><RefreshCw size={10} className="animate-spin" /><span className="animate-pulse">Summarising…</span></>
+                  : <><Wand2 size={10} />Make Summary</>}
+              </button>
+            </div>
+
+            {summarizeMut.isError && (
+              <p className="text-xs text-danger">{String((summarizeMut.error as Error)?.message)}</p>
+            )}
+
+            {contextQ.isLoading ? (
+              <p className="text-xs text-text-muted">Loading…</p>
+            ) : context?.auto_context ? (
+              <pre className="text-xs text-text-muted font-mono whitespace-pre-wrap bg-bg-base p-3 rounded-md max-h-32 overflow-auto">
+                {context.auto_context}
+              </pre>
+            ) : (
+              <p className="text-xs text-text-muted italic">
+                No summary yet. Fetch from Nexus first, then click "Make Summary".
+              </p>
+            )}
+          </div>
+
+          {/* ── Section 3: Custom context link ──────────────────────────────── */}
+          <div className="p-4 flex items-center justify-between">
+            <div>
+              <p className="text-xs font-semibold text-text-muted uppercase tracking-wide">Custom Context</p>
+              <p className="text-xs text-text-muted mt-0.5">
+                {context?.context ? 'Custom instructions set' : 'No custom instructions'}
+              </p>
+            </div>
+            <Link
+              to="/mods/$modName/context"
+              params={{ modName: encodedName }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs bg-accent/20 text-accent border border-accent/30 hover:bg-accent/30 transition-colors"
+            >
+              <BookOpen size={11} />
+              Edit Context
+            </Link>
+          </div>
+
         </div>
       )}
     </div>
@@ -572,9 +703,9 @@ function ModDetailPage() {
         </div>
       </div>
 
-      {/* Collapsible validation + context panels */}
+      {/* Collapsible panels */}
+      <NexusContextPanel modName={decodedName} encodedName={modName} />
       <ValidationPanel modName={decodedName} />
-      <ContextPanel modName={decodedName} encodedName={modName} />
 
       {/* Recent jobs */}
       <div className="space-y-3">

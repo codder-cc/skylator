@@ -64,8 +64,20 @@ def _upsert_trans_json(mods_dir: Path, mod_name: str,
                     s["translation"] = translation
                     if quality_score is not None:
                         s["quality_score"] = quality_score
-                    if status is not None:
-                        s["status"] = status
+                        if status is not None:
+                            s["status"] = status
+                    else:
+                        # Manual edit or missing score — recompute from actual strings
+                        from scripts.esp_engine import quality_score as _qs, validate_tokens as _vt
+                        orig = s.get("text", "")
+                        if orig and translation:
+                            qs = _qs(orig, translation)
+                            tok_ok, _ = _vt(orig, translation)
+                            s["quality_score"] = qs
+                            s["status"] = "translated" if (tok_ok and qs > 70) else "needs_review"
+                        elif not translation:
+                            s["status"] = "pending"
+                            s["quality_score"] = None
                     break
 
             trans_json.write_text(
@@ -740,8 +752,12 @@ def validate_translations_worker(job, cfg, mod_name: str):
     issues: list[str] = []
     checked = 0
 
+    def _slug(s):
+        import re as _re
+        return _re.sub(r"[^a-z0-9]", "", s.lower())
+
     for esp_stem, strings in cache.items():
-        if mod_name and mod_name.lower() not in esp_stem.lower():
+        if mod_name and _slug(mod_name) not in _slug(esp_stem):
             continue
         for key, translation in strings.items():
             checked += 1

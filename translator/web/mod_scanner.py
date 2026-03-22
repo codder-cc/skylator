@@ -148,16 +148,18 @@ class ModScanner:
         trans_cache = self._load_translation_cache()
         strings: list[dict] = []
 
-        from scripts.esp_engine import validate_tokens as _validate_tokens
+        from scripts.esp_engine import validate_tokens as _validate_tokens, quality_score as _quality_score
 
         def _str_status(orig: str, trans: str, qs=None) -> str:
             """Compute translation status: pending / translated / needs_review."""
             if not trans:
                 return "pending"
             tok_ok, _ = _validate_tokens(orig, trans)
-            if not tok_ok or (qs is not None and qs < 40):
+            if not tok_ok:
                 return "needs_review"
-            return "translated"
+            # Use provided score if trustworthy (>= 40); recompute if stale/missing
+            effective_qs = qs if (qs is not None and qs >= 40) else _quality_score(orig, trans)
+            return "translated" if effective_qs > 70 else "needs_review"
 
         for ext in ("*.esp", "*.esm", "*.esl"):
             for esp_path in folder.rglob(ext):
@@ -178,7 +180,15 @@ class ModScanner:
                             translation = (s.get("translation") or
                                            mod_cache.get(key_str, ""))
                             orig = s["text"]
-                            status = _str_status(orig, translation, s.get("quality_score"))
+                            stored_qs = s.get("quality_score")
+                            # Recompute quality_score if stored value might be stale
+                            # (stored < 40 means it was flagged needs_review — recheck)
+                            if translation and stored_qs is not None and stored_qs < 40:
+                                recomputed = _quality_score(orig, translation)
+                                display_qs = recomputed
+                            else:
+                                display_qs = stored_qs
+                            status = _str_status(orig, translation, display_qs)
                             strings.append({
                                 "esp":           esp_path.name,
                                 "form_id":       s["form_id"],
@@ -189,7 +199,7 @@ class ModScanner:
                                 "translation":   translation,
                                 "status":        status,
                                 "key":           key_str,
-                                "quality_score": s.get("quality_score"),
+                                "quality_score": display_qs,
                                 "dict_match":    (global_dict.get(orig)
                                                   if global_dict and not translation
                                                   else ""),

@@ -26,12 +26,12 @@ if not exist "config.yaml" (
     exit /b 1
 )
 
-echo  Starting server on http://localhost:5000
+echo  Starting server on http://0.0.0.0:5000
 echo  Press Ctrl+C to stop.
 echo  (Use --log-level DEBUG for verbose output)
 echo.
 
-venv\Scripts\python.exe web_server.py --log-level INFO
+venv\Scripts\python.exe web_server.py --host 0.0.0.0 --log-level INFO
 
 echo.
 echo  Server stopped.

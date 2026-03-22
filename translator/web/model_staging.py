@@ -15,6 +15,7 @@ from pathlib import Path
 
 _lock     = threading.Lock()
 _sessions: dict[str, Path] = {}
+_roots:    dict[str, Path] = {}   # actual file-serve root (may differ from staging path)
 
 
 def create_session(cache_dir: Path) -> tuple[str, Path]:
@@ -27,13 +28,24 @@ def create_session(cache_dir: Path) -> tuple[str, Path]:
     return sid, path
 
 
+def set_session_root(sid: str, root: Path) -> None:
+    """Override the directory used to serve files for this session.
+
+    Call this after downloading model files when the actual files live in
+    a subdirectory of the staging path (e.g. HuggingFace snapshot dirs).
+    """
+    with _lock:
+        _roots[sid] = root
+
+
 def get_session_path(sid: str) -> Path | None:
     with _lock:
-        return _sessions.get(sid)
+        return _roots.get(sid) or _sessions.get(sid)
 
 
 def delete_session(sid: str) -> None:
     with _lock:
+        _roots.pop(sid, None)
         path = _sessions.pop(sid, None)
     if path and path.exists():
         shutil.rmtree(path, ignore_errors=True)

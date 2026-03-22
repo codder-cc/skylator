@@ -921,7 +921,7 @@ def _stage_mlx(repo_id: str, staging_path) -> dict:
         for f in sorted(snap.rglob("*")) if f.is_file()
     ]
     log.info("Host: MLX staged — %d files in %s", len(files), snap)
-    return {"dest_subdir": dest_subdir, "files": files}
+    return {"dest_subdir": dest_subdir, "files": files, "serve_root": snap}
 
 
 def _stage_gguf(repo_id: str, gguf_filename: str, staging_path) -> dict:
@@ -940,7 +940,7 @@ def _stage_gguf(repo_id: str, gguf_filename: str, staging_path) -> dict:
             hf_hub_download(repo_id=repo_id, filename=fname, local_dir=str(local_dir))
         files.append({"path": fname, "size": dest.stat().st_size})
     log.info("Host: GGUF staged — %d shards in %s", len(files), local_dir)
-    return {"dest_subdir": dest_subdir, "files": files}
+    return {"dest_subdir": dest_subdir, "files": files, "serve_root": local_dir}
 
 
 def _finalize_load(registry, label: str, result_str) -> "Response":
@@ -1037,6 +1037,10 @@ def workers_model_load(label: str):
             tinfo = _stage_mlx(repo_id, staging_path)
         else:
             tinfo = _stage_gguf(repo_id, gguf_filename, staging_path)
+        # Register the actual directory that contains the staged files so the
+        # file-serving endpoint can locate them (HuggingFace downloads nest
+        # files in cache subdirs, not directly under staging_path).
+        model_staging.set_session_root(sid, tinfo["serve_root"])
     except Exception as exc:
         model_staging.delete_session(sid)
         log.error("Host download failed for %s: %s", repo_id, exc)

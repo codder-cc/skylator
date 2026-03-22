@@ -730,6 +730,24 @@ def create_server_app(
             capabilities = _state.detect_capabilities(),
         )
 
+    @app.get("/models")
+    async def list_models():
+        """List .gguf files already downloaded in models_cache/."""
+        from models.loader import MODELS_CACHE
+        files = []
+        if MODELS_CACHE.exists():
+            for p in sorted(MODELS_CACHE.rglob("*.gguf")):
+                try:
+                    rel  = p.relative_to(MODELS_CACHE)
+                    files.append({
+                        "name":    p.name,
+                        "path":    str(rel),          # relative to models_cache
+                        "size_mb": p.stat().st_size // (1024 * 1024),
+                    })
+                except Exception:
+                    pass
+        return {"models": files, "cache_dir": str(MODELS_CACHE)}
+
     @app.get("/stats")
     async def stats():
         completed    = sum(1 for j in _state.jobs.values() if j.status == "done")

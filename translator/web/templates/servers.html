@@ -321,6 +321,11 @@ python server.py --no-mdns                          # disable mDNS announcement<
           </div>
         </div>
 
+        <!-- Remote cache status -->
+        <div id="lm-cache-status" class="mb-3 p-2 rounded border border-secondary" style="font-size:12px">
+          <span class="text-muted"><i class="bi bi-hourglass-split me-1"></i>Checking remote cache…</span>
+        </div>
+
         <!-- Model preset selector -->
         <div class="mb-3">
           <label class="form-label">Model preset</label>
@@ -474,17 +479,72 @@ async function openLoadModel(label) {
   applyPreset();
   switchLmTab('hf');
 
-  // Show modal immediately — pre-fill backend type in background
+  // Show modal immediately, then load info + cache in background
   new bootstrap.Modal(document.getElementById('loadModelModal')).show();
 
+  // Pre-fill backend type
   try {
     const ac = new AbortController();
-    const tid = setTimeout(() => ac.abort(), 3000);
+    setTimeout(() => ac.abort(), 3000);
     const info = await fetch(`/api/workers/${encodeURIComponent(label)}/info`,
                             {signal: ac.signal}).then(r => r.json());
-    clearTimeout(tid);
     if (info.backend_type) document.getElementById('lm-backend').value = info.backend_type;
   } catch(e) {}
+
+  // Load remote cache status
+  loadRemoteModels(label);
+}
+
+async function loadRemoteModels(label) {
+  const el = document.getElementById('lm-cache-status');
+  try {
+    const ac  = new AbortController();
+    setTimeout(() => ac.abort(), 6000);
+    const d   = await fetch(`/api/workers/${encodeURIComponent(label)}/models`,
+                            {signal: ac.signal}).then(r => r.json());
+    const models = d.models || [];
+
+    if (!models.length) {
+      el.innerHTML = `<span class="text-muted"><i class="bi bi-hdd me-1"></i>models_cache/ is empty — first load will download the model.</span>`;
+      return;
+    }
+
+    // Match cached files against presets
+    const cachedNames = new Set(models.map(m => m.name.toLowerCase()));
+    let html = `<div class="d-flex align-items-center gap-2 flex-wrap">
+      <span class="text-muted me-1"><i class="bi bi-hdd me-1"></i>Remote cache:</span>`;
+
+    for (const [key, preset] of Object.entries(MODEL_PRESETS)) {
+      if (key === 'custom') continue;
+      const cached = cachedNames.has(preset.gguf.toLowerCase());
+      const found  = models.find(m => m.name.toLowerCase() === preset.gguf.toLowerCase());
+      const sz     = found ? ` · ${found.size_mb} MB` : '';
+      html += cached
+        ? `<span class="badge bg-success" title="${preset.gguf}${sz}"><i class="bi bi-check-circle me-1"></i>${preset.label}${sz}</span>`
+        : `<span class="badge bg-secondary" title="Will download from HuggingFace"><i class="bi bi-cloud-download me-1"></i>${preset.label}</span>`;
+    }
+
+    // Show any extra cached files not in presets
+    const presetGgufs = new Set(Object.values(MODEL_PRESETS).map(p => p.gguf.toLowerCase()));
+    const extras = models.filter(m => !presetGgufs.has(m.name.toLowerCase()));
+    for (const m of extras) {
+      html += `<span class="badge bg-info text-dark" title="${m.path}"><i class="bi bi-file-earmark me-1"></i>${m.name} · ${m.size_mb} MB</span>`;
+    }
+
+    el.innerHTML = html + '</div>';
+
+    // Update preset dropdown options to show cached indicator
+    const sel = document.getElementById('lm-preset');
+    for (const opt of sel.options) {
+      if (opt.value === 'custom') continue;
+      const preset = MODEL_PRESETS[opt.value];
+      if (!preset) continue;
+      const cached = cachedNames.has(preset.gguf.toLowerCase());
+      opt.text = cached ? `✓ ${preset.label}` : `⬇ ${preset.label}`;
+    }
+  } catch(e) {
+    el.innerHTML = `<span class="text-warning"><i class="bi bi-exclamation-triangle me-1"></i>Could not check remote cache: ${e.message}</span>`;
+  }
 }
 
 async function submitLoadModel() {

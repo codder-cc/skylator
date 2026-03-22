@@ -707,6 +707,21 @@ def workers_get_info(label: str):
         return jsonify({"error": str(exc)}), 502
 
 
+@bp.route("/workers/<label>/models", methods=["GET"])
+def workers_list_models(label: str):
+    """Proxy GET /models from the remote worker — lists cached .gguf files."""
+    registry = current_app.config.get("WORKER_REGISTRY")
+    worker   = registry.get(label) if registry else None
+    if not worker:
+        return jsonify({"error": f"Worker '{label}' not found"}), 404
+    try:
+        import httpx
+        r = httpx.get(f"{worker.url.rstrip('/')}/models", timeout=8.0)
+        return jsonify(r.json()), r.status_code
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 502
+
+
 @bp.route("/remote/config", methods=["POST"])
 def remote_config_set():
     """Save remote.mode and remote.server_url to config.yaml and reload config."""

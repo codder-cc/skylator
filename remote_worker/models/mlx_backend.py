@@ -40,8 +40,16 @@ class MlxBackend(BaseBackend):
         load_path = repo
         if cache_dir:
             from huggingface_hub import snapshot_download
-            load_path = snapshot_download(repo, cache_dir=str(cache_dir))
-            log.info("MlxBackend: cached to %s", load_path)
+            # Try local cache first — avoids SSL/network errors on corporate VPNs
+            # that do TLS inspection (Cisco AnyConnect etc.).
+            try:
+                load_path = snapshot_download(repo, cache_dir=str(cache_dir),
+                                              local_files_only=True)
+                log.info("MlxBackend: loaded from local cache %s", load_path)
+            except Exception:
+                log.info("MlxBackend: not in local cache — downloading from Hub...")
+                load_path = snapshot_download(repo, cache_dir=str(cache_dir))
+                log.info("MlxBackend: downloaded to %s", load_path)
 
         self._model, self._tokenizer = mlx_lm.load(load_path)
         self._state = ModelState.LOADED

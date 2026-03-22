@@ -270,9 +270,9 @@ fi
 
 # -- Start worker -------------------------------------------------------------
 echo ""
-echo "OK  Setup complete -- starting worker..."
-echo "    Connecting to: $HOST_URL"
-echo "    Press Ctrl+C to stop"
+echo "OK  Setup complete."
+echo "    To restart later: bash $INSTALL_DIR/remote_worker/start.sh --host-url $HOST_URL"
+echo "    Starting now -- press Ctrl+C to stop"
 echo ""
 
 exec python server.py --host-url "$HOST_URL"

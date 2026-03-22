@@ -27,6 +27,7 @@ class WorkerInfo:
     gpu:          str = ""
     last_seen:    float = 0.0     # time.time() of last heartbeat
     current_task: str = ""        # current string key (for UI)
+    models:       list = field(default_factory=list)  # cached .gguf files from last heartbeat
 
     def to_dict(self) -> dict:
         return {
@@ -37,6 +38,7 @@ class WorkerInfo:
             "gpu":          self.gpu,
             "last_seen":    self.last_seen,
             "current_task": self.current_task,
+            "models":       self.models,
             "alive":        (time.time() - self.last_seen) < WorkerRegistry.HEARTBEAT_TTL,
         }
 
@@ -70,13 +72,16 @@ class WorkerRegistry:
             if info.label not in self._work_queues:
                 self._work_queues[info.label] = queue.Queue()
 
-    def heartbeat(self, label: str) -> bool:
-        """Update last_seen for a known worker.  Returns False if unknown."""
+    def heartbeat(self, label: str, models: list | None = None) -> bool:
+        """Update last_seen (and optionally cached models) for a known worker.
+        Returns False if unknown (caller should ask remote to re-register)."""
         with self._lock:
             w = self._workers.get(label)
             if w is None:
                 return False
             w.last_seen = time.time()
+            if models is not None:
+                w.models = models
             return True
 
     def remove(self, label: str) -> None:

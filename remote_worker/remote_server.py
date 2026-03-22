@@ -476,6 +476,26 @@ def _get_my_url(host: str, port: int) -> str:
         return f"http://{socket.gethostbyname(socket.gethostname())}:{port}"
 
 
+def _get_cached_models() -> list:
+    """Return list of cached .gguf files for inclusion in heartbeat payloads."""
+    try:
+        from models.loader import MODELS_CACHE
+        files = []
+        if MODELS_CACHE.exists():
+            for p in sorted(MODELS_CACHE.rglob("*.gguf")):
+                try:
+                    files.append({
+                        "name":    p.name,
+                        "path":    str(p.relative_to(MODELS_CACHE)),
+                        "size_mb": p.stat().st_size // (1024 * 1024),
+                    })
+                except Exception:
+                    pass
+        return files
+    except Exception:
+        return []
+
+
 def _register_with_host(host_url: str, my_url: str, capabilities: list[str]) -> bool:
     try:
         import httpx
@@ -523,8 +543,10 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
         await asyncio.sleep(15)
         try:
             import httpx
+            # Include cached models list so host never needs a reverse connection
+            models = _get_cached_models()
             r = httpx.post(f"{host_url.rstrip('/')}/api/workers/heartbeat",
-                           json={"label": label}, timeout=8.0)
+                           json={"label": label, "models": models}, timeout=8.0)
             # Re-register if host came back after being down, or if it lost us
             if needs_register or r.status_code == 404:
                 _register_with_host(host_url, my_url, capabilities)

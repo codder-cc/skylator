@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# Skylator — Start remote worker (Mac / Apple Silicon)
+# Skylator Remote Worker — quick start
+# Run from any directory; always resolves paths relative to this script.
+#
 # Usage:
-#   ./start_server_mac.sh                                    # no model, load via UI
-#   ./start_server_mac.sh --host-url http://192.168.1.104:5000   # connect to host
-#   HOST_URL=http://192.168.1.104:5000 ./start_server_mac.sh     # via env var
+#   bash start.sh                                         # no model, load via UI
+#   bash start.sh --host-url http://192.168.1.104:5000    # register with host
+#   HOST_URL=http://192.168.1.104:5000 bash start.sh      # via env var
 # ─────────────────────────────────────────────────────────────────────────────
 set -e
-REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$(dirname "$0")"
 
-# Venv is inside remote_worker/ (created by setup.sh or remote_worker/setup.sh)
-VENV="$REPO_DIR/remote_worker/venv"
+VENV="venv"
 
 if [ ! -d "$VENV" ]; then
-  echo "Virtual environment not found at remote_worker/venv"
-  echo "Run first:  bash remote_worker/setup.sh"
-  echo "  or:       curl http://HOST_IP:5000/setup.sh | bash"
+  echo "Virtual environment not found."
+  echo "Run setup first:  bash setup.sh"
+  echo "  or one-liner:   curl http://HOST_IP:5000/setup.sh | bash"
   exit 1
 fi
 
@@ -31,6 +32,5 @@ echo "Docs:   http://localhost:$PORT/docs"
 [ -n "$HOST_URL" ] && echo "Host:   $HOST_URL  (pull-mode)"
 echo ""
 
-cd "$REPO_DIR/remote_worker"
 exec python server.py --host "$HOST" --port "$PORT" \
   ${HOST_URL:+--host-url "$HOST_URL"} "$@"

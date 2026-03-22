@@ -603,15 +603,17 @@ def workers_register():
 
 @bp.route("/workers/heartbeat", methods=["POST"])
 def workers_heartbeat():
-    """Remote server calls this every ~15 s to stay alive in the registry."""
+    """Remote server calls this every ~15 s to stay alive in the registry.
+    Optionally accepts 'models' list (cached .gguf files) so the host
+    never needs a reverse connection just to check the remote's cache."""
     data     = request.get_json() or {}
     label    = data.get("label", "").strip()
     registry = current_app.config.get("WORKER_REGISTRY")
     if not label or registry is None:
         return jsonify({"ok": False}), 400
-    found = registry.heartbeat(label)
+    models = data.get("models")  # list[{name, path, size_mb}] or None
+    found  = registry.heartbeat(label, models=models)
     if not found:
-        # Unknown worker — ask it to re-register
         return jsonify({"ok": False, "reregister": True}), 404
     return jsonify({"ok": True})
 
@@ -721,17 +723,32 @@ def workers_get_info(label: str):
 
 @bp.route("/workers/<label>/models", methods=["GET"])
 def workers_list_models(label: str):
-    """Proxy GET /models from the remote worker — lists cached .gguf files."""
+    """Return cached .gguf files for a remote worker.
+
+    Uses the models list pushed by the remote in its last heartbeat
+    (no reverse connection needed — works in pull-mode across subnets).
+    Falls back to a direct proxy only if the registry has no data yet.
+    """
     registry = current_app.config.get("WORKER_REGISTRY")
     worker   = registry.get(label) if registry else None
     if not worker:
         return jsonify({"error": f"Worker '{label}' not found"}), 404
+
+    # Prefer cached data from heartbeat (no reverse TCP needed)
+    if worker.models:
+        return jsonify({"models": worker.models, "source": "heartbeat"})
+
+    # Fallback: try direct proxy (works only when host can reach worker URL)
     try:
         import httpx
-        r = httpx.get(f"{worker.url.rstrip('/')}/models", timeout=8.0)
-        return jsonify(r.json()), r.status_code
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 502
+        r = httpx.get(f"{worker.url.rstrip('/')}/models", timeout=5.0)
+        data = r.json()
+        # Cache the result so future calls don't need the reverse connection
+        if registry and isinstance(data.get("models"), list):
+            registry.heartbeat(label, models=data["models"])
+        return jsonify(data), r.status_code
+    except Exception:
+        return jsonify({"models": [], "source": "unavailable"})
 
 
 @bp.route("/remote/config", methods=["POST"])

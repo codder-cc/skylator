@@ -20,6 +20,7 @@ interface ModStringsResponse {
   page: number
   per: number
   pages: number
+  scope_counts?: Record<string, number>
 }
 
 export const modsApi = {

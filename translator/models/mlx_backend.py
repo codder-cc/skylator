@@ -15,6 +15,31 @@ from translator.models.base import BaseBackend, ModelState
 log = logging.getLogger(__name__)
 
 
+def _find_cached_snapshot(repo_id: str, cache_dir) -> str | None:
+    """Scan cache_dir for an existing MLX model snapshot — no network access."""
+    from pathlib import Path
+    root = Path(cache_dir)
+    if not root.is_dir():
+        return None
+    safe_name   = "models--" + repo_id.replace("/", "--")
+    search_roots = [root]
+    for sub in ("hf_cache/hub", "hub"):
+        c = root / sub
+        if c.is_dir():
+            search_roots.append(c)
+    for search_root in search_roots:
+        snaps_dir = search_root / safe_name / "snapshots"
+        if snaps_dir.is_dir():
+            snaps = [s for s in snaps_dir.iterdir()
+                     if s.is_dir() and (s / "config.json").exists()]
+            if snaps:
+                return str(max(snaps, key=lambda s: s.stat().st_mtime))
+    flat = root / repo_id.split("/")[-1]
+    if flat.is_dir() and (flat / "config.json").exists():
+        return str(flat)
+    return None
+
+
 class MlxBackend(BaseBackend):
     """
     BaseBackend implementation using mlx-lm for Apple Silicon.
@@ -66,21 +91,15 @@ class MlxBackend(BaseBackend):
             )
 
         log.info("MlxBackend: loading %s via MLX (Apple Silicon)...", self._repo_id)
-        # Download to project cache dir if specified, then load from local path.
-        # Try local_files_only first — avoids SSL/network issues when model is already cached
-        # (e.g. corporate VPN with SSL inspection blocks HuggingFace Hub TLS handshake).
         load_path = self._repo_id
         if self._local_cache_dir:
-            from huggingface_hub import snapshot_download
-            try:
-                load_path = snapshot_download(
-                    self._repo_id,
-                    cache_dir=str(self._local_cache_dir),
-                    local_files_only=True,
-                )
-                log.info("MlxBackend: loaded from local cache %s", load_path)
-            except Exception:
-                log.info("MlxBackend: not in local cache — downloading from Hub...")
+            local_path = _find_cached_snapshot(self._repo_id, self._local_cache_dir)
+            if local_path:
+                log.info("MlxBackend: using local snapshot %s", local_path)
+                load_path = local_path
+            else:
+                log.info("MlxBackend: not cached — downloading from Hub...")
+                from huggingface_hub import snapshot_download
                 load_path = snapshot_download(
                     self._repo_id,
                     cache_dir=str(self._local_cache_dir),

@@ -12,6 +12,47 @@ from models.base import BaseBackend, ModelState
 log = logging.getLogger(__name__)
 
 
+def _find_cached_snapshot(repo_id: str, cache_dir) -> str | None:
+    """Scan cache_dir for an existing MLX model snapshot — no network access.
+
+    Searches in priority order:
+      1. cache_dir/models--{org}--{name}/snapshots/{hash}/  (snapshot_download format)
+      2. cache_dir/hf_cache/hub/models--{org}--{name}/snapshots/{hash}/  (HF_HOME format,
+         set by loader.py: HF_HOME = models_cache/hf_cache)
+      3. cache_dir/{name}/  (flat layout — manual copy or mlx_lm direct download)
+    """
+    from pathlib import Path
+    root = Path(cache_dir)
+    if not root.is_dir():
+        return None
+
+    safe_name = "models--" + repo_id.replace("/", "--")
+
+    # Check all directories that HF hub might have used as its hub cache
+    search_roots = [root]
+    for sub in ("hf_cache/hub", "hub"):
+        candidate = root / sub
+        if candidate.is_dir():
+            search_roots.append(candidate)
+
+    for search_root in search_roots:
+        snaps_dir = search_root / safe_name / "snapshots"
+        if snaps_dir.is_dir():
+            snaps = [s for s in snaps_dir.iterdir()
+                     if s.is_dir() and (s / "config.json").exists()]
+            if snaps:
+                found = str(max(snaps, key=lambda s: s.stat().st_mtime))
+                log.debug("_find_cached_snapshot: found at %s", found)
+                return found
+
+    # Flat layout (manual copy or mlx_lm direct download)
+    flat = root / repo_id.split("/")[-1]
+    if flat.is_dir() and (flat / "config.json").exists():
+        return str(flat)
+
+    return None
+
+
 class MlxBackend(BaseBackend):
     """BaseBackend implementation using mlx-lm for Apple Silicon."""
 
@@ -39,15 +80,13 @@ class MlxBackend(BaseBackend):
         cache_dir = getattr(self._mcfg, "local_cache_dir", None)
         load_path = repo
         if cache_dir:
-            from huggingface_hub import snapshot_download
-            # Try local cache first — avoids SSL/network errors on corporate VPNs
-            # that do TLS inspection (Cisco AnyConnect etc.).
-            try:
-                load_path = snapshot_download(repo, cache_dir=str(cache_dir),
-                                              local_files_only=True)
-                log.info("MlxBackend: loaded from local cache %s", load_path)
-            except Exception:
-                log.info("MlxBackend: not in local cache — downloading from Hub...")
+            local_path = _find_cached_snapshot(repo, cache_dir)
+            if local_path:
+                log.info("MlxBackend: using local snapshot %s", local_path)
+                load_path = local_path
+            else:
+                log.info("MlxBackend: not cached — downloading from Hub...")
+                from huggingface_hub import snapshot_download
                 load_path = snapshot_download(repo, cache_dir=str(cache_dir))
                 log.info("MlxBackend: downloaded to %s", load_path)
 

@@ -961,11 +961,11 @@ def _finalize_load(registry, label: str, result_str) -> "Response":
 def workers_model_load(label: str):
     """Send a load_model command to the remote worker via the pull queue.
 
-    If the model is already in the worker's heartbeat cache (worker.models),
-    sends model_path directly — no download needed.
-    Otherwise, downloads from HuggingFace on the host (unrestricted internet)
-    and instructs the remote to fetch the files from this host via
-    GET /api/model-transfer/file (outbound: remote → host).
+    Priority order:
+      1. Model already in worker.models cache  → send model_path directly (fast)
+      2. Let remote download from HuggingFace  → works when no VPN restriction
+      3. If remote download fails              → host downloads + transfers to remote
+         (fallback for Cisco AnyConnect / SSL-intercepting proxies)
 
     All connections remain outbound from remote → host.
     """
@@ -992,13 +992,43 @@ def workers_model_load(label: str):
         result_str = registry.collect_result(chunk_id, timeout=120.0)
         return _finalize_load(registry, label, result_str)
 
-    # ── Host downloads model to staging ──────────────────────────────────────
+    # ── Try remote download first ─────────────────────────────────────────────
+    # Give the remote a chance to download from HuggingFace directly (works when
+    # there is no VPN/firewall restriction). Timeout is generous but bounded so we
+    # can detect a network failure quickly enough to retry via host-proxy.
+    log.info("Trying direct HF download on worker %s for %s", label, repo_id)
+    direct_chunk_id = str(uuid.uuid4())
+    registry.enqueue_chunk(label, {"type": "load_model", "chunk_id": direct_chunk_id,
+                                   "payload": payload})
+    direct_result_str = registry.collect_result(direct_chunk_id, timeout=900.0)
+
+    if direct_result_str is not None:
+        import json as _json
+        try:
+            direct_data = _json.loads(direct_result_str)
+        except Exception:
+            direct_data = {"ok": True, "raw": direct_result_str}
+
+        if direct_data.get("ok"):
+            log.info("Worker %s downloaded model directly — no host-proxy needed", label)
+            if direct_data.get("model"):
+                w = registry.get(label)
+                if w:
+                    w.model = direct_data["model"]
+            return jsonify(direct_data)
+
+        err = direct_data.get("error", "")
+        log.warning("Worker %s direct download failed (%s) — falling back to host-proxy", label, err)
+    else:
+        log.warning("Worker %s direct download timed out — falling back to host-proxy", label)
+
+    # ── Fallback: host downloads model, transfers to remote ──────────────────
     cfg       = current_app.config.get("TRANSLATOR_CFG")
     cache_dir = _Path(cfg.paths.translation_cache).parent if cfg else _Path("cache")
 
     from translator.web import model_staging
     sid, staging_path = model_staging.create_session(cache_dir)
-    log.info("Staging %s for worker %s in %s",
+    log.info("Host-proxy: staging %s for worker %s in %s",
              repo_id or payload.get("model_path", "?"), label, staging_path)
 
     try:
@@ -1012,6 +1042,7 @@ def workers_model_load(label: str):
         return jsonify({"error": f"Host download failed: {exc}"}), 502
 
     host_url = request.host_url.rstrip("/")   # e.g. "http://192.168.1.104:5000"
+    xfer_chunk_id = str(uuid.uuid4())
     xfer_payload = dict(payload)
     xfer_payload["transfer"] = {
         "host_url":    host_url,
@@ -1019,12 +1050,12 @@ def workers_model_load(label: str):
         "dest_subdir": tinfo["dest_subdir"],
         "files":       tinfo["files"],
     }
-    registry.enqueue_chunk(label, {"type": "load_model", "chunk_id": chunk_id,
+    registry.enqueue_chunk(label, {"type": "load_model", "chunk_id": xfer_chunk_id,
                                    "payload": xfer_payload})
-    log.info("Enqueued load_model+transfer for worker %s (%d files, chunk %s)",
-             label, len(tinfo["files"]), chunk_id[:8])
+    log.info("Host-proxy: enqueued transfer for worker %s (%d files, chunk %s)",
+             label, len(tinfo["files"]), xfer_chunk_id[:8])
 
-    result_str = registry.collect_result(chunk_id, timeout=3600.0)
+    result_str = registry.collect_result(xfer_chunk_id, timeout=3600.0)
     model_staging.delete_session(sid)          # always clean up, success or failure
     return _finalize_load(registry, label, result_str)
 

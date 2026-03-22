@@ -822,6 +822,69 @@ def validate_translations_worker(job, cfg, mod_name: str):
         log.warning("Could not save validation results: %s", exc)
 
 
+def recompute_scores_worker(job, cfg, mod_name: str = None):
+    """
+    Recompute quality_score and status for every string in every .trans.json.
+    If mod_name is given, only that mod is processed; otherwise all mods.
+    Updates trans.json files in-place — does NOT re-translate anything.
+    """
+    import json as _json
+    from scripts.esp_engine import quality_score as _qs, validate_tokens as _vt
+    from translator.web.job_manager import JobManager
+    jm = JobManager.get()
+
+    mods_dir = cfg.paths.mods_dir
+    if mod_name:
+        search_roots = [mods_dir / mod_name]
+    else:
+        search_roots = [p for p in mods_dir.iterdir() if p.is_dir()]
+
+    trans_files = []
+    for root in search_roots:
+        if root.is_dir():
+            trans_files.extend(root.rglob("*.trans.json"))
+
+    total   = len(trans_files)
+    updated = 0
+    skipped = 0
+
+    job.add_log(f"Scanning {total} .trans.json file(s)...")
+    jm.update_progress(job, 0, total, "Starting...")
+
+    for i, path in enumerate(trans_files):
+        jm.update_progress(job, i, total, path.name)
+        try:
+            with _CACHE_LOCK:
+                strings = _json.loads(path.read_text(encoding="utf-8"))
+                changed = False
+                for s in strings:
+                    orig  = s.get("text", "")
+                    trans = s.get("translation", "")
+                    if not trans:
+                        continue
+                    new_qs = _qs(orig, trans)
+                    tok_ok, _ = _vt(orig, trans)
+                    new_status = "translated" if (tok_ok and new_qs > 70) else "needs_review"
+                    if s.get("quality_score") != new_qs or s.get("status") != new_status:
+                        s["quality_score"] = new_qs
+                        s["status"]        = new_status
+                        changed = True
+                if changed:
+                    path.write_text(
+                        _json.dumps(strings, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                    updated += 1
+                else:
+                    skipped += 1
+        except Exception as exc:
+            job.add_log(f"ERROR {path.name}: {exc}")
+
+    jm.update_progress(job, total, total, "Done")
+    job.result = f"Recomputed scores: {updated} file(s) updated, {skipped} unchanged"
+    job.add_log(job.result)
+
+
 def translate_strings_worker(job, cfg, mod_name: str,
                              keys: list | None = None,
                              scope: str = "all",

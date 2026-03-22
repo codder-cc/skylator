@@ -275,6 +275,8 @@
             </div>
             <span class="step-status me-2" id="status-validate">{{ step_badge(pipeline_states.validate) }}</span>
             <button class="btn btn-sm btn-outline-secondary" id="btn-validate" onclick="runStep('validate', this)">Run</button>
+            <button class="btn btn-sm btn-outline-secondary ms-1" title="Recompute quality scores from current text"
+                    onclick="recomputeScores(this)"><i class="bi bi-arrow-repeat me-1"></i>Recompute Scores</button>
           </div>
 
           <div class="pipeline-step" id="step-apply">
@@ -415,6 +417,19 @@ async function restoreOriginal() {
 async function validateMod() {
   const r = await POST('/tools/esp/validate', { mod_name: MOD_NAME });
   if (r.job_id) location.assign('/jobs/' + r.job_id);
+}
+
+async function recomputeScores(btn) {
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Running…';
+  const r = await POST('/jobs/create', { type: 'recompute_scores', mods: [MOD_NAME] });
+  if (r.job_id) {
+    location.assign('/jobs/' + r.job_id);
+  } else {
+    toast('Failed: ' + (r.error || 'unknown'), 'danger');
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-arrow-repeat me-1"></i>Recompute Scores';
+  }
 }
 
 async function bsaUnpack(path) {

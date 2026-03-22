@@ -155,10 +155,9 @@ class ModScanner:
             if not trans:
                 return "pending"
             tok_ok, _ = _validate_tokens(orig, trans)
-            if not tok_ok:
+            if not tok_ok or (qs is not None and qs <= 70):
                 return "needs_review"
-            effective_qs = qs if qs is not None else _quality_score(orig, trans)
-            return "translated" if effective_qs > 70 else "needs_review"
+            return "translated"
 
         for ext in ("*.esp", "*.esm", "*.esl"):
             for esp_path in folder.rglob(ext):
@@ -179,14 +178,7 @@ class ModScanner:
                             translation = (s.get("translation") or
                                            mod_cache.get(key_str, ""))
                             orig = s["text"]
-                            stored_qs = s.get("quality_score")
-                            # Always recompute quality_score when stored value would
-                            # show needs_review — catches stale scores after re-translation
-                            # or manual edits. Fast operation (regex + math).
-                            if translation and (stored_qs is None or stored_qs <= 70):
-                                display_qs = _quality_score(orig, translation)
-                            else:
-                                display_qs = stored_qs
+                            display_qs = s.get("quality_score")
                             status = _str_status(orig, translation, display_qs)
                             strings.append({
                                 "esp":           esp_path.name,

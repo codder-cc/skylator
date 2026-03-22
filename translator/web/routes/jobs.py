@@ -126,6 +126,9 @@ def create_job():
         machines = options.get("machines")
         job      = _create_translate_strings_job(jm, cfg, mod_names[0], keys, scope,
                                                   inf_params, force=force, machines=machines)
+    elif job_type == "recompute_scores":
+        mod_name = mod_names[0] if mod_names else None
+        job      = _create_recompute_scores_job(jm, cfg, mod_name)
     else:
         return jsonify({"error": "Unknown job type"}), 400
 
@@ -384,6 +387,21 @@ def _create_scan_job(jm, scanner, mod_name: str | None = None):
     return jm.create(
         name     = name,
         job_type = "scan_mods",
+        params   = {"mod_name": mod_name} if mod_name else {},
+        fn       = run,
+    )
+
+
+def _create_recompute_scores_job(jm, cfg, mod_name: str = None):
+    from translator.web.workers import recompute_scores_worker
+
+    def run(job):
+        recompute_scores_worker(job, cfg, mod_name=mod_name)
+
+    name = f"Recompute Scores: {mod_name}" if mod_name else "Recompute Scores (all mods)"
+    return jm.create(
+        name     = name,
+        job_type = "recompute_scores",
         params   = {"mod_name": mod_name} if mod_name else {},
         fn       = run,
     )

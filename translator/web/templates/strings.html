@@ -375,7 +375,11 @@ function calcRows(text, min=3, max=16) {
 // ── Apply a string update to a DOM row ───────────────────────────────────────
 
 function applyUpdate(key, translation, status, qs) {
-  const row = document.querySelector(`tr[data-key="${CSS.escape(key)}"]`);
+  // CSS.escape is for identifiers, not attribute values — use direct comparison instead
+  let row = null;
+  for (const tr of document.querySelectorAll('tr[data-key]')) {
+    if (tr.dataset.key === key) { row = tr; break; }
+  }
   if (!row) return;
 
   const tc = row.querySelector('.trans-cell');
@@ -472,7 +476,7 @@ async function translateOne(btn) {
 
   const r = await POST(
     `/api/mods/${encodeURIComponent(MOD_NAME)}/strings/translate-one`,
-    { key, esp, original, force_ai: true, params: getAiParams() }
+    { key, esp, original, force_ai: true, params: getAiParams(), machines: await getMachines() }
   );
 
   // Always dump BE logs to browser console

@@ -450,11 +450,13 @@ def translate_one_string(mod_name: str):
 
     try:
         from pathlib import Path
-        from scripts.esp_engine import translate_texts, prepare_for_ai
+        from scripts.esp_engine import (translate_texts, prepare_for_ai,
+                                        restore_from_ai, validate_tokens, quality_score)
         from translator.context.builder import ContextBuilder
         from translator.prompt.builder import build_tm_block, enrich_context
         from translator.web.workers import save_translation
         import json as _json
+        import time as _time
 
         xlogs.append(f"input: {original[:100]}")
         log.info("[translate-one] %s | input: %s", key_str, original[:200])
@@ -487,9 +489,42 @@ def translate_one_string(mod_name: str):
             xlogs.append(f"masked: {masked[:100]}")
             log.info("[translate-one] %s | masked: %s", key_str, masked[:200])
 
-        # ── Core pipeline (same as batch) ─────────────────────────────────────
-        core = translate_texts([original], context=context, params=params, force=True)
-        r    = core[0]
+        # ── Backend selection: prefer pull-mode registry worker over singleton pipeline ──
+        data_machines = data.get("machines") or []
+        pull_backend  = None
+        registry      = current_app.config.get("WORKER_REGISTRY")
+        if registry and data_machines:
+            from translator.web.pull_backend import RegistryPullBackend
+            from translator.web.worker_registry import WorkerRegistry
+            src_lang = getattr(getattr(cfg, "translation", None), "source_lang", "English")
+            tgt_lang = getattr(getattr(cfg, "translation", None), "target_lang", "Russian")
+            for label in data_machines:
+                if label == "local":
+                    continue
+                worker = registry.get(label)
+                if worker and (_time.time() - worker.last_seen) < WorkerRegistry.HEARTBEAT_TTL:
+                    pull_backend = RegistryPullBackend(
+                        label=label, registry=registry,
+                        source_lang=src_lang, target_lang=tgt_lang)
+                    xlogs.append(f"backend: pull-mode [{label}]")
+                    log.info("[translate-one] %s | using pull backend: %s", key_str, label)
+                    break
+
+        # ── Core translation ───────────────────────────────────────────────────
+        if pull_backend is not None:
+            ai_texts, ai_meta = prepare_for_ai([original])
+            raw = pull_backend.translate(ai_texts, context=context, params=params)
+            trans_list = restore_from_ai(raw, ai_meta)
+            trans = trans_list[0] if trans_list else ""
+            tok_ok, tok_issues_r = validate_tokens(original, trans)
+            qs_r   = quality_score(original, trans)
+            status_r = "translated" if (tok_ok and qs_r > 70) else "needs_review"
+            r = {"translation": trans, "status": status_r, "quality_score": qs_r,
+                 "token_issues": tok_issues_r, "skipped": False}
+        else:
+            # Default: EnsemblePipeline singleton (local or configured remote)
+            core = translate_texts([original], context=context, params=params, force=True)
+            r    = core[0]
         # ──────────────────────────────────────────────────────────────────────
 
         if r["skipped"]:

@@ -122,21 +122,50 @@ echo "  Host: $HOST_URL"
 echo "  Install: $INSTALL_DIR"
 echo ""
 
-# -- Python check -------------------------------------------------------------
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "ERROR: python3 not found."
-  echo "  macOS:  brew install python"
-  echo "  Ubuntu: sudo apt install python3 python3-pip python3-venv"
-  exit 1
-fi
-
+# -- Python check (auto-install 3.12 via pyenv if needed) --------------------
+PYTHON_BIN=""
 PY_MIN=310
-PY_VER=$(python3 -c "import sys; print(sys.version_info.major*100+sys.version_info.minor)")
-if [ "$PY_VER" -lt "$PY_MIN" ]; then
-  echo "ERROR: Python 3.10+ required (found $(python3 --version))"
-  exit 1
+PYENV_PYTHON_VER="3.12.7"
+
+_py_ver() {{ python3 -c "import sys; print(sys.version_info.major*100+sys.version_info.minor)" 2>/dev/null || echo 0; }}
+
+if command -v python3 >/dev/null 2>&1 && [ "$(_py_ver)" -ge "$PY_MIN" ]; then
+  PYTHON_BIN="python3"
+  echo "OK  $(python3 --version)"
+else
+  if command -v python3 >/dev/null 2>&1; then
+    echo "WARN  System Python too old ($(python3 --version)), need 3.10+"
+  else
+    echo "WARN  python3 not found"
+  fi
+  echo "...  Installing Python $PYENV_PYTHON_VER via pyenv..."
+
+  # Install pyenv if missing
+  if ! command -v pyenv >/dev/null 2>&1; then
+    if [ -d "$HOME/.pyenv" ]; then
+      export PYENV_ROOT="$HOME/.pyenv"
+      export PATH="$PYENV_ROOT/bin:$PATH"
+    else
+      curl -fsSL https://pyenv.run | bash
+      export PYENV_ROOT="$HOME/.pyenv"
+      export PATH="$PYENV_ROOT/bin:$PATH"
+    fi
+    eval "$(pyenv init -)"
+  else
+    eval "$(pyenv init -)"
+  fi
+
+  # Install Python via pyenv if not already present
+  if ! pyenv versions --bare | grep -q "^$PYENV_PYTHON_VER$"; then
+    echo "...  Building Python $PYENV_PYTHON_VER (this takes a few minutes)..."
+    pyenv install "$PYENV_PYTHON_VER"
+  else
+    echo "OK   Python $PYENV_PYTHON_VER already in pyenv"
+  fi
+
+  PYTHON_BIN="$(pyenv root)/versions/$PYENV_PYTHON_VER/bin/python3"
+  echo "OK  $($PYTHON_BIN --version) (via pyenv)"
 fi
-echo "OK  $(python3 --version)"
 
 # -- Clone / update repo ------------------------------------------------------
 if [ -d "$INSTALL_DIR/.git" ]; then
@@ -152,7 +181,7 @@ cd "$INSTALL_DIR/remote_worker"
 # -- Virtual environment ------------------------------------------------------
 if [ ! -d "venv" ]; then
   echo "... Creating virtual environment..."
-  python3 -m venv venv
+  "$PYTHON_BIN" -m venv venv
 fi
 . venv/bin/activate
 pip install --upgrade pip --quiet

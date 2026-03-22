@@ -482,6 +482,15 @@ function applyPreset() {
   document.getElementById('lm-model-path').value = preset.local_path;
 }
 
+function selectCachedModel(path) {
+  // Select a cached .gguf file that doesn't match any preset — switch to Local Path tab
+  document.getElementById('lm-preset').value     = 'custom';
+  document.getElementById('lm-model-path').value = path;
+  document.getElementById('lm-repo').value        = '';
+  document.getElementById('lm-gguf').value        = '';
+  switchLmTab('path');
+}
+
 function switchLmTab(tab) {
   _lmTab = tab;
   document.getElementById('lm-hf-panel').style.display   = tab === 'hf'   ? '' : 'none';
@@ -543,15 +552,24 @@ async function loadRemoteModels(label) {
       const found  = models.find(m => m.name.toLowerCase() === preset.gguf.toLowerCase());
       const sz     = found ? ` · ${found.size_mb} MB` : '';
       html += cached
-        ? `<span class="badge bg-success" title="${preset.gguf}${sz}"><i class="bi bi-check-circle me-1"></i>${preset.label}${sz}</span>`
-        : `<span class="badge bg-secondary" title="Will download from HuggingFace"><i class="bi bi-cloud-download me-1"></i>${preset.label}</span>`;
+        ? `<span class="badge bg-success" style="cursor:pointer" title="Click to select"
+               onclick="document.getElementById('lm-preset').value='${key}';applyPreset()">
+             <i class="bi bi-check-circle me-1"></i>${preset.label}${sz}
+           </span>`
+        : `<span class="badge bg-secondary" style="cursor:pointer" title="Will download — click to select"
+               onclick="document.getElementById('lm-preset').value='${key}';applyPreset()">
+             <i class="bi bi-cloud-download me-1"></i>${preset.label}
+           </span>`;
     }
 
-    // Show any extra cached files not in presets
+    // Extra cached files not matching any preset — click to load via Local Path
     const presetGgufs = new Set(Object.values(MODEL_PRESETS).map(p => p.gguf.toLowerCase()));
     const extras = models.filter(m => !presetGgufs.has(m.name.toLowerCase()));
     for (const m of extras) {
-      html += `<span class="badge bg-info text-dark" title="${m.path}"><i class="bi bi-file-earmark me-1"></i>${m.name} · ${m.size_mb} MB</span>`;
+      html += `<span class="badge bg-info text-dark" style="cursor:pointer" title="Click to select (local path)"
+                   onclick="selectCachedModel(${JSON.stringify(m.path)})">
+                 <i class="bi bi-file-earmark me-1"></i>${escHtml(m.name)} · ${m.size_mb} MB
+               </span>`;
     }
 
     el.innerHTML = html + '</div>';

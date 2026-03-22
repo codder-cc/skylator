@@ -518,16 +518,20 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
         if _register_with_host(host_url, my_url, capabilities):
             break
         await asyncio.sleep(10)
+    needs_register = False   # set True when host was unreachable
     while True:
         await asyncio.sleep(15)
         try:
             import httpx
             r = httpx.post(f"{host_url.rstrip('/')}/api/workers/heartbeat",
                            json={"label": label}, timeout=8.0)
-            if r.status_code == 404:
+            # Re-register if host came back after being down, or if it lost us
+            if needs_register or r.status_code == 404:
                 _register_with_host(host_url, my_url, capabilities)
+            needs_register = False
         except Exception:
-            pass
+            # Host unreachable — re-register as soon as it comes back
+            needs_register = True
 
 
 async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int) -> None:

@@ -293,8 +293,6 @@ python server.py --no-mdns                          # disable mDNS announcement<
     </div>
   </div>
 </div>
-{% endblock %}
-
 <!-- Load Model Modal -->
 <div class="modal fade" id="loadModelModal" tabindex="-1">
   <div class="modal-dialog modal-lg">
@@ -410,6 +408,7 @@ python server.py --no-mdns                          # disable mDNS announcement<
     </div>
   </div>
 </div>
+{% endblock %}
 
 {% block scripts %}
 <script>
@@ -439,13 +438,17 @@ async function openLoadModel(label) {
   document.getElementById('lm-gguf').value        = '';
   switchLmTab('path');
 
-  // Pre-fill backend type from worker's /info if available
+  // Show modal immediately — pre-fill backend type in background
+  new bootstrap.Modal(document.getElementById('loadModelModal')).show();
+
   try {
-    const info = await fetch(`/api/workers/${encodeURIComponent(label)}/info`).then(r => r.json());
+    const ac = new AbortController();
+    const tid = setTimeout(() => ac.abort(), 3000);
+    const info = await fetch(`/api/workers/${encodeURIComponent(label)}/info`,
+                            {signal: ac.signal}).then(r => r.json());
+    clearTimeout(tid);
     if (info.backend_type) document.getElementById('lm-backend').value = info.backend_type;
   } catch(e) {}
-
-  new bootstrap.Modal(document.getElementById('loadModelModal')).show();
 }
 
 async function submitLoadModel() {

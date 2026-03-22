@@ -321,22 +321,27 @@ python server.py --no-mdns                          # disable mDNS announcement<
           </div>
         </div>
 
+        <!-- Model preset selector -->
+        <div class="mb-3">
+          <label class="form-label">Model preset</label>
+          <select class="form-select bg-dark text-light border-secondary" id="lm-preset" onchange="applyPreset()">
+            <option value="qwen27b">Qwen3.5-27B Q4_K_M (recommended)</option>
+            <option value="qwen14b">Qwen3.5-14B Q4_K_M (faster, less VRAM)</option>
+            <option value="custom">Custom…</option>
+          </select>
+        </div>
+
         <!-- Model source — tabs -->
         <ul class="nav nav-tabs mb-3" id="lm-tabs">
           <li class="nav-item">
-            <button class="nav-link active" onclick="switchLmTab('path')" id="lm-tab-path">Local Path</button>
+            <button class="nav-link active" onclick="switchLmTab('hf')" id="lm-tab-hf">HuggingFace <span class="badge bg-primary ms-1" style="font-size:9px">auto-download</span></button>
           </li>
           <li class="nav-item">
-            <button class="nav-link" onclick="switchLmTab('hf')" id="lm-tab-hf">HuggingFace</button>
+            <button class="nav-link" onclick="switchLmTab('path')" id="lm-tab-path">Local Path</button>
           </li>
         </ul>
 
-        <div id="lm-path-panel">
-          <label class="form-label">Absolute path to .gguf file on the remote machine</label>
-          <input type="text" class="form-control bg-dark text-light border-secondary mono" id="lm-model-path"
-                 placeholder="/Users/you/models/qwen3.5-27b-q4_k_m.gguf">
-        </div>
-        <div id="lm-hf-panel" style="display:none">
+        <div id="lm-hf-panel">
           <div class="row g-2">
             <div class="col-md-6">
               <label class="form-label">HuggingFace repo_id</label>
@@ -350,7 +355,15 @@ python server.py --no-mdns                          # disable mDNS announcement<
             </div>
           </div>
           <div class="text-muted mt-1" style="font-size:11px">
-            Model will be downloaded to <code>remote_worker/models_cache/</code> on the remote machine on first use.
+            <i class="bi bi-info-circle me-1"></i>Downloaded to <code>remote_worker/models_cache/</code> on the remote machine. Skipped if already present.
+          </div>
+        </div>
+        <div id="lm-path-panel" style="display:none">
+          <label class="form-label">Path to .gguf file on the remote machine</label>
+          <input type="text" class="form-control bg-dark text-light border-secondary mono" id="lm-model-path"
+                 placeholder="Qwen3.5-27B-GGUF/qwen3.5-27b-q4_k_m.gguf">
+          <div class="text-muted mt-1" style="font-size:11px">
+            <i class="bi bi-info-circle me-1"></i>Relative paths resolve from <code>remote_worker/models_cache/</code>. Use an absolute path (e.g. <code>/home/user/model.gguf</code>) to load from anywhere.
           </div>
         </div>
 
@@ -414,15 +427,39 @@ python server.py --no-mdns                          # disable mDNS announcement<
 <script>
 // ── Load Model modal ──────────────────────────────────────────────────────────
 
+const MODEL_PRESETS = {
+  qwen27b: {
+    label:      'Qwen3.5-27B Q4_K_M',
+    repo_id:    'Qwen/Qwen3.5-27B-GGUF',
+    gguf:       'qwen3.5-27b-q4_k_m.gguf',
+    local_path: 'Qwen3.5-27B-GGUF/qwen3.5-27b-q4_k_m.gguf',
+  },
+  qwen14b: {
+    label:      'Qwen3.5-14B Q4_K_M',
+    repo_id:    'Qwen/Qwen3.5-14B-GGUF',
+    gguf:       'qwen3.5-14b-q4_k_m.gguf',
+    local_path: 'Qwen3.5-14B-GGUF/qwen3.5-14b-q4_k_m.gguf',
+  },
+  custom: { label: 'Custom', repo_id: '', gguf: '', local_path: '' },
+};
+
 let _lmActiveWorker = null;
-let _lmTab = 'path';
+let _lmTab = 'hf';
+
+function applyPreset() {
+  const key    = document.getElementById('lm-preset').value;
+  const preset = MODEL_PRESETS[key] || MODEL_PRESETS.custom;
+  document.getElementById('lm-repo').value       = preset.repo_id;
+  document.getElementById('lm-gguf').value       = preset.gguf;
+  document.getElementById('lm-model-path').value = preset.local_path;
+}
 
 function switchLmTab(tab) {
   _lmTab = tab;
-  document.getElementById('lm-path-panel').style.display = tab === 'path' ? '' : 'none';
   document.getElementById('lm-hf-panel').style.display   = tab === 'hf'   ? '' : 'none';
-  document.getElementById('lm-tab-path').classList.toggle('active', tab === 'path');
+  document.getElementById('lm-path-panel').style.display = tab === 'path' ? '' : 'none';
   document.getElementById('lm-tab-hf').classList.toggle('active',   tab === 'hf');
+  document.getElementById('lm-tab-path').classList.toggle('active', tab === 'path');
 }
 
 async function openLoadModel(label) {
@@ -432,11 +469,10 @@ async function openLoadModel(label) {
   document.getElementById('lm-submit-btn').disabled   = false;
   document.getElementById('lm-submit-btn').innerHTML  = '<i class="bi bi-upload me-1"></i>Load Model';
 
-  // Reset form fields so previous worker's values don't bleed through
-  document.getElementById('lm-model-path').value = '';
-  document.getElementById('lm-repo').value        = '';
-  document.getElementById('lm-gguf').value        = '';
-  switchLmTab('path');
+  // Reset to default preset (qwen27b) and HF tab
+  document.getElementById('lm-preset').value = 'qwen27b';
+  applyPreset();
+  switchLmTab('hf');
 
   // Show modal immediately — pre-fill backend type in background
   new bootstrap.Modal(document.getElementById('loadModelModal')).show();

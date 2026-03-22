@@ -151,9 +151,13 @@
 const JOB_ID     = {{ job.id | tojson }};
 
 async function resumeJob(jobId) {
-  const r = await POST(`/jobs/${jobId}/resume`);
-  if (r.job_id) location.assign('/jobs/' + r.job_id);
-  else toast('Resume failed: ' + (r.error || 'unknown'), 'danger');
+  try {
+    const r = await POST(`/jobs/${jobId}/resume`);
+    if (r.job_id) location.assign('/jobs/' + r.job_id);
+    else toast('Resume failed: ' + (r.error || 'unknown'), 'danger');
+  } catch(e) {
+    toast('Resume error: ' + e.message, 'danger');
+  }
 }
 
 const IS_RUNNING = {{ (job.status.value in ['running', 'pending']) | tojson }};
@@ -184,8 +188,13 @@ function copyLog() {
   copyText(logEl.innerText);
 }
 
+let _logInterval = null;
+
 if (IS_RUNNING) {
   const es = new EventSource(`/jobs/${JOB_ID}/stream`);
+
+  window.addEventListener('beforeunload', () => { es.close(); if (_logInterval) clearInterval(_logInterval); });
+
   es.onmessage = function(e) {
     const d = JSON.parse(e.data);
 
@@ -198,7 +207,8 @@ if (IS_RUNNING) {
     document.getElementById('prog-bar').style.width = pct + '%';
     document.getElementById('prog-pct').textContent = pct.toFixed(1) + '%';
     document.getElementById('prog-message').textContent = d.progress?.message || '';
-    if (d.progress?.sub_step) document.getElementById('prog-sub') && (document.getElementById('prog-sub').textContent = d.progress.sub_step);
+    const subEl = document.getElementById('prog-sub');
+    if (subEl) subEl.textContent = d.progress?.sub_step || '';
     document.getElementById('prog-cur').textContent = d.progress?.current || 0;
     document.getElementById('prog-total').textContent = d.progress?.total || 0;
     // ETA
@@ -215,13 +225,14 @@ if (IS_RUNNING) {
       card.style.display = '';
       let rows = '';
       d.worker_updates.forEach(w => {
-        const dot   = w.alive ? '🟢' : '🔴';
-        const text  = w.current_text ? w.current_text.slice(0, 35) + (w.current_text.length > 35 ? '…' : '') : '—';
+        const dot  = w.alive ? '🟢' : '🔴';
+        const full = w.current_text || '';
+        const text = full ? full.slice(0, 35) + (full.length > 35 ? '…' : '') : '—';
         rows += `<tr>
-          <td>${dot} ${w.label}</td>
+          <td>${dot} ${escHtml(w.label)}</td>
           <td>${w.done}</td>
           <td>${w.tps > 0 ? w.tps.toFixed(1) : '—'}</td>
-          <td class="text-muted" title="${w.current_text || ''}">${text}</td>
+          <td class="text-muted" title="${escHtml(full)}">${escHtml(text)}</td>
         </tr>`;
       });
       tbody.innerHTML = rows;
@@ -229,7 +240,7 @@ if (IS_RUNNING) {
 
     if (['done', 'failed', 'cancelled'].includes(d.status)) {
       es.close();
-      // Reload to show final state
+      if (_logInterval) { clearInterval(_logInterval); _logInterval = null; }
       setTimeout(() => location.reload(), 1000);
     }
   };
@@ -237,7 +248,7 @@ if (IS_RUNNING) {
 
 // Poll log lines
 if (IS_RUNNING) {
-  setInterval(() => {
+  _logInterval = setInterval(() => {
     fetch(`/api/jobs/${JOB_ID}/logs?since=${logSince}`)
       .then(r => r.json())
       .then(d => {
@@ -245,7 +256,8 @@ if (IS_RUNNING) {
           appendLog(d.lines);
           logSince = d.total;
         }
-      });
+      })
+      .catch(() => {});
   }, 1500);
 }
 

@@ -107,6 +107,7 @@
 <script>
 // Subscribe to all job events for live updates
 const es = new EventSource('/jobs/stream-all');
+window.addEventListener('beforeunload', () => es.close());
 es.onmessage = function(e) {
   const job = JSON.parse(e.data);
   updateJobRow(job);
@@ -118,7 +119,7 @@ function updateJobRow(job) {
   if (!row) return;
   // Update progress bar
   const bar = row.querySelector('.progress-bar');
-  if (bar) bar.style.width = job.pct + '%';
+  if (bar) bar.style.width = (job.pct || 0) + '%';
   // Update status badge
   const badge = row.querySelector('.badge-status');
   if (badge) {
@@ -144,21 +145,23 @@ function updateLiveCard(job) {
     liveCards[job.id] = el;
   }
   const pct = job.pct || 0;
+  const msg    = escHtml(job.progress?.message || '');
+  const sub    = job.progress?.sub_step ? `<small class="text-muted">${escHtml(job.progress.sub_step)}</small>` : '';
   liveCards[job.id].innerHTML = `
     <div class="card-body py-2">
       <div class="d-flex align-items-center justify-content-between mb-1">
-        <a href="/jobs/${job.id}" class="fw-semibold text-decoration-none">${job.name}</a>
+        <a href="/jobs/${job.id}" class="fw-semibold text-decoration-none">${escHtml(job.name)}</a>
         <span class="badge-status ${job.status}">${job.status}</span>
       </div>
       <div class="d-flex justify-content-between mb-1">
-        <small class="text-muted">${job.progress?.message || ''}</small>
+        <small class="text-muted">${msg}</small>
         <small class="text-accent">${pct.toFixed(1)}%</small>
       </div>
       <div class="progress" style="height:8px">
         <div class="progress-bar bg-primary progress-bar-striped progress-bar-animated"
              style="width:${pct}%"></div>
       </div>
-      ${job.progress?.sub_step ? `<small class="text-muted">${job.progress.sub_step}</small>` : ''}
+      ${sub}
     </div>`;
 }
 

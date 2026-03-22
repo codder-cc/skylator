@@ -347,7 +347,7 @@ setInterval(loadTokenStats, 10000);
 
 // Batch modal — load registered workers when opened
 document.getElementById('batchModal').addEventListener('show.bs.modal', async () => {
-  const spinner  = document.getElementById('workers-spinner');
+  const spinner   = document.getElementById('workers-spinner');
   const container = document.getElementById('batch-machines');
   spinner.style.display = '';
   try {
@@ -360,11 +360,15 @@ document.getElementById('batchModal').addEventListener('show.bs.modal', async ()
       </label>
     </div>`;
     workers.filter(w => w.alive).forEach((w, i) => {
+      const lbl = escHtml(w.label);
+      const url = escHtml(w.url);
+      const mdl = escHtml(w.model || '?');
+      const gpu = escHtml(w.gpu || '?');
       html += `<div class="form-check">
-        <input class="form-check-input" type="checkbox" value="${w.label}" id="m-${i}" checked>
-        <label class="form-check-label" for="m-${i}" style="font-size:13px">
-          <i class="bi bi-hdd-network me-1 text-accent"></i>${w.label}
-          <span class="text-muted" style="font-size:11px">${w.url} — ${w.model || '?'} — ${w.gpu || '?'}</span>
+        <input class="form-check-input" type="checkbox" value="${lbl}" id="m-w-${i}" checked>
+        <label class="form-check-label" for="m-w-${i}" style="font-size:13px">
+          <i class="bi bi-hdd-network me-1 text-accent"></i>${lbl}
+          <span class="text-muted" style="font-size:11px">${url} — ${mdl} — ${gpu}</span>
         </label>
       </div>`;
     });

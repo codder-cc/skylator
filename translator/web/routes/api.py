@@ -782,11 +782,12 @@ def workers_register():
     if registry is None:
         return jsonify({"error": "Registry not initialized"}), 500
     info = WorkerInfo(
-        label    = label,
-        url      = url,
-        platform = data.get("platform", ""),
-        model    = data.get("model", ""),
-        gpu      = data.get("gpu", ""),
+        label              = label,
+        url                = url,
+        platform           = data.get("platform", ""),
+        model              = data.get("model", ""),
+        gpu                = data.get("gpu", ""),
+        host_reachable_url = request.host_url.rstrip("/"),  # LAN IP as seen by the remote
     )
     registry.register(info)
     log.info("Worker registered: %s @ %s  model=%s", label, url, info.model)
@@ -1041,7 +1042,8 @@ def workers_model_load(label: str):
         log.error("Host download failed for %s: %s", repo_id, exc)
         return jsonify({"error": f"Host download failed: {exc}"}), 502
 
-    host_url = request.host_url.rstrip("/")   # e.g. "http://192.168.1.104:5000"
+    # Use the URL the worker used to reach us — avoids 127.0.0.1 when browser is on localhost
+    host_url = worker.host_reachable_url or request.host_url.rstrip("/")
     xfer_chunk_id = str(uuid.uuid4())
     xfer_payload = dict(payload)
     xfer_payload["transfer"] = {

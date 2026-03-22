@@ -31,6 +31,7 @@ class WorkerInfo:
     current_task: str = ""        # current string key (for UI)
     models:       list = field(default_factory=list)  # cached model files (pushed via heartbeat)
     stats:        dict = field(default_factory=dict)  # tps_avg, tps_last, queue_depth, jobs_completed
+    host_reachable_url: str = ""  # host URL as seen by this worker (set from request.host_url at register time)
 
     def to_dict(self) -> dict:
         return {

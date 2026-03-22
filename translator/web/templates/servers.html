@@ -431,9 +431,15 @@ async function openLoadModel(label) {
   document.getElementById('lm-worker-label').textContent = label;
   document.getElementById('lm-status').style.display = 'none';
   document.getElementById('lm-submit-btn').disabled   = false;
-  document.getElementById('lm-submit-btn').textContent = 'Load Model';
+  document.getElementById('lm-submit-btn').innerHTML  = '<i class="bi bi-upload me-1"></i>Load Model';
 
-  // Pre-fill from worker's current /info
+  // Reset form fields so previous worker's values don't bleed through
+  document.getElementById('lm-model-path').value = '';
+  document.getElementById('lm-repo').value        = '';
+  document.getElementById('lm-gguf').value        = '';
+  switchLmTab('path');
+
+  // Pre-fill backend type from worker's /info if available
   try {
     const info = await fetch(`/api/workers/${encodeURIComponent(label)}/info`).then(r => r.json());
     if (info.backend_type) document.getElementById('lm-backend').value = info.backend_type;
@@ -445,21 +451,27 @@ async function openLoadModel(label) {
 async function submitLoadModel() {
   const btn    = document.getElementById('lm-submit-btn');
   const status = document.getElementById('lm-status');
+  status.style.display = '';
+  status.innerHTML = `<div class="alert alert-info py-2 mb-0">
+    <i class="bi bi-hourglass-split me-1"></i>Loading model — this may take several minutes for large models. Please wait…
+  </div>`;
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Loading…';
 
+  const _int   = (id, def) => { const v = parseInt(document.getElementById(id).value);   return isNaN(v) ? def : v; };
+  const _float = (id, def) => { const v = parseFloat(document.getElementById(id).value); return isNaN(v) ? def : v; };
   const body = {
     backend_type:       document.getElementById('lm-backend').value,
     source_lang:        document.getElementById('lm-src').value.trim(),
     target_lang:        document.getElementById('lm-tgt').value.trim(),
-    n_gpu_layers:       parseInt(document.getElementById('lm-gpu-layers').value),
-    n_ctx:              parseInt(document.getElementById('lm-ctx').value),
-    batch_size:         parseInt(document.getElementById('lm-batch').value),
-    max_new_tokens:     parseInt(document.getElementById('lm-max-tokens').value),
-    temperature:        parseFloat(document.getElementById('lm-temp').value),
-    top_k:              parseInt(document.getElementById('lm-topk').value),
-    top_p:              parseFloat(document.getElementById('lm-topp').value),
-    repetition_penalty: parseFloat(document.getElementById('lm-rep').value),
+    n_gpu_layers:       _int('lm-gpu-layers', -1),
+    n_ctx:              _int('lm-ctx', 8192),
+    batch_size:         _int('lm-batch', 12),
+    max_new_tokens:     _int('lm-max-tokens', 2048),
+    temperature:        _float('lm-temp', 0.3),
+    top_k:              _int('lm-topk', 20),
+    top_p:              _float('lm-topp', 0.9),
+    repetition_penalty: _float('lm-rep', 1.05),
     flash_attn:         document.getElementById('lm-flash').checked,
   };
 
@@ -477,7 +489,6 @@ async function submitLoadModel() {
       body: JSON.stringify(body),
     });
     const d = await r.json();
-    status.style.display = '';
     if (r.ok && d.ok) {
       toast(`Model loaded on ${_lmActiveWorker}: ${d.model}`, 'success');
       setTimeout(() => {
@@ -546,9 +557,13 @@ async function refreshWorkers() {
 
 async function disconnectWorker(label) {
   if (!confirm(`Disconnect worker "${label}"?`)) return;
-  await fetch(`/api/workers/${encodeURIComponent(label)}`, {method: 'DELETE'});
-  toast(`Worker ${label} disconnected`, 'success');
-  refreshWorkers();
+  try {
+    await fetch(`/api/workers/${encodeURIComponent(label)}`, {method: 'DELETE'});
+    toast(`Worker ${label} disconnected`, 'success');
+    refreshWorkers();
+  } catch(e) {
+    toast('Disconnect error: ' + e.message, 'danger');
+  }
 }
 
 // ── Backend Configuration ────────────────────────────────────────────────────

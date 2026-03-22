@@ -650,7 +650,13 @@ def workers_post_result(label: str):
 
 @bp.route("/workers/<label>/model/load", methods=["POST"])
 def workers_model_load(label: str):
-    """Proxy POST /model/load to the remote worker's REST API."""
+    """Proxy POST /model/load to the remote worker's REST API.
+
+    Timeout is intentionally long (15 min) — loading a large GGUF from disk
+    takes minutes; downloading from HuggingFace can take much longer.
+    On success, update the registry model field immediately so the worker
+    table reflects the new model without waiting for the next heartbeat.
+    """
     registry = current_app.config.get("WORKER_REGISTRY")
     worker   = registry.get(label) if registry else None
     if not worker:
@@ -658,8 +664,15 @@ def workers_model_load(label: str):
     try:
         import httpx
         r = httpx.post(f"{worker.url.rstrip('/')}/model/load",
-                       json=request.get_json() or {}, timeout=60.0)
-        return jsonify(r.json()), r.status_code
+                       json=request.get_json() or {}, timeout=900.0)
+        data = r.json()
+        # Update registry immediately so table shows correct model without
+        # waiting for the next heartbeat cycle.
+        if r.status_code == 200 and data.get("ok") and registry:
+            w = registry.get(label)
+            if w:
+                w.model = data.get("model", w.model)
+        return jsonify(data), r.status_code
     except Exception as exc:
         return jsonify({"error": str(exc)}), 502
 

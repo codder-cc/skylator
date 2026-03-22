@@ -611,8 +611,10 @@ def workers_heartbeat():
     registry = current_app.config.get("WORKER_REGISTRY")
     if not label or registry is None:
         return jsonify({"ok": False}), 400
-    models = data.get("models")  # list[{name, path, size_mb}] or None
-    found  = registry.heartbeat(label, models=models)
+    models       = data.get("models")        # list[{name, path, size_mb}] or None
+    model        = data.get("model")         # currently loaded model label
+    backend_type = data.get("backend_type")  # llamacpp | mlx
+    found = registry.heartbeat(label, models=models, model=model, backend_type=backend_type)
     if not found:
         return jsonify({"ok": False, "reregister": True}), 404
     return jsonify({"ok": True})
@@ -664,61 +666,82 @@ def workers_post_result(label: str):
 
 @bp.route("/workers/<label>/model/load", methods=["POST"])
 def workers_model_load(label: str):
-    """Proxy POST /model/load to the remote worker's REST API.
+    """Send a load_model command to the remote worker via the pull queue.
 
-    Timeout is intentionally long (15 min) — loading a large GGUF from disk
-    takes minutes; downloading from HuggingFace can take much longer.
-    On success, update the registry model field immediately so the worker
-    table reflects the new model without waiting for the next heartbeat.
+    No reverse TCP connection needed — the command travels outbound from the
+    remote's existing poll loop.  Times out after 15 min (HF download time).
     """
+    import uuid, time as _time
     registry = current_app.config.get("WORKER_REGISTRY")
     worker   = registry.get(label) if registry else None
     if not worker:
         return jsonify({"error": f"Worker '{label}' not found"}), 404
+
+    chunk_id = str(uuid.uuid4())
+    registry.enqueue_chunk(label, {
+        "type":     "load_model",
+        "chunk_id": chunk_id,
+        "payload":  request.get_json() or {},
+    })
+    log.info("Enqueued load_model for worker %s (chunk %s)", label, chunk_id[:8])
+
+    result_str = registry.collect_result(chunk_id, timeout=900.0)
+    if result_str is None:
+        return jsonify({"error": "Timed out waiting for worker to load model"}), 504
+
     try:
-        import httpx
-        r = httpx.post(f"{worker.url.rstrip('/')}/model/load",
-                       json=request.get_json() or {}, timeout=900.0)
-        data = r.json()
-        # Update registry immediately so table shows correct model without
-        # waiting for the next heartbeat cycle.
-        if r.status_code == 200 and data.get("ok") and registry:
-            w = registry.get(label)
-            if w:
-                w.model = data.get("model", w.model)
-        return jsonify(data), r.status_code
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 502
+        import json as _json
+        data = _json.loads(result_str)
+    except Exception:
+        data = {"ok": True, "raw": result_str}
+
+    if data.get("ok") and data.get("model"):
+        w = registry.get(label)
+        if w:
+            w.model = data["model"]
+    return jsonify(data)
 
 
 @bp.route("/workers/<label>/model/unload", methods=["POST"])
 def workers_model_unload(label: str):
-    """Proxy POST /model/unload to the remote worker."""
+    """Send an unload_model command via the pull queue."""
+    import uuid
     registry = current_app.config.get("WORKER_REGISTRY")
     worker   = registry.get(label) if registry else None
     if not worker:
         return jsonify({"error": f"Worker '{label}' not found"}), 404
+
+    chunk_id = str(uuid.uuid4())
+    registry.enqueue_chunk(label, {
+        "type":     "unload_model",
+        "chunk_id": chunk_id,
+    })
+    result_str = registry.collect_result(chunk_id, timeout=30.0)
+    if result_str is None:
+        return jsonify({"error": "Worker did not respond"}), 504
     try:
-        import httpx
-        r = httpx.post(f"{worker.url.rstrip('/')}/model/unload", timeout=15.0)
-        return jsonify(r.json()), r.status_code
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 502
+        import json as _json
+        return jsonify(_json.loads(result_str))
+    except Exception:
+        return jsonify({"ok": True})
 
 
 @bp.route("/workers/<label>/info", methods=["GET"])
 def workers_get_info(label: str):
-    """Proxy GET /info from the remote worker (capabilities, GPU, model)."""
+    """Return worker info from the registry (pushed via heartbeat).
+    No reverse TCP connection — works in pull-mode across subnets."""
     registry = current_app.config.get("WORKER_REGISTRY")
     worker   = registry.get(label) if registry else None
     if not worker:
         return jsonify({"error": f"Worker '{label}' not found"}), 404
-    try:
-        import httpx
-        r = httpx.get(f"{worker.url.rstrip('/')}/info", timeout=8.0)
-        return jsonify(r.json()), r.status_code
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 502
+    return jsonify({
+        "platform":     worker.platform,
+        "model":        worker.model,
+        "gpu":          worker.gpu,
+        "backend_type": worker.backend_type,
+        "capabilities": worker.capabilities,
+        "alive":        (worker.last_seen > 0),
+    })
 
 
 @bp.route("/workers/<label>/models", methods=["GET"])

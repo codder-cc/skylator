@@ -543,10 +543,14 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
         await asyncio.sleep(15)
         try:
             import httpx
-            # Include cached models list so host never needs a reverse connection
-            models = _get_cached_models()
+            # Push state to host — no reverse TCP needed for info/cache checks
             r = httpx.post(f"{host_url.rstrip('/')}/api/workers/heartbeat",
-                           json={"label": label, "models": models}, timeout=8.0)
+                           json={
+                               "label":        label,
+                               "model":        _state.model_label,
+                               "backend_type": _state.backend_type,
+                               "models":       _get_cached_models(),
+                           }, timeout=8.0)
             # Re-register if host came back after being down, or if it lost us
             if needs_register or r.status_code == 404:
                 _register_with_host(host_url, my_url, capabilities)
@@ -557,12 +561,19 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
 
 
 async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int) -> None:
-    """Poll host for inference chunks → run _infer → post result back."""
-    import httpx
+    """Poll host for work chunks → execute → post result back.
+
+    Chunk types:
+      infer       — run inference on a prompt (default)
+      load_model  — load / hot-swap a model
+      unload_model — unload current model
+    All communication is outbound (remote → host) — no reverse TCP needed.
+    """
+    import httpx, json as _json
     loop  = asyncio.get_running_loop()
     label = f"{platform.system().lower()}-{socket.gethostname()}"
     base  = host_url.rstrip("/")
-    log.info("Pull worker started — polling %s", base)
+    log.info("Pull worker started — polling %s/api/workers/%s/chunk", base, label)
 
     while True:
         try:
@@ -574,11 +585,64 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int) -> No
             data  = r.json()
             chunk = data.get("chunk")
             if not chunk:
+                await asyncio.sleep(0.1)
                 continue
 
-            chunk_id = chunk["chunk_id"]
-            prompt   = chunk["prompt"]
-            log.debug("Pull worker: chunk %s (%d chars)", chunk_id[:8], len(prompt))
+            chunk_id   = chunk["chunk_id"]
+            chunk_type = chunk.get("type", "infer")
+            log.info("Pull worker: received chunk %s type=%s", chunk_id[:8], chunk_type)
+
+            # ── Model load ────────────────────────────────────────────────────
+            if chunk_type == "load_model":
+                payload = chunk.get("payload", {})
+                log.info("Pull worker: loading model — %s", payload.get("gguf_filename") or payload.get("model_path") or "?")
+                try:
+                    from remote_server import _build_backend, ModelLoadRequest
+                    req     = ModelLoadRequest(**{k: v for k, v in payload.items()
+                                                  if k in ModelLoadRequest.model_fields})
+                    backend, bt = await loop.run_in_executor(None, lambda: _build_backend(req))
+                    await loop.run_in_executor(None, backend.load)
+                    _state.backend      = backend
+                    _state.backend_type = bt
+                    _state.model_label  = req.gguf_filename or req.model_path or "unknown"
+                    log.info("Pull worker: model loaded — %s via %s", _state.model_label, bt)
+                    result_data = {"ok": True, "model": _state.model_label}
+                except Exception as exc:
+                    log.error("Pull worker: load_model failed: %s", exc)
+                    result_data = {"ok": False, "error": str(exc)}
+                await loop.run_in_executor(
+                    None,
+                    lambda: httpx.post(f"{base}/api/workers/{label}/result",
+                                       json={"chunk_id": chunk_id,
+                                             "result": _json.dumps(result_data)},
+                                       timeout=15.0),
+                )
+                continue
+
+            # ── Model unload ──────────────────────────────────────────────────
+            if chunk_type == "unload_model":
+                log.info("Pull worker: unloading model")
+                try:
+                    if _state.backend:
+                        await loop.run_in_executor(None, _state.backend.unload)
+                    _state.backend     = None
+                    _state.model_label = ""
+                    result_data = {"ok": True}
+                except Exception as exc:
+                    log.error("Pull worker: unload failed: %s", exc)
+                    result_data = {"ok": False, "error": str(exc)}
+                await loop.run_in_executor(
+                    None,
+                    lambda: httpx.post(f"{base}/api/workers/{label}/result",
+                                       json={"chunk_id": chunk_id,
+                                             "result": _json.dumps(result_data)},
+                                       timeout=15.0),
+                )
+                continue
+
+            # ── Inference ─────────────────────────────────────────────────────
+            prompt = chunk["prompt"]
+            log.info("Pull worker: inferring chunk %s (%d chars)", chunk_id[:8], len(prompt))
 
             from models.inference_params import InferenceParams
             params = InferenceParams.from_dict(chunk.get("params") or {})
@@ -589,11 +653,12 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int) -> No
                     None,
                     lambda: _state.backend._infer(prompt, params=params),
                 )
+                elapsed = time.time() - t0
+                log.info("Pull worker: chunk %s done in %.1fs", chunk_id[:8], elapsed)
             except Exception as exc:
-                log.error("Pull worker inference error for chunk %s: %s", chunk_id[:8], exc)
+                log.error("Pull worker: inference error for chunk %s: %s", chunk_id[:8], exc)
                 result = ""
 
-            log.debug("Pull worker: chunk %s done in %.1fs", chunk_id[:8], time.time() - t0)
             await loop.run_in_executor(
                 None,
                 lambda: httpx.post(f"{base}/api/workers/{label}/result",
@@ -601,7 +666,7 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int) -> No
                                    timeout=15.0),
             )
         except Exception as exc:
-            log.debug("Pull worker error (retry): %s", exc)
+            log.warning("Pull worker error (will retry): %s", exc)
             await asyncio.sleep(3)
 
 

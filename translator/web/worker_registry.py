@@ -25,9 +25,11 @@ class WorkerInfo:
     platform:     str = ""
     model:        str = ""
     gpu:          str = ""
+    backend_type: str = ""        # llamacpp | mlx
+    capabilities: list = field(default_factory=list)
     last_seen:    float = 0.0     # time.time() of last heartbeat
     current_task: str = ""        # current string key (for UI)
-    models:       list = field(default_factory=list)  # cached .gguf files from last heartbeat
+    models:       list = field(default_factory=list)  # cached .gguf files (pushed via heartbeat)
 
     def to_dict(self) -> dict:
         return {
@@ -36,6 +38,8 @@ class WorkerInfo:
             "platform":     self.platform,
             "model":        self.model,
             "gpu":          self.gpu,
+            "backend_type": self.backend_type,
+            "capabilities": self.capabilities,
             "last_seen":    self.last_seen,
             "current_task": self.current_task,
             "models":       self.models,
@@ -72,16 +76,18 @@ class WorkerRegistry:
             if info.label not in self._work_queues:
                 self._work_queues[info.label] = queue.Queue()
 
-    def heartbeat(self, label: str, models: list | None = None) -> bool:
-        """Update last_seen (and optionally cached models) for a known worker.
+    def heartbeat(self, label: str, models: list | None = None,
+                  model: str | None = None, backend_type: str | None = None) -> bool:
+        """Update last_seen and any pushed fields.
         Returns False if unknown (caller should ask remote to re-register)."""
         with self._lock:
             w = self._workers.get(label)
             if w is None:
                 return False
             w.last_seen = time.time()
-            if models is not None:
-                w.models = models
+            if models       is not None: w.models       = models
+            if model        is not None: w.model        = model
+            if backend_type is not None: w.backend_type = backend_type
             return True
 
     def remove(self, label: str) -> None:

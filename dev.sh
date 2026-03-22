@@ -31,9 +31,9 @@ echo "  ║        Skylator — Development Mode       ║"
 echo "  ║   Flask (BE) + Vite HMR (FE)            ║"
 echo "  ╚══════════════════════════════════════════╝"
 echo ""
-echo "  Flask  →  http://127.0.0.1:5000"
-echo "  Vite   →  http://127.0.0.1:5173"
-echo "  App    →  http://127.0.0.1:5173/app/"
+echo "  Flask  →  http://0.0.0.0:5000"
+echo "  Vite   →  http://0.0.0.0:5173"
+echo "  App    →  http://$(hostname):5173/app/"
 echo ""
 echo "  Ctrl+C to stop both."
 echo ""
@@ -46,7 +46,7 @@ VITE_PID=$!
 trap 'echo ""; echo "Stopping..."; kill $VITE_PID 2>/dev/null; exit 0' INT TERM
 
 # ── Start Flask (foreground) ─────────────────────────────────────────────────
-"$PYTHON" web_server.py --host 127.0.0.1 --log-level INFO "$@"
+"$PYTHON" web_server.py --host 0.0.0.0 --log-level INFO "$@"
 
 # If Flask exits cleanly
 kill $VITE_PID 2>/dev/null

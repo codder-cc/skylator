@@ -29,10 +29,11 @@ if not exist "config.yaml" (
     echo.
 )
 
-echo  Starting Flask on  http://127.0.0.1:5000
-echo  Starting Vite on   http://127.0.0.1:5173
+echo  Starting Flask on  http://0.0.0.0:5000
+echo  Starting Vite on   http://0.0.0.0:5173
 echo.
-echo  Open the app at:   http://127.0.0.1:5173/app/
+echo  Local:   http://127.0.0.1:5173/app/
+echo  Network: http://%COMPUTERNAME%:5173/app/
 echo  (Vite proxies all API calls to Flask)
 echo.
 echo  Press Ctrl+C in each window to stop.
@@ -45,7 +46,7 @@ start "Skylator — Vite HMR" cmd /k "cd /d "%~dp0frontend" && npm run dev"
 timeout /t 2 /nobreak >nul
 
 :: Start Flask in this window
-venv\Scripts\python.exe web_server.py --host 127.0.0.1 --log-level INFO
+venv\Scripts\python.exe web_server.py --host 0.0.0.0 --log-level INFO
 
 echo.
 echo  Flask stopped. Close the Vite window manually.

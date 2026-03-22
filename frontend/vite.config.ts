@@ -12,6 +12,7 @@ export default defineConfig({
     alias: { '@': path.resolve(__dirname, './src') },
   },
   server: {
+    host: true,   // bind to 0.0.0.0 so LAN machines can reach the dev server
     port: 5173,
     proxy: {
       '/api':         { target: 'http://127.0.0.1:5000', changeOrigin: true },

@@ -1,5 +1,5 @@
 import { apiFetch, apiPost } from './client'
-import type { BackupEntry } from '@/types'
+import type { BackupEntry, CheckpointEntry } from '@/types'
 
 export const backupsApi = {
   list: () =>
@@ -21,4 +21,13 @@ export const backupsApi = {
     apiFetch<Blob>(`/backups/${encodeURIComponent(id)}/download`, {
       headers: { Accept: '*/*' },
     }),
+}
+
+export const checkpointsApi = {
+  list: (mod?: string) => {
+    const url = mod ? `/api/checkpoints?mod=${encodeURIComponent(mod)}` : '/api/checkpoints'
+    return apiFetch<{ checkpoints: CheckpointEntry[] }>(url)
+  },
+  restore: (id: string) => apiPost<{ ok: boolean; restored: number }>(`/api/checkpoints/${id}/restore`),
+  delete: (id: string) => apiFetch<{ ok: boolean }>(`/api/checkpoints/${id}`, { method: 'DELETE' }),
 }

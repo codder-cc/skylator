@@ -3,18 +3,19 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from flask import (Blueprint, Response, current_app, jsonify,
-                   render_template, request, stream_with_context)
+                   redirect, request, stream_with_context)
 
 bp = Blueprint("logs_rt", __name__, url_prefix="/logs")
 
 
 @bp.route("/")
 def logs_page():
+    if not request.headers.get("Accept", "").startswith("application/json"):
+        return redirect("/app/logs")
     cfg = current_app.config.get("TRANSLATOR_CFG")
-    log_path = str(cfg.paths.log_file) if cfg else "logs/translator.log"
-    # Read last 200 lines
-    lines = _tail(Path(log_path), 200)
-    return render_template("logs.html", lines=lines, log_path=log_path)
+    log_path = cfg.paths.log_file if cfg else Path("logs/translator.log")
+    lines = _tail(log_path, 200)
+    return jsonify({"lines": lines})
 
 
 @bp.route("/stream")

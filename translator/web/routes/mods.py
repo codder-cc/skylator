@@ -3,8 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from flask import (Blueprint, abort, current_app, jsonify, redirect,
-                   render_template, request)
+from flask import (Blueprint, abort, current_app, jsonify, redirect, request)
 
 bp = Blueprint("mods", __name__, url_prefix="/mods")
 
@@ -143,54 +142,8 @@ def mod_strings(mod_name: str):
             "scope_counts": scope_counts,
         })
 
-    # Legacy HTML response (Jinja2 fallback for non-SPA access)
-    gd        = current_app.config.get("GLOBAL_DICT")
-    bsa_cache = current_app.config.get("BSA_CACHE")
-    swf_cache = current_app.config.get("SWF_CACHE")
-    all_strings = scanner.get_mod_strings(mod_name, global_dict=gd,
-                                          bsa_cache=bsa_cache, swf_cache=swf_cache)
-
-    scope_counts   = _scope_counts(all_strings)
-    total_all      = scope_counts["all"]
-    over_threshold = total_all > _STRINGS_LOAD_ALL_THRESHOLD
-
-    strings = _filter_by_scope(all_strings, scope)
-    if filter_status != "all":
-        strings = [s for s in strings if s["status"] == filter_status]
-    if search:
-        sq = search.lower()
-        strings = [s for s in strings
-                   if sq in s["original"].lower() or sq in s["translation"].lower()]
-
-    total    = len(strings)
-    load_all = (request.args.get("all", "").lower() in ("1", "true")
-                or not over_threshold)
-
-    if load_all:
-        page_strings = strings
-        per_page     = total
-        total_pages  = 1
-    else:
-        start        = (page - 1) * per_page
-        page_strings = strings[start:start + per_page]
-        total_pages  = max(1, (total + per_page - 1) // per_page)
-
-    return render_template(
-        "strings.html",
-        mod            = mod,
-        strings        = page_strings,
-        total          = total,
-        total_all      = total_all,
-        page           = page,
-        per_page       = per_page,
-        total_pages    = total_pages,
-        filter_status  = filter_status,
-        search         = search,
-        load_all       = load_all,
-        over_threshold = over_threshold,
-        scope          = scope,
-        scope_counts   = scope_counts,
-    )
+    # Non-JSON (browser) request → redirect to React SPA
+    return redirect(f"/app/mods/{mod_name}/strings")
 
 
 @bp.route("/<path:mod_name>/strings/update", methods=["POST"])

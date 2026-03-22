@@ -2,7 +2,7 @@
 from __future__ import annotations
 import threading
 
-from flask import Blueprint, current_app, jsonify, render_template
+from flask import Blueprint, current_app, jsonify, redirect, request
 
 bp = Blueprint("servers_rt", __name__, url_prefix="/servers")
 
@@ -14,16 +14,15 @@ _scanning   = False
 
 @bp.route("/")
 def servers_page():
-    cfg      = current_app.config.get("TRANSLATOR_CFG")
+    if not request.headers.get("Accept", "").startswith("application/json"):
+        return redirect("/app/servers")
     registry = current_app.config.get("WORKER_REGISTRY")
     workers  = registry.get_all() if registry else []
-    return render_template(
-        "servers.html",
-        cfg             = cfg,
-        servers         = _scan_cache,
-        is_scanning     = _scanning,
-        registered_workers = workers,
-    )
+    return jsonify({
+        "servers":            _scan_cache,
+        "is_scanning":        _scanning,
+        "registered_workers": workers,
+    })
 
 
 @bp.route("/scan", methods=["POST"])

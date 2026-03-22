@@ -112,7 +112,8 @@ def _upsert_trans_json(mods_dir: Path, mod_name: str,
 
 
 def _save_mcm_translation(mods_dir: Path, mod_name: str,
-                           key_str: str, translation: str) -> None:
+                           key_str: str, translation: str,
+                           repo=None) -> None:
     """
     Write a single MCM string translation back to the *_russian.txt file.
 
@@ -166,11 +167,22 @@ def _save_mcm_translation(mods_dir: Path, mod_name: str,
             lines   = [f"{k}\t{v}" if v else k for k, v in result]
             content = '\r\n'.join(lines) + '\r\n'
             ru_path.write_bytes(bom + content.encode('utf-16-le'))
+
+        # Also write to SQLite if a repo is available
+        if repo is not None:
+            try:
+                esp_name = key_str.split(":", 2)[1] if ":" in key_str else "mcm"
+                repo.upsert(mod_name=mod_name, esp_name=esp_name,
+                            key=key_str, original="", translation=translation,
+                            status="translated")
+            except Exception as e:
+                log.warning("DB upsert failed for MCM: %s", e)
     except Exception as exc:
         log.warning("_save_mcm_translation failed for %s: %s", key_str, exc)
 
 
-def _save_bsa_mcm_translation(cfg, mod_name: str, key_str: str, translation: str) -> None:
+def _save_bsa_mcm_translation(cfg, mod_name: str, key_str: str, translation: str,
+                               repo=None) -> None:
     """
     Write a single BSA-embedded MCM translation to the BsaStringCache.
 
@@ -224,11 +236,21 @@ def _save_bsa_mcm_translation(cfg, mod_name: str, key_str: str, translation: str
             content = '\r\n'.join(lines) + '\r\n'
             ru_path.write_bytes(bom + content.encode('utf-16-le'))
 
+        # Also write to SQLite if a repo is available
+        if repo is not None:
+            try:
+                repo.upsert(mod_name=mod_name, esp_name=bsa_name,
+                            key=key_str, original="", translation=translation,
+                            status="translated")
+            except Exception as e:
+                log.warning("DB upsert failed for BSA MCM: %s", e)
+
     except Exception as exc:
         log.warning("_save_bsa_mcm_translation failed for %s: %s", key_str, exc)
 
 
-def _save_swf_translation(cfg, mod_name: str, key_str: str, translation: str) -> None:
+def _save_swf_translation(cfg, mod_name: str, key_str: str, translation: str,
+                           repo=None) -> None:
     """
     Write a translated string to the SWF text cache as {chid}_ru.txt.
 
@@ -253,6 +275,15 @@ def _save_swf_translation(cfg, mod_name: str, key_str: str, translation: str) ->
         with _CACHE_LOCK:
             ru_path.write_text(translation, encoding="utf-8")
 
+        # Also write to SQLite if a repo is available
+        if repo is not None:
+            try:
+                repo.upsert(mod_name=mod_name, esp_name=swf_rel,
+                            key=key_str, original="", translation=translation,
+                            status="translated")
+            except Exception as e:
+                log.warning("DB upsert failed for SWF: %s", e)
+
     except Exception as exc:
         log.warning("_save_swf_translation failed for %s: %s", key_str, exc)
 
@@ -263,15 +294,15 @@ def save_translation(mods_dir: Path, mod_name: str, cache_path: Path,
                      repo=None) -> None:
     """Unified dispatcher: routes save to the correct backend by key prefix."""
     if key_str.startswith("mcm:"):
-        _save_mcm_translation(mods_dir, mod_name, key_str, translation)
+        _save_mcm_translation(mods_dir, mod_name, key_str, translation, repo=repo)
     elif key_str.startswith("bsa-mcm:"):
         if cfg:
-            _save_bsa_mcm_translation(cfg, mod_name, key_str, translation)
+            _save_bsa_mcm_translation(cfg, mod_name, key_str, translation, repo=repo)
         else:
             log.warning("save_translation: cfg required for bsa-mcm key")
     elif key_str.startswith("swf:"):
         if cfg:
-            _save_swf_translation(cfg, mod_name, key_str, translation)
+            _save_swf_translation(cfg, mod_name, key_str, translation, repo=repo)
         else:
             log.warning("save_translation: cfg required for swf key")
     else:

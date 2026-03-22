@@ -5,15 +5,16 @@ import subprocess
 import tempfile
 from pathlib import Path
 from flask import (Blueprint, current_app, jsonify,
-                   render_template, request)
+                   redirect, request)
 
 bp = Blueprint("tools", __name__, url_prefix="/tools")
 
 
 @bp.route("/")
 def tools_page():
-    cfg = current_app.config.get("TRANSLATOR_CFG")
-    return render_template("tools.html", cfg=cfg)
+    if not request.headers.get("Accept", "").startswith("application/json"):
+        return redirect("/app/tools")
+    return jsonify({"ok": True})
 
 
 # ── ESP Tools ────────────────────────────────────────────────────────────────
@@ -208,10 +209,12 @@ def swf_compile():
 
 @bp.route("/hashes")
 def hash_manager():
+    if not request.headers.get("Accept", "").startswith("application/json"):
+        return redirect("/app/tools")
     cfg     = current_app.config.get("TRANSLATOR_CFG")
     scanner = current_app.config["SCANNER"]
     hashes  = _build_hash_list(cfg, scanner)
-    return render_template("hashes.html", hashes=hashes, cfg=cfg)
+    return jsonify({"hashes": hashes})
 
 
 @bp.route("/hashes/compute", methods=["POST"])

@@ -1,29 +1,25 @@
 """Dashboard — main overview page."""
 from __future__ import annotations
-from flask import Blueprint, current_app, render_template
+from flask import Blueprint, current_app, jsonify, redirect, request
 
 bp = Blueprint("dashboard", __name__)
 
 
 @bp.route("/")
 def index():
+    # Browser request → redirect to React SPA
+    if not request.headers.get("Accept", "").startswith("application/json"):
+        return redirect("/app/")
+
     scanner = current_app.config["SCANNER"]
     jm      = current_app.config["JOB_MANAGER"]
     cfg     = current_app.config.get("TRANSLATOR_CFG")
 
-    stats   = scanner.get_stats()
-    jobs    = jm.list_jobs(limit=10)
-
-    # GPU info (optional)
+    stats    = scanner.get_stats()
+    jobs     = [j.to_dict() for j in jm.list_jobs(limit=10)]
     gpu_info = _gpu_info()
 
-    return render_template(
-        "dashboard.html",
-        stats    = stats,
-        jobs     = jobs,
-        gpu_info = gpu_info,
-        cfg      = cfg,
-    )
+    return jsonify({"stats": stats, "jobs": jobs, "gpu_info": gpu_info})
 
 
 def _gpu_info() -> dict:

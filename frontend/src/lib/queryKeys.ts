@@ -14,4 +14,6 @@ export const QK = {
   terms:           () => ['terms'] as const,
   backups:         () => ['backups'] as const,
   setupReports:    () => ['setupReports'] as const,
+  modContext:      (name: string) => ['mods', name, 'context'] as const,
+  checkpoints:     () => ['checkpoints'] as const,
 } as const

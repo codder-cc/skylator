@@ -2,7 +2,7 @@
 from __future__ import annotations
 from pathlib import Path
 from flask import (Blueprint, current_app, jsonify,
-                   render_template, request)
+                   redirect, request)
 import yaml
 
 bp = Blueprint("config_rt", __name__, url_prefix="/config")
@@ -12,9 +12,9 @@ _CONFIG_FILE = Path(__file__).parent.parent.parent.parent / "config.yaml"
 
 @bp.route("/")
 def config_page():
-    raw = _read_raw()
-    cfg = current_app.config.get("TRANSLATOR_CFG")
-    return render_template("config.html", raw_yaml=raw, cfg=cfg)
+    if not request.headers.get("Accept", "").startswith("application/json"):
+        return redirect("/app/config")
+    return jsonify({"yaml": _read_raw()})
 
 
 @bp.route("/save", methods=["POST"])

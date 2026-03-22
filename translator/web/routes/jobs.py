@@ -1,29 +1,36 @@
 """Job management — create, list, stream, cancel translation jobs."""
 from __future__ import annotations
 import json
+import logging
 import sys
 import time
 from pathlib import Path
 from flask import (Blueprint, Response, abort, current_app,
-                   jsonify, render_template, request, stream_with_context)
+                   jsonify, redirect, request, stream_with_context)
+
+log = logging.getLogger(__name__)
 
 bp = Blueprint("jobs", __name__, url_prefix="/jobs")
 
 
 @bp.route("/")
 def job_list():
+    if not request.headers.get("Accept", "").startswith("application/json"):
+        return redirect("/app/jobs")
     jm   = current_app.config["JOB_MANAGER"]
     jobs = jm.list_jobs(limit=200)
-    return render_template("jobs.html", jobs=jobs)
+    return jsonify([j.to_dict() for j in jobs])
 
 
 @bp.route("/<job_id>")
 def job_detail(job_id: str):
+    if not request.headers.get("Accept", "").startswith("application/json"):
+        return redirect(f"/app/jobs/{job_id}")
     jm  = current_app.config["JOB_MANAGER"]
     job = jm.get_job(job_id)
     if job is None:
         abort(404)
-    return render_template("job_detail.html", job=job)
+    return jsonify(job.to_dict())
 
 
 @bp.route("/<job_id>/stream")
@@ -179,8 +186,16 @@ def _create_translate_mod_job(jm, cfg, mod_name: str, options: dict):
     only_esp       = options.get("only_esp", False)
     translate_only = options.get("translate_only", False)
     force          = options.get("force", False)
+    repo           = current_app.config.get("STRING_REPO")
 
     def run(job):
+        # Auto-checkpoint before translation starts
+        if repo is not None:
+            try:
+                cp_id = repo.create_checkpoint(mod_name)
+                job.add_log(f"Checkpoint {cp_id[:8]}… created before translation")
+            except Exception as e:
+                log.warning("Auto-checkpoint failed: %s", e)
         from translator.web.workers import translate_mod_worker
         translate_mod_worker(job, cfg, mod_name, dry_run=dry_run,
                              only_mcm=only_mcm, only_esp=only_esp,
@@ -198,6 +213,7 @@ def _create_translate_mod_job(jm, cfg, mod_name: str, options: dict):
 
 def _create_batch_job(jm, cfg, mod_names: list, options: dict):
     dry_run = options.get("dry_run", False)
+    repo    = current_app.config.get("STRING_REPO")
 
     def run(job):
         from translator.web.workers import translate_mod_worker
@@ -206,6 +222,13 @@ def _create_batch_job(jm, cfg, mod_names: list, options: dict):
             if job.status.value == "cancelled":
                 break
             jm.update_progress(job, i, total, f"Translating: {mod_name}")
+            # Auto-checkpoint before each mod in the batch
+            if repo is not None:
+                try:
+                    cp_id = repo.create_checkpoint(mod_name)
+                    job.add_log(f"Checkpoint {cp_id[:8]}… created before translation of {mod_name}")
+                except Exception as e:
+                    log.warning("Auto-checkpoint failed for %s: %s", mod_name, e)
             translate_mod_worker(job, cfg, mod_name, dry_run=dry_run,
                                  only_mcm=False, only_esp=False)
         jm.update_progress(job, total, total, "Done")
@@ -271,10 +294,12 @@ def _create_translate_all_job(jm, cfg, options: dict):
     force         = options.get("force", False)
     machines      = options.get("machines")    # list of labels or None
     backends, skipped = _resolve_backends(cfg, machines)
+    repo = current_app.config.get("STRING_REPO")
 
     def run(job):
         if skipped:
             job.add_log(f"WARNING: machines not found in registry (skipped): {', '.join(skipped)}")
+        # Note: translate_all_worker checkpoints per-mod inside its own loop via translate_mod_worker
         from translator.web.workers import translate_all_worker
         translate_all_worker(job, cfg, dry_run=dry_run, resume=resume,
                              scope=scope, status_filter=status_filter,
@@ -307,8 +332,16 @@ def _create_translate_esp_job(jm, cfg, esp_path: str, options: dict):
 
 def _create_apply_mod_job(jm, cfg, mod_name: str, options: dict):
     dry_run = options.get("dry_run", False)
+    repo    = current_app.config.get("STRING_REPO")
 
     def run(job):
+        # Auto-checkpoint before applying ESP (modifies string state)
+        if repo is not None:
+            try:
+                cp_id = repo.create_checkpoint(mod_name)
+                job.add_log(f"Checkpoint {cp_id[:8]}… created before apply")
+            except Exception as e:
+                log.warning("Auto-checkpoint failed: %s", e)
         from translator.web.workers import apply_mod_worker
         apply_mod_worker(job, cfg, mod_name, dry_run=dry_run)
 
@@ -341,10 +374,18 @@ def _create_translate_strings_job(jm, cfg, mod_name: str,
                                    params=None, force: bool = False,
                                    machines: list | None = None):
     backends, skipped = _resolve_backends(cfg, machines)
+    repo = current_app.config.get("STRING_REPO")
 
     def run(job):
         if skipped:
             job.add_log(f"WARNING: machines not found in registry (skipped): {', '.join(skipped)}")
+        # Auto-checkpoint before translating strings
+        if repo is not None:
+            try:
+                cp_id = repo.create_checkpoint(mod_name)
+                job.add_log(f"Checkpoint {cp_id[:8]}… created before translation")
+            except Exception as e:
+                log.warning("Auto-checkpoint failed: %s", e)
         from translator.web.workers import translate_strings_worker
         translate_strings_worker(job, cfg, mod_name, keys=keys, scope=scope,
                                  params=params, force=force, backends=backends)

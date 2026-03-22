@@ -67,5 +67,10 @@ export const modsApi = {
   ) => apiPost(`/api/mods/${encodeURIComponent(name)}/strings/translate-one`, body),
 
   getContext: (name: string, force = false) =>
-    apiFetch(`/api/mods/${encodeURIComponent(name)}/context${force ? '?force=1' : ''}`),
+    apiFetch<{ ok: boolean; context: string; auto_context?: string; from_cache?: boolean }>(
+      `/api/mods/${encodeURIComponent(name)}/context${force ? '?force=1' : ''}`,
+    ),
+
+  saveContext: (name: string, context: string) =>
+    apiPost(`/api/mods/${encodeURIComponent(name)}/context`, { context }),
 }

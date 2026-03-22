@@ -1,11 +1,11 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { backupsApi } from '@/api/backups'
+import { backupsApi, checkpointsApi } from '@/api/backups'
 import { apiPost } from '@/api/client'
 import { QK } from '@/lib/queryKeys'
 import { timeAgo, humanSize, cn } from '@/lib/utils'
-import type { BackupEntry } from '@/types'
+import type { BackupEntry, CheckpointEntry } from '@/types'
 import {
   HardDrive,
   Plus,
@@ -295,6 +295,85 @@ function BackupGroup({ modName, entries, onRefresh }: GroupProps) {
   )
 }
 
+// ── Checkpoint Row ────────────────────────────────────────────────────────────
+interface CheckpointRowProps {
+  entry: CheckpointEntry
+  onRefresh: () => void
+}
+
+function CheckpointRow({ entry, onRefresh }: CheckpointRowProps) {
+  const queryClient = useQueryClient()
+  const [restoreMsg, setRestoreMsg] = useState('')
+
+  const restoreMut = useMutation({
+    mutationFn: () => checkpointsApi.restore(entry.checkpoint_id),
+    onSuccess: () => {
+      setRestoreMsg('Restored successfully.')
+      void queryClient.invalidateQueries({ queryKey: ['mods', entry.mod_name, 'strings'] })
+      setTimeout(() => setRestoreMsg(''), 4000)
+    },
+    onError: (e: Error) => setRestoreMsg(`Error: ${e.message}`),
+  })
+
+  const deleteMut = useMutation({
+    mutationFn: () => checkpointsApi.delete(entry.checkpoint_id),
+    onSuccess: onRefresh,
+  })
+
+  const handleRestore = () => {
+    if (!window.confirm(`Restore checkpoint for "${entry.mod_name}"? This will overwrite current translations.`)) return
+    restoreMut.mutate()
+  }
+
+  const handleDelete = () => {
+    if (!window.confirm(`Delete this checkpoint for "${entry.mod_name}"? This cannot be undone.`)) return
+    deleteMut.mutate()
+  }
+
+  return (
+    <>
+      <tr className="border-t border-border-subtle hover:bg-bg-card2/40 transition-colors">
+        <td className="px-4 py-3 text-sm text-text-main">{entry.mod_name}</td>
+        <td className="px-4 py-3 text-sm text-text-muted">{entry.string_count}</td>
+        <td className="px-4 py-3 text-xs text-text-muted whitespace-nowrap">{timeAgo(entry.created_at)}</td>
+        <td className="px-4 py-3">
+          <div className="flex gap-2">
+            <button
+              onClick={handleRestore}
+              disabled={restoreMut.isPending || deleteMut.isPending}
+              className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-accent/20 text-accent border border-accent/30 hover:bg-accent/30 disabled:opacity-50 transition-colors"
+            >
+              {restoreMut.isPending
+                ? <Loader2 className="w-3 h-3 animate-spin" />
+                : <RotateCcw className="w-3 h-3" />}
+              Restore
+            </button>
+            <button
+              onClick={handleDelete}
+              disabled={deleteMut.isPending || restoreMut.isPending}
+              className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-danger/20 text-danger border border-danger/30 hover:bg-danger/30 disabled:opacity-50 transition-colors"
+            >
+              {deleteMut.isPending
+                ? <Loader2 className="w-3 h-3 animate-spin" />
+                : <Trash2 className="w-3 h-3" />}
+              Delete
+            </button>
+          </div>
+        </td>
+      </tr>
+      {restoreMsg && (
+        <tr>
+          <td colSpan={4} className="px-4 py-2">
+            <span className={cn('text-xs', restoreMsg.startsWith('Error') ? 'text-danger' : 'text-success')}>
+              {restoreMsg}
+            </span>
+          </td>
+        </tr>
+      )}
+    </>
+  )
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 function BackupsPage() {
   const qc = useQueryClient()
@@ -305,7 +384,13 @@ function BackupsPage() {
     queryFn: backupsApi.list,
   })
 
+  const checkpointsQ = useQuery({
+    queryKey: QK.checkpoints(),
+    queryFn: () => checkpointsApi.list(),
+  })
+
   const refresh = () => qc.invalidateQueries({ queryKey: QK.backups() })
+  const refreshCheckpoints = () => qc.invalidateQueries({ queryKey: QK.checkpoints() })
 
   const backups: BackupEntry[] = backupsQ.data ?? []
 
@@ -365,6 +450,49 @@ function BackupsPage() {
           />
         ))
       )}
+
+      {/* Checkpoints Section */}
+      <div className="space-y-3">
+        <div>
+          <h2 className="text-lg font-semibold text-text-main">String Checkpoints</h2>
+          <p className="text-sm text-text-muted mt-0.5">Diff-based recovery — only changed strings are stored</p>
+        </div>
+
+        {checkpointsQ.isLoading ? (
+          <div className="flex items-center justify-center py-10 text-text-muted text-sm">
+            <Loader2 className="w-5 h-5 animate-spin mr-2" />
+            Loading checkpoints…
+          </div>
+        ) : checkpointsQ.isError ? (
+          <div className="flex items-center gap-2 px-4 py-4 rounded border border-danger/30 bg-danger/10 text-sm text-danger">
+            <AlertCircle className="w-4 h-4 flex-shrink-0" />
+            Failed to load checkpoints.
+          </div>
+        ) : !checkpointsQ.data?.checkpoints?.length ? (
+          <div className="bg-bg-card border border-border-subtle rounded-lg px-5 py-10 text-center text-text-muted text-sm">
+            No checkpoints yet.
+          </div>
+        ) : (
+          <div className="bg-bg-card border border-border-subtle rounded-lg overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="text-xs text-text-muted border-b border-border-subtle">
+                    {['Mod', 'Strings captured', 'Created', 'Actions'].map((h) => (
+                      <th key={h} className="px-4 py-2 font-medium">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {checkpointsQ.data.checkpoints.map((cp) => (
+                    <CheckpointRow key={cp.checkpoint_id} entry={cp} onRefresh={refreshCheckpoints} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Create dialog */}
       {showCreate && (

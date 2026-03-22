@@ -22,7 +22,7 @@ export interface WorkerStatus {
   done: number
   tps: number
   current_text: string
-  current_key: string
+  // current_key removed — backend never sends this field
   alive: boolean
 }
 
@@ -130,6 +130,13 @@ export interface BackupEntry {
   size_bytes: number
   path: string
   type: string
+}
+
+export interface CheckpointEntry {
+  checkpoint_id: string
+  mod_name: string
+  created_at: number
+  string_count: number
 }
 
 export interface SetupReport {

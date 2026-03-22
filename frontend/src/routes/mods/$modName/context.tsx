@@ -1,27 +1,23 @@
 import { useState, useEffect } from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ChevronLeft, Save, RefreshCw, BookOpen, AlertTriangle } from 'lucide-react'
-import { apiGet, apiPost } from '@/api/client'
+import { ChevronLeft, Save, RefreshCw, BookOpen, AlertTriangle, Loader2 } from 'lucide-react'
+import { modsApi } from '@/api/mods'
+import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/utils'
 
 export const Route = createFileRoute('/mods/$modName/context')({
   component: ModContextPage,
 })
 
-interface ContextData {
-  context: string
-  auto_context?: string
-}
-
 function ModContextPage() {
   const { modName } = Route.useParams()
   const decodedName = decodeURIComponent(modName)
   const queryClient = useQueryClient()
 
-  const { data, isLoading, isError } = useQuery<ContextData>({
-    queryKey: ['modContext', decodedName],
-    queryFn: () => apiGet(`/api/mods/${encodeURIComponent(decodedName)}/context`),
+  const { data, isLoading, isError } = useQuery({
+    queryKey: QK.modContext(decodedName),
+    queryFn: () => modsApi.getContext(decodedName),
   })
 
   const [draft, setDraft] = useState('')
@@ -34,12 +30,21 @@ function ModContextPage() {
   }, [data?.context])
 
   const saveMutation = useMutation({
-    mutationFn: (context: string) =>
-      apiPost(`/api/mods/${encodeURIComponent(decodedName)}/context`, { context }),
+    mutationFn: (context: string) => modsApi.saveContext(decodedName, context),
     onSuccess: () => {
       setSaved(true)
-      void queryClient.invalidateQueries({ queryKey: ['modContext', decodedName] })
+      void queryClient.invalidateQueries({ queryKey: QK.modContext(decodedName) })
       setTimeout(() => setSaved(false), 2000)
+    },
+  })
+
+  const regenerateMutation = useMutation({
+    mutationFn: () => modsApi.getContext(decodedName, true),
+    onSuccess: (result) => {
+      if (result?.context !== undefined) {
+        setDraft(result.context)
+      }
+      void queryClient.invalidateQueries({ queryKey: QK.modContext(decodedName) })
     },
   })
 
@@ -78,13 +83,37 @@ function ModContextPage() {
       {/* Auto-generated context preview */}
       {data?.auto_context && (
         <div className="card p-4 space-y-2">
-          <div className="flex items-center gap-2 text-sm font-semibold text-text-muted">
-            <BookOpen size={14} />
-            Auto-Generated Context (read-only)
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-sm font-semibold text-text-muted">
+              <BookOpen size={14} />
+              Auto-Generated Context (read-only)
+            </div>
+            <button
+              onClick={() => regenerateMutation.mutate()}
+              disabled={regenerateMutation.isPending}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-bg-card2 border border-border-subtle text-text-muted hover:text-text-main disabled:opacity-50 transition-colors"
+            >
+              {regenerateMutation.isPending ? (
+                <>
+                  <Loader2 size={12} className="animate-spin" />
+                  <span className="animate-pulse">Regenerating…</span>
+                </>
+              ) : (
+                <>
+                  <RefreshCw size={12} />
+                  Regenerate auto-context
+                </>
+              )}
+            </button>
           </div>
           <pre className="text-xs text-text-muted font-mono whitespace-pre-wrap bg-bg-base p-3 rounded-md max-h-40 overflow-auto">
             {data.auto_context}
           </pre>
+          {regenerateMutation.isError && (
+            <p className="text-xs text-danger">
+              Regenerate failed: {String((regenerateMutation.error as Error)?.message ?? 'Unknown error')}
+            </p>
+          )}
         </div>
       )}
 

@@ -3,15 +3,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from flask import (Blueprint, abort, current_app, jsonify,
-                   render_template, request)
+                   redirect, request)
 
 bp = Blueprint("terms_rt", __name__, url_prefix="/terminology")
 
 
 @bp.route("/")
 def terms_page():
-    terms = _load_terms(current_app)
-    return render_template("terminology.html", terms=terms)
+    if not request.headers.get("Accept", "").startswith("application/json"):
+        return redirect("/app/terminology")
+    return jsonify({"terms": _load_terms(current_app)})
 
 
 @bp.route("/save", methods=["POST"])

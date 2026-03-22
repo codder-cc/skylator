@@ -7,7 +7,7 @@ import shutil
 import time
 from pathlib import Path
 from flask import (Blueprint, abort, current_app, jsonify,
-                   render_template, request)
+                   redirect, request)
 
 log = logging.getLogger(__name__)
 
@@ -16,8 +16,9 @@ bp = Blueprint("backups", __name__, url_prefix="/backups")
 
 @bp.route("/")
 def backup_list():
-    backups = _list_backups(current_app)
-    return render_template("backups.html", backups=backups)
+    if not request.headers.get("Accept", "").startswith("application/json"):
+        return redirect("/app/backups")
+    return jsonify({"backups": _list_backups(current_app)})
 
 
 @bp.route("/list")

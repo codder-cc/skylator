@@ -10,6 +10,25 @@ from translator.remote.client import TranslationClient
 
 log = logging.getLogger(__name__)
 
+# Module-level token accumulator for all RemoteBackend calls this session.
+# completion_tokens tracks how many tokens the remote server generated for us
+# (derived from the server's cumulative counter via per-call deltas).
+_remote_stats: dict = {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0,
+    "calls": 0,
+}
+
+
+def get_remote_token_stats() -> dict:
+    return dict(_remote_stats)
+
+
+def reset_remote_token_stats() -> None:
+    _remote_stats.update({"prompt_tokens": 0, "completion_tokens": 0,
+                          "total_tokens": 0, "calls": 0})
+
 
 class RemoteServerDeadError(RuntimeError):
     """Raised when the remote server stops responding during batch translation."""
@@ -105,6 +124,8 @@ class RemoteBackend(BaseBackend):
         num_batches = (len(texts) + batch_size - 1) // batch_size
         consecutive_failures = 0
         MAX_CONSECUTIVE = 3
+        # Track server's cumulative token counter so we can compute per-call deltas
+        _prev_tokens_gen: int = getattr(self._client, "last_tokens_gen", 0)
 
         for i in range(0, len(texts), batch_size):
             batch = texts[i: i + batch_size]
@@ -122,8 +143,15 @@ class RemoteBackend(BaseBackend):
                 parsed = parse_numbered_output(raw, len(batch))
                 results.extend(parsed)
                 consecutive_failures = 0
-                log.info("RemoteBackend: batch %d/%d translated",
-                         i // batch_size + 1, num_batches)
+                # Accumulate token delta reported by remote server
+                cur_tokens_gen = getattr(self._client, "last_tokens_gen", 0)
+                delta = max(0, cur_tokens_gen - _prev_tokens_gen)
+                _prev_tokens_gen = cur_tokens_gen
+                _remote_stats["completion_tokens"] += delta
+                _remote_stats["total_tokens"]      += delta
+                _remote_stats["calls"]             += 1
+                log.info("RemoteBackend: batch %d/%d translated (+%d tokens)",
+                         i // batch_size + 1, num_batches, delta)
             except TimeoutError as exc:
                 raise RemoteServerDeadError(
                     f"Remote server stopped responding: {exc}"

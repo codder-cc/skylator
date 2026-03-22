@@ -229,11 +229,15 @@ class TranslationClient:
 
         Returns the raw model output string.
         Raises on network failure or if the job ends in error.
+        After a successful call, self.last_tokens_gen holds the cumulative
+        completion-token counter reported by the server (used for delta tracking).
         """
         job_id = self.submit_infer(prompt, params=params)
         job    = self.poll_job_liveness(job_id, liveness_timeout=45.0, absolute_timeout=600.0)
         if job.get("status") == "error":
             raise RuntimeError(f"Remote infer job failed: {job.get('error')}")
+        # Expose server-side token counter so callers can compute deltas
+        self.last_tokens_gen: int = job.get("tokens_gen", 0)
         result = job.get("result") or ""
         return str(result)
 

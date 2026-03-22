@@ -152,12 +152,24 @@ def mod_context_api(mod_name: str):
 
 @bp.route("/tokens/stats")
 def token_stats():
-    """Return cumulative token usage across all translation calls this session."""
+    """Return cumulative token usage across all translation calls this session.
+    Merges local (llamacpp) and remote backend counters."""
     try:
-        from translator.models.llamacpp_backend import get_token_stats
-        return jsonify(get_token_stats())
+        from translator.models.llamacpp_backend import get_performance_stats
+        stats = get_performance_stats()
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
+    # Merge remote backend stats if any
+    try:
+        from translator.models.remote_backend import get_remote_token_stats
+        remote = get_remote_token_stats()
+        stats["prompt_tokens"]     += remote.get("prompt_tokens", 0)
+        stats["completion_tokens"] += remote.get("completion_tokens", 0)
+        stats["total_tokens"]      += remote.get("total_tokens", 0)
+        stats["calls"]             += remote.get("calls", 0)
+    except Exception:
+        pass
+    return jsonify(stats)
 
 
 @bp.route("/tokens/reset", methods=["POST"])
@@ -165,6 +177,11 @@ def token_reset():
     try:
         from translator.models.llamacpp_backend import reset_token_stats
         reset_token_stats()
+        try:
+            from translator.models.remote_backend import reset_remote_token_stats
+            reset_remote_token_stats()
+        except Exception:
+            pass
         return jsonify({"ok": True})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500

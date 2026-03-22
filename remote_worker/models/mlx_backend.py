@@ -75,7 +75,20 @@ class MlxBackend(BaseBackend):
             )
 
         repo = self._mcfg.repo_id
-        log.info("MlxBackend: loading %s via MLX (Apple Silicon)...", repo)
+        log.info("MlxBackend: loading %s via MLX (Apple Silicon)...", repo or self._mcfg.local_dir_name)
+
+        # Direct path: _build_backend splits model_path="/a/b/ModelDir" into
+        # local_dir_name="/a/b" and gguf_filename="ModelDir". Reconstruct and check.
+        # This happens when the host transfers an MLX model directory to the remote.
+        from pathlib import Path as _Path
+        candidate = _Path(self._mcfg.local_dir_name) / self._mcfg.gguf_filename
+        if (self._mcfg.local_dir_name and candidate.is_absolute()
+                and candidate.is_dir() and (candidate / "config.json").exists()):
+            log.info("MlxBackend: loading from local directory %s", candidate)
+            self._model, self._tokenizer = mlx_lm.load(str(candidate))
+            self._state = ModelState.LOADED
+            log.info("MlxBackend: loaded into unified memory")
+            return
 
         cache_dir = getattr(self._mcfg, "local_cache_dir", None)
         load_path = repo

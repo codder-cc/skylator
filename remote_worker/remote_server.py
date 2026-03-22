@@ -41,6 +41,53 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
+
+def _download_staged_files(transfer: dict) -> dict:
+    """Download staged model files from host and return updated payload with model_path.
+
+    Called from the pull worker loop when a load_model chunk contains a 'transfer' key.
+    The host already downloaded the model from HuggingFace; we fetch each file from
+    the host via outbound HTTP (remote → host — always allowed).
+
+    Supports resume: files already present with correct size are skipped.
+    """
+    import httpx
+    from models.loader import MODELS_CACHE
+    from pathlib import Path
+
+    host_url    = transfer["host_url"].rstrip("/")
+    staging_id  = transfer["staging_id"]
+    dest_subdir = transfer["dest_subdir"]
+    files       = transfer["files"]
+    dest_root   = MODELS_CACHE / dest_subdir
+
+    log.info("Transfer: %d files from %s → %s", len(files), host_url, dest_root)
+    for fi in files:
+        rel  = fi["path"]
+        dest = dest_root / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists() and dest.stat().st_size == fi.get("size", -1):
+            log.debug("Transfer: %s already complete — skip", rel)
+            continue
+        url = f"{host_url}/api/model-transfer/file?staging_id={staging_id}&path={rel}"
+        log.info("Transfer: fetching %s (%d MB)", rel, fi.get("size", 0) // 1024 // 1024)
+        with httpx.stream("GET", url, timeout=3600.0) as r:
+            r.raise_for_status()
+            with open(dest, "wb") as fout:
+                for chunk in r.iter_bytes(chunk_size=1024 * 1024):
+                    fout.write(chunk)
+        actual   = dest.stat().st_size
+        expected = fi.get("size", -1)
+        if expected >= 0 and actual != expected:
+            raise RuntimeError(f"Size mismatch {rel}: got {actual}, want {expected}")
+        log.info("Transfer: %s done (%d MB)", rel, actual // 1024 // 1024)
+
+    log.info("Transfer: all files complete in %s", dest_root)
+    # For GGUF: model_path = path to .gguf file; for MLX: model_path = directory
+    gguf_files = [f for f in files if f["path"].endswith(".gguf")]
+    model_path = str(dest_root / gguf_files[0]["path"]) if gguf_files else str(dest_root)
+    return {"model_path": model_path}
+
 from pydantic import BaseModel
 
 
@@ -624,8 +671,18 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int) -> No
             # ── Model load ────────────────────────────────────────────────────
             if chunk_type == "load_model":
                 payload = chunk.get("payload", {})
-                log.info("Pull worker: loading model — %s", payload.get("gguf_filename") or payload.get("model_path") or "?")
+                log.info("Pull worker: loading model — %s",
+                         payload.get("gguf_filename") or payload.get("model_path") or
+                         payload.get("repo_id") or "?")
                 try:
+                    transfer = payload.get("transfer")
+                    if transfer:
+                        log.info("Pull worker: transfer mode — downloading from host")
+                        extra = await loop.run_in_executor(
+                            None, lambda: _download_staged_files(transfer)
+                        )
+                        payload = {**payload, **extra}
+
                     from remote_server import _build_backend, ModelLoadRequest
                     req     = ModelLoadRequest(**{k: v for k, v in payload.items()
                                                   if k in ModelLoadRequest.model_fields})

@@ -858,42 +858,175 @@ def workers_post_result(label: str):
     return jsonify({"ok": True, "matched": found})
 
 
-@bp.route("/workers/<label>/model/load", methods=["POST"])
-def workers_model_load(label: str):
-    """Send a load_model command to the remote worker via the pull queue.
+@bp.route("/model-transfer/file")
+def model_transfer_file():
+    """Stream a staged model file to the remote worker.
 
-    No reverse TCP connection needed — the command travels outbound from the
-    remote's existing poll loop.  Times out after 15 min (HF download time).
+    The remote calls this endpoint (outbound: remote → host) to pull staged
+    model files that the host downloaded from HuggingFace on its behalf.
+
+    Query params:
+      staging_id  — UUID issued by workers_model_load()
+      path        — relative path within the staging dir
     """
-    import uuid, time as _time
-    registry = current_app.config.get("WORKER_REGISTRY")
-    worker   = registry.get(label) if registry else None
-    if not worker:
-        return jsonify({"error": f"Worker '{label}' not found"}), 404
+    from translator.web import model_staging
+    from flask import send_file as _send_file
 
-    chunk_id = str(uuid.uuid4())
-    registry.enqueue_chunk(label, {
-        "type":     "load_model",
-        "chunk_id": chunk_id,
-        "payload":  request.get_json() or {},
-    })
-    log.info("Enqueued load_model for worker %s (chunk %s)", label, chunk_id[:8])
+    sid      = request.args.get("staging_id", "").strip()
+    rel_path = request.args.get("path", "").strip()
+    if not sid or not rel_path:
+        return jsonify({"error": "staging_id and path required"}), 400
 
-    result_str = registry.collect_result(chunk_id, timeout=900.0)
-    if result_str is None:
-        return jsonify({"error": "Timed out waiting for worker to load model"}), 504
+    session_dir = model_staging.get_session_path(sid)
+    if session_dir is None:
+        return jsonify({"error": "Unknown staging_id"}), 404
 
     try:
-        import json as _json
+        target = (session_dir / rel_path).resolve()
+        if not str(target).startswith(str(session_dir.resolve())):
+            return jsonify({"error": "Forbidden"}), 403
+    except Exception:
+        return jsonify({"error": "Bad path"}), 400
+
+    if not target.exists() or not target.is_file():
+        return jsonify({"error": "Not found"}), 404
+
+    return _send_file(str(target), as_attachment=False,
+                      mimetype="application/octet-stream")
+
+
+def _find_in_worker_cache(models: list, repo_id: str, gguf_filename: str,
+                          backend_type: str) -> dict | None:
+    """Return a cached model entry from the worker's heartbeat data, or None."""
+    if not models:
+        return None
+    target = gguf_filename if gguf_filename else repo_id.split("/")[-1]
+    for m in models:
+        name = m.get("name", "") if isinstance(m, dict) else getattr(m, "name", "")
+        path = m.get("path", "") if isinstance(m, dict) else getattr(m, "path", "")
+        if name.lower() == target.lower() or path.endswith(target):
+            return {"name": name, "path": path}
+    return None
+
+
+def _stage_mlx(repo_id: str, staging_path) -> dict:
+    from huggingface_hub import snapshot_download
+    from pathlib import Path as _Path
+    log.info("Host: downloading MLX snapshot %s...", repo_id)
+    snap = _Path(snapshot_download(repo_id, cache_dir=str(staging_path)))
+    dest_subdir = repo_id.split("/")[-1]
+    files = [
+        {"path": str(f.relative_to(snap)).replace("\\", "/"), "size": f.stat().st_size}
+        for f in sorted(snap.rglob("*")) if f.is_file()
+    ]
+    log.info("Host: MLX staged — %d files in %s", len(files), snap)
+    return {"dest_subdir": dest_subdir, "files": files}
+
+
+def _stage_gguf(repo_id: str, gguf_filename: str, staging_path) -> dict:
+    import re
+    from huggingface_hub import hf_hub_download
+    dest_subdir = repo_id.split("/")[-1]
+    local_dir   = staging_path / dest_subdir
+    local_dir.mkdir(parents=True, exist_ok=True)
+    m = re.match(r"^(.+)-(\d{5})-of-(\d{5})(\.gguf)$", gguf_filename)
+    filenames = ([f"{m.group(1)}-{str(i+1).zfill(5)}-of-{m.group(3)}{m.group(4)}"
+                  for i in range(int(m.group(3)))] if m else [gguf_filename])
+    files = []
+    for fname in filenames:
+        dest = local_dir / fname
+        if not dest.exists():
+            hf_hub_download(repo_id=repo_id, filename=fname, local_dir=str(local_dir))
+        files.append({"path": fname, "size": dest.stat().st_size})
+    log.info("Host: GGUF staged — %d shards in %s", len(files), local_dir)
+    return {"dest_subdir": dest_subdir, "files": files}
+
+
+def _finalize_load(registry, label: str, result_str) -> "Response":
+    import json as _json
+    if result_str is None:
+        return jsonify({"error": "Timed out waiting for worker to load model"}), 504
+    try:
         data = _json.loads(result_str)
     except Exception:
         data = {"ok": True, "raw": result_str}
-
     if data.get("ok") and data.get("model"):
         w = registry.get(label)
         if w:
             w.model = data["model"]
     return jsonify(data)
+
+
+@bp.route("/workers/<label>/model/load", methods=["POST"])
+def workers_model_load(label: str):
+    """Send a load_model command to the remote worker via the pull queue.
+
+    If the model is already in the worker's heartbeat cache (worker.models),
+    sends model_path directly — no download needed.
+    Otherwise, downloads from HuggingFace on the host (unrestricted internet)
+    and instructs the remote to fetch the files from this host via
+    GET /api/model-transfer/file (outbound: remote → host).
+
+    All connections remain outbound from remote → host.
+    """
+    import uuid
+    from pathlib import Path as _Path
+    registry = current_app.config.get("WORKER_REGISTRY")
+    worker   = registry.get(label) if registry else None
+    if not worker:
+        return jsonify({"error": f"Worker '{label}' not found"}), 404
+
+    payload       = request.get_json() or {}
+    backend_type  = payload.get("backend_type", "llamacpp")
+    repo_id       = payload.get("repo_id", "")
+    gguf_filename = payload.get("gguf_filename", "")
+    chunk_id      = str(uuid.uuid4())
+
+    # ── Already cached on remote? ─────────────────────────────────────────────
+    cached = _find_in_worker_cache(worker.models, repo_id, gguf_filename, backend_type)
+    if cached:
+        log.info("Model '%s' cached on worker %s — using path directly", cached["name"], label)
+        direct = dict(payload)
+        direct["model_path"] = cached["path"]
+        registry.enqueue_chunk(label, {"type": "load_model", "chunk_id": chunk_id, "payload": direct})
+        result_str = registry.collect_result(chunk_id, timeout=120.0)
+        return _finalize_load(registry, label, result_str)
+
+    # ── Host downloads model to staging ──────────────────────────────────────
+    cfg       = current_app.config.get("TRANSLATOR_CFG")
+    cache_dir = _Path(cfg.paths.translation_cache).parent if cfg else _Path("cache")
+
+    from translator.web import model_staging
+    sid, staging_path = model_staging.create_session(cache_dir)
+    log.info("Staging %s for worker %s in %s",
+             repo_id or payload.get("model_path", "?"), label, staging_path)
+
+    try:
+        if backend_type == "mlx":
+            tinfo = _stage_mlx(repo_id, staging_path)
+        else:
+            tinfo = _stage_gguf(repo_id, gguf_filename, staging_path)
+    except Exception as exc:
+        model_staging.delete_session(sid)
+        log.error("Host download failed for %s: %s", repo_id, exc)
+        return jsonify({"error": f"Host download failed: {exc}"}), 502
+
+    host_url = request.host_url.rstrip("/")   # e.g. "http://192.168.1.104:5000"
+    xfer_payload = dict(payload)
+    xfer_payload["transfer"] = {
+        "host_url":    host_url,
+        "staging_id":  sid,
+        "dest_subdir": tinfo["dest_subdir"],
+        "files":       tinfo["files"],
+    }
+    registry.enqueue_chunk(label, {"type": "load_model", "chunk_id": chunk_id,
+                                   "payload": xfer_payload})
+    log.info("Enqueued load_model+transfer for worker %s (%d files, chunk %s)",
+             label, len(tinfo["files"]), chunk_id[:8])
+
+    result_str = registry.collect_result(chunk_id, timeout=3600.0)
+    model_staging.delete_session(sid)          # always clean up, success or failure
+    return _finalize_load(registry, label, result_str)
 
 
 @bp.route("/workers/<label>/model/unload", methods=["POST"])

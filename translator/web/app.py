@@ -317,4 +317,18 @@ exec python server.py --host-url "$HOST_URL"
             return "log-debug"
         return ""
 
+    # ── Serve React SPA (frontend/dist/) ────────────────────────────────────
+    _SPA_DIST = Path(__file__).parent.parent.parent / "frontend" / "dist"
+
+    if _SPA_DIST.is_dir():
+        from flask import send_from_directory as _sfd
+
+        @app.route("/app/", defaults={"path": ""})
+        @app.route("/app/<path:path>")
+        def spa(path: str):
+            full = _SPA_DIST / path
+            if path and full.is_file():
+                return _sfd(str(_SPA_DIST), path)
+            return _sfd(str(_SPA_DIST), "index.html")
+
     return app

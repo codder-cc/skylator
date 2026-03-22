@@ -1,0 +1,16 @@
+export const QK = {
+  stats:        () => ['stats'] as const,
+  gpu:          () => ['gpu'] as const,
+  mods:         (filters?: Record<string, string>) => filters ? ['mods', filters] as const : ['mods'] as const,
+  mod:          (name: string) => ['mods', name] as const,
+  modStrings:   (name: string, params: Record<string, unknown>) => ['mods', name, 'strings', params] as const,
+  jobs:         () => ['jobs'] as const,
+  job:          (id: string) => ['jobs', id] as const,
+  workers:      () => ['workers'] as const,
+  servers:      () => ['servers'] as const,
+  tokenStats:   () => ['tokenStats'] as const,
+  config:       () => ['config'] as const,
+  terms:        () => ['terms'] as const,
+  backups:      () => ['backups'] as const,
+  setupReports: () => ['setupReports'] as const,
+} as const

@@ -627,7 +627,7 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int) -> No
                     await loop.run_in_executor(None, backend.load)
                     _state.backend      = backend
                     _state.backend_type = bt
-                    _state.model_label  = req.gguf_filename or req.model_path or "unknown"
+                    _state.model_label  = req.gguf_filename or req.repo_id or req.model_path or "unknown"
                     log.info("Pull worker: model loaded — %s via %s", _state.model_label, bt)
                     result_data = {"ok": True, "model": _state.model_label}
                 except Exception as exc:

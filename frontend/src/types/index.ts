@@ -9,6 +9,23 @@ export interface JobProgress {
   sub_step?: string
 }
 
+export interface StringUpdate {
+  key: string
+  esp: string
+  translation: string
+  status: string
+  quality_score: number | null
+}
+
+export interface WorkerStatus {
+  label: string
+  done: number
+  tps: number
+  current_text: string
+  current_key: string
+  alive: boolean
+}
+
 export interface Job {
   id: string
   name: string
@@ -22,9 +39,12 @@ export interface Job {
   elapsed: number | null
   eta_seconds: number | null
   log_lines: string[]
-  string_updates: number
-  worker_updates: string[]
+  string_updates: StringUpdate[]
+  new_string_updates: StringUpdate[]
+  worker_updates: WorkerStatus[]
   error: string | null
+  params: Record<string, unknown>
+  mod_name: string
 }
 
 export interface ModInfo {

@@ -1,19 +1,199 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
+import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { useState } from 'react'
+import { useQuery, useMutation } from '@tanstack/react-query'
 import { QK } from '@/lib/queryKeys'
 import { statsApi } from '@/api/stats'
+import { jobsApi } from '@/api/jobs'
+import { workersApi } from '@/api/workers'
 import { StatCard } from '@/components/shared/StatCard'
 import { GpuWidget } from '@/components/shared/GpuWidget'
-import { pctColor } from '@/lib/utils'
+import { pctColor, cn } from '@/lib/utils'
 import {
   Layers,
   CheckCircle,
   Clock,
   AlertCircle,
   Type,
+  ChevronDown,
+  X,
 } from 'lucide-react'
 
+// ── Batch Modal ───────────────────────────────────────────────────────────────
+
+type BatchScope = 'all' | 'esp' | 'mcm' | 'bsa' | 'review' | 'pending'
+
+const SCOPE_OPTIONS: { value: BatchScope; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'esp', label: 'ESP only' },
+  { value: 'mcm', label: 'MCM only' },
+  { value: 'bsa', label: 'BSA only' },
+  { value: 'review', label: 'Review only' },
+  { value: 'pending', label: 'Pending only' },
+]
+
+interface BatchModalProps {
+  onClose: () => void
+}
+
+function BatchModal({ onClose }: BatchModalProps) {
+  const navigate = useNavigate()
+  const [scope, setScope] = useState<BatchScope>('all')
+  const [force, setForce] = useState(false)
+  const [resume, setResume] = useState(true)
+  const [machines, setMachines] = useState<string[]>(['local'])
+
+  const { data: workers = [] } = useQuery({
+    queryKey: QK.workers(),
+    queryFn: workersApi.list,
+    staleTime: 30_000,
+  })
+
+  const createMut = useMutation({
+    mutationFn: () =>
+      jobsApi.create({
+        job_type: 'translate_all',
+        options: { scope, force, resume, machines },
+      }),
+    onSuccess: () => {
+      onClose()
+      void navigate({ to: '/jobs' })
+    },
+  })
+
+  const toggleMachine = (id: string) => {
+    setMachines((prev) =>
+      prev.includes(id) ? prev.filter((m) => m !== id) : [...prev, id],
+    )
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-bg-base/80 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div className="card p-6 w-full max-w-md space-y-5 shadow-2xl">
+        {/* Modal header */}
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-semibold text-text-main">Configure Batch Translation</h2>
+          <button onClick={onClose} className="text-text-muted hover:text-text-main transition-colors">
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* Scope */}
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-text-muted uppercase tracking-wide">Scope</p>
+          <div className="grid grid-cols-3 gap-2">
+            {SCOPE_OPTIONS.map((opt) => (
+              <label
+                key={opt.value}
+                className={cn(
+                  'flex items-center gap-2 px-3 py-2 rounded-lg border text-sm cursor-pointer transition-colors',
+                  scope === opt.value
+                    ? 'border-accent/60 bg-accent/10 text-accent'
+                    : 'border-border-subtle bg-bg-card2 text-text-muted hover:text-text-main',
+                )}
+              >
+                <input
+                  type="radio"
+                  name="scope"
+                  value={opt.value}
+                  checked={scope === opt.value}
+                  onChange={() => setScope(opt.value)}
+                  className="sr-only"
+                />
+                {opt.label}
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {/* Options */}
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-text-muted uppercase tracking-wide">Options</p>
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={force}
+              onChange={(e) => setForce(e.target.checked)}
+              className="w-4 h-4 rounded border-border-subtle bg-bg-card2 accent-accent"
+            />
+            <span className="text-sm text-text-main">Force re-translate (bypass cache)</span>
+          </label>
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={resume}
+              onChange={(e) => setResume(e.target.checked)}
+              className="w-4 h-4 rounded border-border-subtle bg-bg-card2 accent-accent"
+            />
+            <span className="text-sm text-text-main">Skip already-completed mods</span>
+          </label>
+        </div>
+
+        {/* Machines */}
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-text-muted uppercase tracking-wide">Machines</p>
+          <div className="space-y-1.5">
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={machines.includes('local')}
+                onChange={() => toggleMachine('local')}
+                className="w-4 h-4 rounded border-border-subtle bg-bg-card2 accent-accent"
+              />
+              <span className="text-sm text-text-main">Local (this machine)</span>
+            </label>
+            {workers.map((w) => (
+              <label key={w.label} className="flex items-center gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={machines.includes(w.label)}
+                  onChange={() => toggleMachine(w.label)}
+                  className="w-4 h-4 rounded border-border-subtle bg-bg-card2 accent-accent"
+                />
+                <span className="text-sm text-text-main">{w.label}</span>
+                {w.alive && (
+                  <span className="text-xs text-success bg-success/10 px-1.5 py-0.5 rounded border border-success/30">
+                    online
+                  </span>
+                )}
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {/* Footer */}
+        {createMut.isError && (
+          <p className="text-xs text-danger">
+            Failed: {String((createMut.error as Error)?.message ?? 'Unknown error')}
+          </p>
+        )}
+        <div className="flex gap-3 justify-end pt-1">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 rounded-lg text-sm text-text-muted hover:text-text-main border border-border-subtle hover:bg-bg-card2 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => createMut.mutate()}
+            disabled={createMut.isPending || machines.length === 0}
+            className="px-5 py-2 rounded-lg text-sm font-medium bg-accent text-white hover:bg-accent/80 disabled:opacity-50 transition-colors"
+          >
+            {createMut.isPending ? 'Starting…' : 'Start'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+
 function DashboardPage() {
+  const [showBatchModal, setShowBatchModal] = useState(false)
+
   const { data: stats } = useQuery({
     queryKey: QK.stats(),
     queryFn: statsApi.get,
@@ -24,7 +204,24 @@ function DashboardPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-text-main">Dashboard</h1>
-        <GpuWidget />
+        <div className="flex items-center gap-2">
+          <GpuWidget />
+          <div className="flex rounded-lg overflow-hidden border border-accent/40">
+            <button
+              onClick={() => setShowBatchModal(true)}
+              className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-accent/20 text-accent hover:bg-accent/30 transition-colors"
+            >
+              Translate All
+            </button>
+            <button
+              onClick={() => setShowBatchModal(true)}
+              className="flex items-center px-2 py-2 bg-accent/20 text-accent hover:bg-accent/30 transition-colors border-l border-accent/30"
+              aria-label="Configure batch"
+            >
+              <ChevronDown size={14} />
+            </button>
+          </div>
+        </div>
       </div>
 
       {stats && (
@@ -95,6 +292,8 @@ function DashboardPage() {
           Loading statistics...
         </div>
       )}
+
+      {showBatchModal && <BatchModal onClose={() => setShowBatchModal(false)} />}
     </div>
   )
 }

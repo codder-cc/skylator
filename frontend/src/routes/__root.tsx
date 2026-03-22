@@ -6,7 +6,7 @@ import { useSSE } from '@/hooks/useSSE'
 import { useQueryClient } from '@tanstack/react-query'
 import { useJobsStore } from '@/stores/jobsStore'
 import { QK } from '@/lib/queryKeys'
-import type { Job } from '@/types'
+import type { Job, StringUpdate } from '@/types'
 
 interface RouterContext {
   queryClient: QueryClient
@@ -33,6 +33,19 @@ function AppShell() {
       return next
     })
     queryClient.setQueryData(QK.job(job.id), job)
+
+    // Propagate new string updates to the mod's live update cache
+    const newUpdates: StringUpdate[] = job.new_string_updates ?? []
+    const modName = job.mod_name || (job.params?.mod_name as string | undefined) || ''
+    if (newUpdates.length > 0 && modName) {
+      queryClient.setQueryData<StringUpdate[]>(
+        QK.modLiveUpdates(modName),
+        (old = []) => {
+          const next = [...old, ...newUpdates]
+          return next.length > 5000 ? next.slice(next.length - 5000) : next
+        },
+      )
+    }
   })
 
   return (

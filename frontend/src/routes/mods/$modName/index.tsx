@@ -398,6 +398,17 @@ function ModDetailPage() {
               <Eye size={14} />
               View Strings
             </Link>
+            <Link
+              to="/mods/$modName/context"
+              params={{ modName }}
+              className={cn(
+                'flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors w-full',
+                'bg-bg-card2 text-text-muted hover:text-text-main hover:bg-bg-card2/80 border border-border-subtle',
+              )}
+            >
+              <BookOpen size={14} />
+              Edit Context
+            </Link>
           </div>
         </div>
       </div>

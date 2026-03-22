@@ -1,9 +1,25 @@
 import { createFileRoute } from '@tanstack/react-router'
+import { useQuery } from '@tanstack/react-query'
 import { useLogStream } from '@/hooks/useLogStream'
 import { LogViewer } from '@/components/shared/LogViewer'
+import { apiGet } from '@/api/client'
+
+const MAX_COMBINED = 2000
 
 function LogsPage() {
-  const { lines, connected } = useLogStream('/logs/stream')
+  const { lines: streamLines, connected } = useLogStream('/logs/stream')
+
+  const { data: initialData } = useQuery<{ lines: string[] }>({
+    queryKey: ['logs', 'tail'],
+    queryFn: () => apiGet('/logs/tail?n=300'),
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  })
+
+  const combined = [...(initialData?.lines ?? []), ...streamLines]
+  const allLines = combined.length > MAX_COMBINED
+    ? combined.slice(combined.length - MAX_COMBINED)
+    : combined
 
   return (
     <div className="space-y-4">
@@ -24,7 +40,7 @@ function LogsPage() {
       </div>
 
       <div className="card">
-        <LogViewer lines={lines} maxHeight="calc(100vh - 12rem)" autoScroll />
+        <LogViewer lines={allLines} maxHeight="calc(100vh - 12rem)" autoScroll />
       </div>
     </div>
   )

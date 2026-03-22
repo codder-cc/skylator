@@ -1,7 +1,8 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { jobsApi } from '@/api/jobs'
-import { apiPost } from '@/api/client'
+import { apiPost, apiGet } from '@/api/client'
 import { cn } from '@/lib/utils'
 import {
   FileCode,
@@ -12,6 +13,9 @@ import {
   CheckCircle,
   AlertCircle,
   ExternalLink,
+  Hash,
+  Globe,
+  Download,
 } from 'lucide-react'
 
 // ── Shared result display ─────────────────────────────────────────────────────
@@ -393,6 +397,225 @@ function XTranslateImport() {
   )
 }
 
+// ── File Hashes ───────────────────────────────────────────────────────────────
+interface HashEntry {
+  path: string
+  sha256: string
+  size: number
+}
+
+function FileHashesTool() {
+  const [modName, setModName] = useState('')
+  const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
+  const [hashes, setHashes] = useState<HashEntry[]>([])
+  const [errorMsg, setErrorMsg] = useState('')
+
+  const { data: existingData } = useQuery<{ hashes: HashEntry[] }>({
+    queryKey: ['hashes'],
+    queryFn: () => apiGet<{ hashes: HashEntry[] }>('/tools/hashes'),
+  })
+
+  const run = async () => {
+    setStatus('loading')
+    setHashes([])
+    try {
+      const res = await apiPost<{ hashes: HashEntry[] }>('/tools/hashes/compute', {
+        mod_name: modName.trim() || undefined,
+      })
+      setHashes(res.hashes ?? [])
+      setStatus('success')
+    } catch (e: unknown) {
+      setStatus('error')
+      setErrorMsg(e instanceof Error ? e.message : 'Unknown error')
+    }
+  }
+
+  const displayHashes = hashes.length > 0 ? hashes : (existingData?.hashes ?? [])
+
+  return (
+    <ToolCard title="File Hashes">
+      <FieldRow label="Mod Name (optional)">
+        <input
+          value={modName}
+          onChange={(e) => setModName(e.target.value)}
+          placeholder="ModFolderName"
+          className={inputCls}
+        />
+      </FieldRow>
+      <button onClick={run} disabled={status === 'loading'} className={btnCls}>
+        {status === 'loading' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Hash className="w-4 h-4" />}
+        Compute Hashes
+      </button>
+      {status === 'loading' && <p className="text-sm text-accent">Computing hashes…</p>}
+      {status === 'error' && (
+        <div className="flex items-center gap-2 text-sm text-danger">
+          <AlertCircle className="w-4 h-4" />{errorMsg}
+        </div>
+      )}
+      {displayHashes.length > 0 && (
+        <div className="overflow-auto max-h-64">
+          <table className="w-full text-xs font-mono border-collapse">
+            <thead>
+              <tr className="border-b border-border-subtle">
+                <th className="text-left py-1 pr-3 text-text-muted font-semibold">Path</th>
+                <th className="text-left py-1 pr-3 text-text-muted font-semibold">SHA256</th>
+                <th className="text-right py-1 text-text-muted font-semibold">Size</th>
+              </tr>
+            </thead>
+            <tbody>
+              {displayHashes.map((h, i) => (
+                <tr key={i} className="border-b border-border-subtle/40 hover:bg-bg-card2/40">
+                  <td className="py-1 pr-3 text-text-muted truncate max-w-[200px]" title={h.path}>{h.path}</td>
+                  <td className="py-1 pr-3 text-text-muted truncate max-w-[180px]" title={h.sha256}>{h.sha256.slice(0, 16)}…</td>
+                  <td className="py-1 text-right text-text-muted">{h.size.toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </ToolCard>
+  )
+}
+
+// ── Nexus Fetch ───────────────────────────────────────────────────────────────
+interface NexusResult {
+  ok: boolean
+  mod_id: number
+  name: string
+  version: string
+}
+
+function NexusFetchTool() {
+  const [modName, setModName] = useState('')
+  const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
+  const [result, setResult] = useState<NexusResult | null>(null)
+  const [errorMsg, setErrorMsg] = useState('')
+
+  const run = async () => {
+    if (!modName.trim()) return
+    setStatus('loading')
+    setResult(null)
+    try {
+      const res = await apiPost<NexusResult>('/tools/nexus/fetch', {
+        mod_name: modName.trim(),
+      })
+      setResult(res)
+      setStatus('success')
+    } catch (e: unknown) {
+      setStatus('error')
+      setErrorMsg(e instanceof Error ? e.message : 'Unknown error')
+    }
+  }
+
+  return (
+    <ToolCard title="Nexus Mod Info">
+      <FieldRow label="Mod Name">
+        <input
+          value={modName}
+          onChange={(e) => setModName(e.target.value)}
+          placeholder="ModFolderName"
+          className={inputCls}
+        />
+      </FieldRow>
+      <button onClick={run} disabled={status === 'loading' || !modName.trim()} className={btnCls}>
+        {status === 'loading' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Globe className="w-4 h-4" />}
+        Fetch from Nexus
+      </button>
+      {status === 'loading' && <p className="text-sm text-accent">Fetching…</p>}
+      {status === 'error' && (
+        <div className="flex items-center gap-2 text-sm text-danger">
+          <AlertCircle className="w-4 h-4" />{errorMsg}
+        </div>
+      )}
+      {status === 'success' && result && (
+        <div className="space-y-1 text-sm">
+          <div className="flex items-center gap-2 text-success">
+            <CheckCircle className="w-4 h-4" />
+            Fetched successfully
+          </div>
+          <div className="bg-bg-base rounded border border-border-subtle p-3 space-y-1 font-mono text-xs">
+            <div className="flex gap-3">
+              <span className="text-text-muted w-20 shrink-0">Mod ID</span>
+              <span className="text-text-main">{result.mod_id}</span>
+            </div>
+            <div className="flex gap-3">
+              <span className="text-text-muted w-20 shrink-0">Name</span>
+              <span className="text-text-main">{result.name}</span>
+            </div>
+            <div className="flex gap-3">
+              <span className="text-text-muted w-20 shrink-0">Version</span>
+              <span className="text-text-main">{result.version}</span>
+            </div>
+          </div>
+        </div>
+      )}
+    </ToolCard>
+  )
+}
+
+// ── xTranslate Export ─────────────────────────────────────────────────────────
+function XTranslateExport() {
+  const [modName, setModName] = useState('')
+  const [outputPath, setOutputPath] = useState('')
+  const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
+  const [result, setResult] = useState<{ path: string; exported: number } | null>(null)
+  const [errorMsg, setErrorMsg] = useState('')
+
+  const run = async () => {
+    setStatus('loading')
+    setResult(null)
+    try {
+      const res = await apiPost<{ ok: boolean; path: string; exported: number }>(
+        '/tools/xtranslate/export',
+        {
+          mod_name: modName.trim() || undefined,
+          output_path: outputPath.trim() || undefined,
+        },
+      )
+      setResult({ path: res.path, exported: res.exported })
+      setStatus('success')
+    } catch (e: unknown) {
+      setStatus('error')
+      setErrorMsg(e instanceof Error ? e.message : 'Unknown error')
+    }
+  }
+
+  return (
+    <ToolCard title="Export xTranslate Dictionary">
+      <div className="grid grid-cols-2 gap-3">
+        <FieldRow label="Mod Name (optional)">
+          <input value={modName} onChange={(e) => setModName(e.target.value)} placeholder="ModFolderName" className={inputCls} />
+        </FieldRow>
+        <FieldRow label="Output Path (optional)">
+          <input value={outputPath} onChange={(e) => setOutputPath(e.target.value)} placeholder="/path/to/output.t3dict" className={inputCls} />
+        </FieldRow>
+      </div>
+      <button onClick={run} disabled={status === 'loading'} className={btnCls}>
+        {status === 'loading' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+        Export
+      </button>
+      {status === 'loading' && <p className="text-sm text-accent">Exporting…</p>}
+      {status === 'error' && (
+        <div className="flex items-center gap-2 text-sm text-danger">
+          <AlertCircle className="w-4 h-4" />{errorMsg}
+        </div>
+      )}
+      {status === 'success' && result && (
+        <div className="space-y-1 text-sm">
+          <div className="flex items-center gap-2 text-success">
+            <CheckCircle className="w-4 h-4" />
+            Exported {result.exported} string{result.exported !== 1 ? 's' : ''}
+          </div>
+          <div className="text-xs font-mono text-text-muted bg-bg-base rounded border border-border-subtle p-2 truncate" title={result.path}>
+            {result.path}
+          </div>
+        </div>
+      )}
+    </ToolCard>
+  )
+}
+
 // ── Section header ────────────────────────────────────────────────────────────
 function SectionHeader({ icon, title }: { icon: React.ReactNode; title: string }) {
   return (
@@ -448,11 +671,21 @@ function ToolsPage() {
         </div>
       </section>
 
+      {/* File Hashes + Nexus */}
+      <section>
+        <SectionHeader icon={<Hash className="w-5 h-5" />} title="File Hashes" />
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <FileHashesTool />
+          <NexusFetchTool />
+        </div>
+      </section>
+
       {/* xTranslate */}
       <section>
-        <SectionHeader icon={<BookOpen className="w-5 h-5" />} title="xTranslate Import" />
-        <div className="max-w-xl">
+        <SectionHeader icon={<BookOpen className="w-5 h-5" />} title="xTranslate" />
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 max-w-4xl">
           <XTranslateImport />
+          <XTranslateExport />
         </div>
       </section>
     </div>

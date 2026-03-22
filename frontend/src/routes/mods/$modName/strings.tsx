@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -18,7 +18,8 @@ import { cn } from '@/lib/utils'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { useMachines } from '@/hooks/useMachines'
 import { SCOPES } from '@/lib/constants'
-import type { StringEntry } from '@/types'
+import { useModLiveUpdates, useClearModLiveUpdates } from '@/hooks/useModLiveUpdates'
+import type { StringEntry, StringUpdate } from '@/types'
 
 const PER_PAGE = 100
 
@@ -147,6 +148,7 @@ interface StringRowProps {
   onTranslateOne: (entry: StringEntry) => void
   onSaved: (key: string, esp: string, translation: string) => void
   error?: string
+  flashed?: boolean
 }
 
 function StringRow({
@@ -157,12 +159,18 @@ function StringRow({
   onTranslateOne,
   onSaved,
   error,
+  flashed,
 }: StringRowProps) {
   const espShort = entry.esp.split(/[/\\]/).pop() ?? entry.esp
 
   return (
     <>
-      <tr className="border-t border-border-subtle hover:bg-bg-card2/30 transition-colors group">
+      <tr
+        className={cn(
+          'border-t border-border-subtle hover:bg-bg-card2/30 transition-colors group',
+          flashed && 'ring-1 ring-accent/50 bg-accent/5 transition-all duration-500',
+        )}
+      >
         {/* # */}
         <td className="px-3 py-2 text-xs text-text-muted/60 tabular-nums w-10 shrink-0 align-top">
           {index}
@@ -296,6 +304,17 @@ function Pagination({ page, pages, total, onPage }: PaginationProps) {
   )
 }
 
+// ── Page-cache shape ──────────────────────────────────────────────────────────
+
+interface StringsPage {
+  strings: StringEntry[]
+  total: number
+  page: number
+  per: number
+  pages: number
+  scope_counts?: Record<string, number>
+}
+
 // ── Main page ────────────────────────────────────────────────────────────────
 
 function ModStringsPage() {
@@ -332,6 +351,60 @@ function ModStringsPage() {
     retry: 1,
   })
 
+  // ── Live updates ───────────────────────────────────────────────────────────
+
+  const liveUpdates = useModLiveUpdates(decodedName)
+  const clearLiveUpdates = useClearModLiveUpdates(decodedName)
+  const [flashedKeys, setFlashedKeys] = useState<Set<string>>(new Set())
+  const processedCount = useRef(0)
+
+  // Check if there's a running job for this mod
+  const { data: allJobs = [] } = useQuery({ queryKey: QK.jobs(), queryFn: jobsApi.list })
+  const activeJob = allJobs.find(
+    (j) => j.mod_name === decodedName && ['running', 'pending'].includes(j.status),
+  )
+
+  // Apply new live updates to the current page cache
+  useEffect(() => {
+    const newUpdates: StringUpdate[] = liveUpdates.slice(processedCount.current)
+    if (newUpdates.length === 0) return
+    processedCount.current = liveUpdates.length
+
+    // Update the strings query cache for the current page
+    queryClient.setQueryData<StringsPage>(
+      queryKey,
+      (old) => {
+        if (!old) return old
+        const updateMap = new Map(newUpdates.map((u) => [u.key, u]))
+        const strings = old.strings.map((s) =>
+          updateMap.has(s.key)
+            ? {
+                ...s,
+                translation: updateMap.get(s.key)!.translation,
+                status: updateMap.get(s.key)!.status,
+                quality_score: updateMap.get(s.key)!.quality_score,
+              }
+            : s,
+        )
+        return { ...old, strings }
+      },
+    )
+
+    // Flash updated rows
+    const keys = new Set(newUpdates.map((u) => u.key))
+    setFlashedKeys((prev) => new Set([...prev, ...keys]))
+    setTimeout(() => {
+      setFlashedKeys((prev) => {
+        const next = new Set(prev)
+        keys.forEach((k) => next.delete(k))
+        return next
+      })
+    }, 2000)
+  }, [liveUpdates]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Clear live updates on unmount
+  useEffect(() => () => clearLiveUpdates(), []) // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Translate-one ──────────────────────────────────────────────────────────
 
   const handleTranslateOne = useCallback(
@@ -357,7 +430,7 @@ function ModStringsPage() {
 
         if (translated !== undefined) {
           // Optimistic update in query cache
-          queryClient.setQueryData(queryKey, (old: typeof data) => {
+          queryClient.setQueryData<StringsPage>(queryKey, (old) => {
             if (!old) return old
             return {
               ...old,
@@ -387,7 +460,7 @@ function ModStringsPage() {
 
   const handleStringSaved = useCallback(
     (key: string, esp: string, translation: string) => {
-      queryClient.setQueryData(queryKey, (old: typeof data) => {
+      queryClient.setQueryData<StringsPage>(queryKey, (old) => {
         if (!old) return old
         return {
           ...old,
@@ -448,6 +521,14 @@ function ModStringsPage() {
         </Link>
 
         <span className="text-border-subtle">|</span>
+
+        {/* Live badge */}
+        {activeJob && (
+          <span className="inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full font-medium bg-success/20 text-success border border-success/30">
+            <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
+            Live
+          </span>
+        )}
 
         {/* Scope tabs */}
         <div className="flex items-center gap-0.5 bg-bg-card2 border border-border-subtle rounded-lg p-0.5 overflow-x-auto">
@@ -585,6 +666,7 @@ function ModStringsPage() {
                     onTranslateOne={handleTranslateOne}
                     onSaved={handleStringSaved}
                     error={rowErrors[rowKey]}
+                    flashed={flashedKeys.has(entry.key)}
                   />
                 )
               })}

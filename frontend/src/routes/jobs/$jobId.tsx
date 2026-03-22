@@ -8,6 +8,44 @@ import { ProgressBar } from '@/components/shared/ProgressBar'
 import { LogViewer } from '@/components/shared/LogViewer'
 import { TimeAgo } from '@/components/shared/TimeAgo'
 import { JOB_TERMINAL_STATUSES } from '@/lib/constants'
+import { cn } from '@/lib/utils'
+import type { WorkerStatus } from '@/types'
+
+// ── Workers table ─────────────────────────────────────────────────────────────
+
+function WorkersTable({ workers }: { workers: WorkerStatus[] }) {
+  if (workers.length === 0) return null
+  return (
+    <div className="card p-4">
+      <h3 className="text-sm font-semibold text-text-muted mb-3 uppercase tracking-wide">Translation Machines</h3>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-text-muted text-xs border-b border-border-subtle">
+            <th className="text-left pb-2 font-medium">Machine</th>
+            <th className="text-right pb-2 font-medium">Done</th>
+            <th className="text-right pb-2 font-medium">TPS</th>
+            <th className="text-left pb-2 pl-4 font-medium">Current String</th>
+          </tr>
+        </thead>
+        <tbody>
+          {workers.map((w) => (
+            <tr key={w.label} className={cn('border-b border-border-subtle/30', !w.alive && 'opacity-40')}>
+              <td className="py-2 pr-4">
+                <span className={cn('inline-block w-2 h-2 rounded-full mr-2', w.alive ? 'bg-success animate-pulse' : 'bg-danger')} />
+                <span className="font-mono text-xs text-text-main">{w.label}</span>
+              </td>
+              <td className="py-2 text-right font-mono text-xs tabular-nums text-text-muted">{w.done}</td>
+              <td className="py-2 text-right font-mono text-xs tabular-nums text-accent">{w.tps > 0 ? w.tps.toFixed(1) : '—'}</td>
+              <td className="py-2 pl-4 text-xs text-text-muted truncate max-w-xs">{w.current_text || '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+// ── Job detail page ───────────────────────────────────────────────────────────
 
 function JobDetailPage() {
   const { jobId } = Route.useParams()
@@ -77,6 +115,8 @@ function JobDetailPage() {
           />
         </div>
       )}
+
+      <WorkersTable workers={job.worker_updates ?? []} />
 
       {job.error && (
         <div className="card p-4 border-danger/50 bg-danger/5">

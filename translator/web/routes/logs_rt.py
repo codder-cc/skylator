@@ -2,8 +2,8 @@
 from __future__ import annotations
 import time
 from pathlib import Path
-from flask import (Blueprint, Response, current_app,
-                   render_template, stream_with_context)
+from flask import (Blueprint, Response, current_app, jsonify,
+                   render_template, request, stream_with_context)
 
 bp = Blueprint("logs_rt", __name__, url_prefix="/logs")
 
@@ -47,6 +47,16 @@ def stream_logs():
     return Response(generate(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache",
                              "X-Accel-Buffering": "no"})
+
+
+@bp.route("/tail")
+def tail_logs():
+    """Return last N lines of the log file as JSON (for initial load in React SPA)."""
+    cfg = current_app.config.get("TRANSLATOR_CFG")
+    log_path = cfg.paths.log_file if cfg else Path("logs/translator.log")
+    n = int(request.args.get("n", 300))
+    lines = _tail(log_path, n)
+    return jsonify({"lines": lines})
 
 
 def _tail(path: Path, n: int) -> list[str]:

@@ -20,6 +20,12 @@ def backup_list():
     return render_template("backups.html", backups=backups)
 
 
+@bp.route("/list")
+def backup_list_json():
+    """JSON version of backup list for React SPA."""
+    return jsonify({"backups": _list_backups(current_app)})
+
+
 @bp.route("/create", methods=["POST"])
 def create_backup():
     """Create a backup of mod files."""
@@ -183,6 +189,86 @@ def restore_mod_esp():
             log.warning("Could not update _string_counts.json: %s", exc)
 
     return jsonify({"ok": True, "restored": restored})
+
+
+@bp.route("/trans-json/snapshot", methods=["POST"])
+def snapshot_trans_json():
+    """Save a lightweight snapshot of a mod's .trans.json files (just their current state).
+
+    This is called automatically before a translation job modifies strings.
+    Body: { "mod_name": "SomeMod" }
+    """
+    cfg = current_app.config.get("TRANSLATOR_CFG")
+    if cfg is None:
+        return jsonify({"error": "No config"}), 500
+
+    data = request.get_json() or {}
+    mod_name = data.get("mod_name")
+    if not mod_name:
+        return jsonify({"error": "mod_name required"}), 400
+
+    mod_dir = cfg.paths.mods_dir / mod_name
+    if not mod_dir.is_dir():
+        return jsonify({"error": "Mod not found"}), 404
+
+    backup_dir = cfg.paths.backup_dir
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    snap_dir = backup_dir / f"{mod_name}__trans_{ts}__auto-snap"
+    snap_dir.mkdir(parents=True, exist_ok=True)
+
+    saved = []
+    for trans_json in mod_dir.rglob("*.trans.json"):
+        rel = trans_json.relative_to(mod_dir)
+        dest = snap_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(trans_json), str(dest))
+        saved.append(str(rel))
+
+    if not saved:
+        # Nothing to snapshot — remove empty dir
+        snap_dir.rmdir()
+        return jsonify({"ok": True, "saved": [], "note": "no trans.json files found"})
+
+    return jsonify({"ok": True, "saved": saved, "snapshot": snap_dir.name})
+
+
+@bp.route("/trans-json/list", methods=["GET"])
+def list_trans_snapshots():
+    """List all .trans.json snapshots for a mod."""
+    cfg = current_app.config.get("TRANSLATOR_CFG")
+    if cfg is None:
+        return jsonify({"error": "No config"}), 500
+
+    mod_name = request.args.get("mod_name", "")
+    backup_dir = cfg.paths.backup_dir
+    if not backup_dir.is_dir():
+        return jsonify({"snapshots": []})
+
+    snapshots = []
+    for p in sorted(backup_dir.iterdir(), reverse=True):
+        if not p.is_dir():
+            continue
+        if mod_name and not p.name.startswith(f"{mod_name}__trans_"):
+            continue
+        if "__trans_" not in p.name:
+            continue
+        parts = p.name.split("__")
+        snap_mod = parts[0] if parts else p.name
+        ts_str = parts[1].replace("trans_", "") if len(parts) > 1 else ""
+        label = parts[2] if len(parts) > 2 else ""
+        size = sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+        snapshots.append({
+            "id": p.name,
+            "mod_name": snap_mod,
+            "ts_str": ts_str,
+            "label": label,
+            "size": size,
+            "files": [str(f.relative_to(p)) for f in p.rglob("*.trans.json")],
+        })
+
+    return jsonify({"snapshots": snapshots})
 
 
 def _list_backups(app) -> list[dict]:

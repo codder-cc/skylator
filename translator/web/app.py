@@ -93,6 +93,12 @@ def create_app(config_path: Path | None = None) -> Flask:
     from translator.web.routes import register_routes
     register_routes(app)
 
+    from flask import redirect as _redirect
+
+    @app.route("/")
+    def _index_redirect():
+        return _redirect("/app/")
+
     # ── Remote worker setup report receiver ────────────────────────────────
     @app.route("/setup-report", methods=["POST"])
     def setup_report():

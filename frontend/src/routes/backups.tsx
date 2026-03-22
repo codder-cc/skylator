@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { backupsApi } from '@/api/backups'
+import { apiPost } from '@/api/client'
 import { QK } from '@/lib/queryKeys'
 import { timeAgo, humanSize, cn } from '@/lib/utils'
 import type { BackupEntry } from '@/types'
@@ -16,6 +17,7 @@ import {
   AlertCircle,
   CheckCircle,
   X,
+  Camera,
 } from 'lucide-react'
 
 // ── Create Backup Dialog ──────────────────────────────────────────────────────
@@ -29,6 +31,8 @@ function CreateBackupDialog({ onClose, onCreated }: CreateDialogProps) {
   const [label, setLabel] = useState('')
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
   const [errorMsg, setErrorMsg] = useState('')
+  const [snapshotMsg, setSnapshotMsg] = useState('')
+  const [snapshotStatus, setSnapshotStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
 
   const createMut = useMutation({
     mutationFn: () => backupsApi.create(modName.trim() || 'all', label.trim() || undefined),
@@ -40,6 +44,25 @@ function CreateBackupDialog({ onClose, onCreated }: CreateDialogProps) {
     onError: (e: Error) => {
       setStatus('error')
       setErrorMsg(e.message)
+    },
+  })
+
+  const snapshotMut = useMutation({
+    mutationFn: () =>
+      apiPost<{ ok: boolean; files_saved: number }>('/backups/trans-json/snapshot', {
+        mod_name: modName.trim() || undefined,
+      }),
+    onSuccess: (data) => {
+      setSnapshotStatus('success')
+      setSnapshotMsg(`Snapshot saved (${data.files_saved} file${data.files_saved !== 1 ? 's' : ''})`)
+      setTimeout(() => {
+        setSnapshotStatus('idle')
+        setSnapshotMsg('')
+      }, 4000)
+    },
+    onError: (e: Error) => {
+      setSnapshotStatus('error')
+      setSnapshotMsg(e.message)
     },
   })
 
@@ -91,6 +114,25 @@ function CreateBackupDialog({ onClose, onCreated }: CreateDialogProps) {
               {errorMsg}
             </div>
           )}
+
+          {snapshotStatus === 'loading' && (
+            <div className="flex items-center gap-2 text-sm text-accent">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Snapshotting trans.json…
+            </div>
+          )}
+          {snapshotStatus === 'success' && (
+            <div className="flex items-center gap-2 text-sm text-success">
+              <CheckCircle className="w-4 h-4" />
+              {snapshotMsg}
+            </div>
+          )}
+          {snapshotStatus === 'error' && (
+            <div className="flex items-center gap-2 text-sm text-danger">
+              <AlertCircle className="w-4 h-4" />
+              {snapshotMsg}
+            </div>
+          )}
         </div>
 
         <div className="flex justify-end gap-2 px-5 py-4 border-t border-border-subtle">
@@ -99,6 +141,16 @@ function CreateBackupDialog({ onClose, onCreated }: CreateDialogProps) {
             className="px-4 py-2 rounded text-sm text-text-muted bg-bg-card2 border border-border-subtle hover:text-text-main"
           >
             Cancel
+          </button>
+          <button
+            onClick={() => { setSnapshotStatus('loading'); snapshotMut.mutate() }}
+            disabled={snapshotMut.isPending}
+            className="flex items-center gap-1.5 px-4 py-2 rounded text-sm font-medium bg-bg-card2 border border-border-subtle text-text-muted hover:text-text-main disabled:opacity-50 transition-colors"
+          >
+            {snapshotMut.isPending
+              ? <Loader2 className="w-4 h-4 animate-spin" />
+              : <Camera className="w-4 h-4" />}
+            Snapshot trans.json
           </button>
           <button
             onClick={() => { setStatus('loading'); createMut.mutate() }}

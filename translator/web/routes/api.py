@@ -162,6 +162,25 @@ def mod_context_api(mod_name: str):
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
+@bp.route("/mods/<path:mod_name>/context", methods=["POST"])
+def save_mod_context(mod_name: str):
+    """Save custom context text for a mod."""
+    cfg = current_app.config.get("TRANSLATOR_CFG")
+    if cfg is None:
+        return jsonify({"error": "No config"}), 500
+
+    data = request.get_json() or {}
+    context_text = data.get("context", "")
+
+    mod_dir = cfg.paths.mods_dir / mod_name
+    if not mod_dir.is_dir():
+        return jsonify({"error": "Mod not found"}), 404
+
+    context_file = mod_dir / "context.txt"
+    context_file.write_text(context_text, encoding="utf-8")
+    return jsonify({"ok": True})
+
+
 @bp.route("/tokens/stats")
 def token_stats():
     """Return cumulative token usage across all translation calls this session.

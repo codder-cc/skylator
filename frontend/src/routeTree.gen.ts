@@ -15,12 +15,14 @@ import { Route as ServersRouteImport } from './routes/servers'
 import { Route as LogsRouteImport } from './routes/logs'
 import { Route as ConfigRouteImport } from './routes/config'
 import { Route as BackupsRouteImport } from './routes/backups'
+import { Route as SplatRouteImport } from './routes/$'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ModsIndexRouteImport } from './routes/mods/index'
 import { Route as JobsIndexRouteImport } from './routes/jobs/index'
 import { Route as JobsJobIdRouteImport } from './routes/jobs/$jobId'
 import { Route as ModsModNameIndexRouteImport } from './routes/mods/$modName/index'
 import { Route as ModsModNameStringsRouteImport } from './routes/mods/$modName/strings'
+import { Route as ModsModNameContextRouteImport } from './routes/mods/$modName/context'
 
 const ToolsRoute = ToolsRouteImport.update({
   id: '/tools',
@@ -50,6 +52,11 @@ const ConfigRoute = ConfigRouteImport.update({
 const BackupsRoute = BackupsRouteImport.update({
   id: '/backups',
   path: '/backups',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SplatRoute = SplatRouteImport.update({
+  id: '/$',
+  path: '/$',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -82,9 +89,15 @@ const ModsModNameStringsRoute = ModsModNameStringsRouteImport.update({
   path: '/mods/$modName/strings',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ModsModNameContextRoute = ModsModNameContextRouteImport.update({
+  id: '/mods/$modName/context',
+  path: '/mods/$modName/context',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/$': typeof SplatRoute
   '/backups': typeof BackupsRoute
   '/config': typeof ConfigRoute
   '/logs': typeof LogsRoute
@@ -94,11 +107,13 @@ export interface FileRoutesByFullPath {
   '/jobs/$jobId': typeof JobsJobIdRoute
   '/jobs/': typeof JobsIndexRoute
   '/mods/': typeof ModsIndexRoute
+  '/mods/$modName/context': typeof ModsModNameContextRoute
   '/mods/$modName/strings': typeof ModsModNameStringsRoute
   '/mods/$modName/': typeof ModsModNameIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/$': typeof SplatRoute
   '/backups': typeof BackupsRoute
   '/config': typeof ConfigRoute
   '/logs': typeof LogsRoute
@@ -108,12 +123,14 @@ export interface FileRoutesByTo {
   '/jobs/$jobId': typeof JobsJobIdRoute
   '/jobs': typeof JobsIndexRoute
   '/mods': typeof ModsIndexRoute
+  '/mods/$modName/context': typeof ModsModNameContextRoute
   '/mods/$modName/strings': typeof ModsModNameStringsRoute
   '/mods/$modName': typeof ModsModNameIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/$': typeof SplatRoute
   '/backups': typeof BackupsRoute
   '/config': typeof ConfigRoute
   '/logs': typeof LogsRoute
@@ -123,6 +140,7 @@ export interface FileRoutesById {
   '/jobs/$jobId': typeof JobsJobIdRoute
   '/jobs/': typeof JobsIndexRoute
   '/mods/': typeof ModsIndexRoute
+  '/mods/$modName/context': typeof ModsModNameContextRoute
   '/mods/$modName/strings': typeof ModsModNameStringsRoute
   '/mods/$modName/': typeof ModsModNameIndexRoute
 }
@@ -130,6 +148,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/$'
     | '/backups'
     | '/config'
     | '/logs'
@@ -139,11 +158,13 @@ export interface FileRouteTypes {
     | '/jobs/$jobId'
     | '/jobs/'
     | '/mods/'
+    | '/mods/$modName/context'
     | '/mods/$modName/strings'
     | '/mods/$modName/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/$'
     | '/backups'
     | '/config'
     | '/logs'
@@ -153,11 +174,13 @@ export interface FileRouteTypes {
     | '/jobs/$jobId'
     | '/jobs'
     | '/mods'
+    | '/mods/$modName/context'
     | '/mods/$modName/strings'
     | '/mods/$modName'
   id:
     | '__root__'
     | '/'
+    | '/$'
     | '/backups'
     | '/config'
     | '/logs'
@@ -167,12 +190,14 @@ export interface FileRouteTypes {
     | '/jobs/$jobId'
     | '/jobs/'
     | '/mods/'
+    | '/mods/$modName/context'
     | '/mods/$modName/strings'
     | '/mods/$modName/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  SplatRoute: typeof SplatRoute
   BackupsRoute: typeof BackupsRoute
   ConfigRoute: typeof ConfigRoute
   LogsRoute: typeof LogsRoute
@@ -182,6 +207,7 @@ export interface RootRouteChildren {
   JobsJobIdRoute: typeof JobsJobIdRoute
   JobsIndexRoute: typeof JobsIndexRoute
   ModsIndexRoute: typeof ModsIndexRoute
+  ModsModNameContextRoute: typeof ModsModNameContextRoute
   ModsModNameStringsRoute: typeof ModsModNameStringsRoute
   ModsModNameIndexRoute: typeof ModsModNameIndexRoute
 }
@@ -230,6 +256,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BackupsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/$': {
+      id: '/$'
+      path: '/$'
+      fullPath: '/$'
+      preLoaderRoute: typeof SplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -272,11 +305,19 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ModsModNameStringsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/mods/$modName/context': {
+      id: '/mods/$modName/context'
+      path: '/mods/$modName/context'
+      fullPath: '/mods/$modName/context'
+      preLoaderRoute: typeof ModsModNameContextRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  SplatRoute: SplatRoute,
   BackupsRoute: BackupsRoute,
   ConfigRoute: ConfigRoute,
   LogsRoute: LogsRoute,
@@ -286,6 +327,7 @@ const rootRouteChildren: RootRouteChildren = {
   JobsJobIdRoute: JobsJobIdRoute,
   JobsIndexRoute: JobsIndexRoute,
   ModsIndexRoute: ModsIndexRoute,
+  ModsModNameContextRoute: ModsModNameContextRoute,
   ModsModNameStringsRoute: ModsModNameStringsRoute,
   ModsModNameIndexRoute: ModsModNameIndexRoute,
 }

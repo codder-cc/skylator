@@ -61,6 +61,7 @@ class Job:
         d["progress"]    = asdict(self.progress)
         d["elapsed"]     = self._elapsed()
         d["pct"]         = self.progress.current / max(self.progress.total, 1) * 100
+        d["mod_name"]    = self.params.get("mod_name", "")
         d["eta_seconds"] = self._eta_seconds()
         return d
 

@@ -109,25 +109,22 @@ class RegistryPullBackend:
             raw = self._registry.collect_result(chunk_id, timeout=self._timeout)
 
             if raw is None:
-                log.error("PullBackend [%s]: chunk %s timed out after %.0fs",
+                log.error("PullBackend [%s]: chunk %s timed out after %.0fs — marking dead",
                           self._label, chunk_id[:8], self._timeout)
-                # Return originals for this batch on timeout
-                results.extend(batch)
-            else:
-                parsed = parse_numbered_output(raw, len(batch))
-                results.extend(parsed)
-                log.debug("PullBackend [%s]: chunk %s done — batch %d/%d",
-                          self._label, chunk_id[:8],
-                          i // batch_size + 1, num_batches)
+                from translator.models.remote_backend import RemoteServerDeadError
+                raise RemoteServerDeadError(
+                    f"[{self._label}] chunk {chunk_id[:8]} timed out after {self._timeout:.0f}s"
+                )
+
+            parsed = parse_numbered_output(raw, len(batch))
+            results.extend(parsed)
+            log.debug("PullBackend [%s]: chunk %s done — batch %d/%d",
+                      self._label, chunk_id[:8],
+                      i // batch_size + 1, num_batches)
 
             if progress_cb:
                 progress_cb(min(i + batch_size, len(texts)), len(texts))
 
             self._registry.update_task(self._label, "")
-
-        if len(results) != len(texts):
-            log.warning("PullBackend [%s]: expected %d results, got %d",
-                        self._label, len(texts), len(results))
-            return list(texts)
 
         return results

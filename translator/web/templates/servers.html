@@ -512,6 +512,10 @@ async function unloadModel(label) {
 
 // ── Registered Workers ────────────────────────────────────────────────────────
 
+function escHtml(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
 async function refreshWorkers() {
   try {
     const workers = await fetch('/api/workers').then(r => r.json());
@@ -525,16 +529,16 @@ async function refreshWorkers() {
       return;
     }
     let rows = workers.map(w => `<tr>
-      <td><span class="${w.alive ? 'text-success' : 'text-danger'}">●</span> ${w.label}</td>
-      <td class="mono text-muted" style="font-size:11px">${w.url}</td>
-      <td class="text-muted" style="font-size:11px">${w.model || '—'}</td>
-      <td class="text-muted" style="font-size:11px">${w.gpu || '—'}</td>
+      <td><span class="${w.alive ? 'text-success' : 'text-danger'}">●</span> ${escHtml(w.label)}</td>
+      <td class="mono text-muted" style="font-size:11px">${escHtml(w.url)}</td>
+      <td class="text-muted" style="font-size:11px">${escHtml(w.model || '—')}</td>
+      <td class="text-muted" style="font-size:11px">${escHtml(w.gpu || '—')}</td>
       <td class="text-muted" style="font-size:11px">${w.last_seen ? Math.round((Date.now()/1000 - w.last_seen)) + 's ago' : '—'}</td>
-      <td class="text-muted" style="font-size:11px">${(w.current_task || '—').slice(0,40)}</td>
+      <td class="text-muted" style="font-size:11px">${escHtml((w.current_task || '—').slice(0,40))}</td>
       <td class="text-end" style="white-space:nowrap">
-        <button class="btn btn-sm btn-outline-primary py-0 me-1" onclick="openLoadModel('${w.label}')" title="Load / swap model"><i class="bi bi-upload"></i></button>
-        <button class="btn btn-sm btn-outline-warning py-0 me-1" onclick="unloadModel('${w.label}')" title="Unload model"><i class="bi bi-eject"></i></button>
-        <button class="btn btn-sm btn-outline-danger py-0" onclick="disconnectWorker('${w.label}')"><i class="bi bi-x"></i></button>
+        <button class="btn btn-sm btn-outline-primary py-0 me-1" onclick="openLoadModel('${escHtml(w.label)}')" title="Load / swap model"><i class="bi bi-upload"></i></button>
+        <button class="btn btn-sm btn-outline-warning py-0 me-1" onclick="unloadModel('${escHtml(w.label)}')" title="Unload model"><i class="bi bi-eject"></i></button>
+        <button class="btn btn-sm btn-outline-danger py-0" onclick="disconnectWorker('${escHtml(w.label)}')"><i class="bi bi-x"></i></button>
       </td>
     </tr>`).join('');
     el.innerHTML = `<table class="table table-dark table-sm mb-0" style="font-size:13px">

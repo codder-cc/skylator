@@ -222,11 +222,14 @@ def _resolve_backends(cfg, machines: list | None):
     Registered worker → RegistryPullBackend (pull-mode; remote → host only,
       works across subnets without port-forwarding the remote side).
 
-    Returns None when machines is None or has only 1 entry so the
-    single-backend path is used (no WorkerPool overhead).
+    Returns (backends_or_None, skipped_labels):
+      - backends_or_None is None when machines is None or resolves to only 1 entry
+        (single-backend path, no WorkerPool overhead).
+      - skipped_labels is a list of requested machine names that weren't found
+        in the registry — callers should surface these in the job log.
     """
     if not machines:
-        return None
+        return None, []
 
     from flask import current_app
     from translator.web.pull_backend import RegistryPullBackend
@@ -234,7 +237,8 @@ def _resolve_backends(cfg, machines: list | None):
     src_lang = getattr(getattr(cfg, "translation", None), "source_lang", "English") if cfg else "English"
     tgt_lang = getattr(getattr(cfg, "translation", None), "target_lang", "Russian") if cfg else "Russian"
 
-    result = []
+    result  = []
+    skipped = []
     for label in machines:
         if label == "local":
             result.append(("local", None))
@@ -251,8 +255,9 @@ def _resolve_backends(cfg, machines: list | None):
                 import logging
                 logging.getLogger(__name__).warning(
                     "Machine '%s' not found in registry — skipping", label)
+                skipped.append(label)
 
-    return result if len(result) > 1 else None
+    return (result if len(result) > 1 else None), skipped
 
 
 def _create_translate_all_job(jm, cfg, options: dict):
@@ -262,9 +267,11 @@ def _create_translate_all_job(jm, cfg, options: dict):
     status_filter = options.get("status_filter", "all")
     force         = options.get("force", False)
     machines      = options.get("machines")    # list of labels or None
-    backends      = _resolve_backends(cfg, machines)
+    backends, skipped = _resolve_backends(cfg, machines)
 
     def run(job):
+        if skipped:
+            job.add_log(f"WARNING: machines not found in registry (skipped): {', '.join(skipped)}")
         from translator.web.workers import translate_all_worker
         translate_all_worker(job, cfg, dry_run=dry_run, resume=resume,
                              scope=scope, status_filter=status_filter,
@@ -330,9 +337,11 @@ def _create_translate_strings_job(jm, cfg, mod_name: str,
                                    scope: str = "all",
                                    params=None, force: bool = False,
                                    machines: list | None = None):
-    backends = _resolve_backends(cfg, machines)
+    backends, skipped = _resolve_backends(cfg, machines)
 
     def run(job):
+        if skipped:
+            job.add_log(f"WARNING: machines not found in registry (skipped): {', '.join(skipped)}")
         from translator.web.workers import translate_strings_worker
         translate_strings_worker(job, cfg, mod_name, keys=keys, scope=scope,
                                  params=params, force=force, backends=backends)

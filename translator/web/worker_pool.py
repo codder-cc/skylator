@@ -204,4 +204,23 @@ class WorkerPool:
         for t in threads:
             t.join()
 
+        # Drain any chunks left in the queue — happens when all backends die
+        # simultaneously and re-queue their chunks with no thread left to pick up.
+        orphaned = 0
+        while True:
+            try:
+                leftover = work_q.get_nowait()
+                if leftover is not _SENTINEL:
+                    orphaned += len(leftover)
+            except queue.Empty:
+                break
+        if orphaned:
+            log.error(
+                "WorkerPool: %d string(s) unprocessed — all backends died. "
+                "Use Resume to retry the remaining strings.",
+                orphaned,
+            )
+            with _counter_lock:
+                error_count[0] += orphaned
+
         return {"done": done_count[0], "errors": error_count[0]}

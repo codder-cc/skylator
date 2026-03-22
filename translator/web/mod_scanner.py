@@ -157,8 +157,7 @@ class ModScanner:
             tok_ok, _ = _validate_tokens(orig, trans)
             if not tok_ok:
                 return "needs_review"
-            # Use provided score if trustworthy (>= 40); recompute if stale/missing
-            effective_qs = qs if (qs is not None and qs >= 40) else _quality_score(orig, trans)
+            effective_qs = qs if qs is not None else _quality_score(orig, trans)
             return "translated" if effective_qs > 70 else "needs_review"
 
         for ext in ("*.esp", "*.esm", "*.esl"):
@@ -181,11 +180,11 @@ class ModScanner:
                                            mod_cache.get(key_str, ""))
                             orig = s["text"]
                             stored_qs = s.get("quality_score")
-                            # Recompute quality_score if stored value might be stale
-                            # (stored < 40 means it was flagged needs_review — recheck)
-                            if translation and stored_qs is not None and stored_qs < 40:
-                                recomputed = _quality_score(orig, translation)
-                                display_qs = recomputed
+                            # Always recompute quality_score when stored value would
+                            # show needs_review — catches stale scores after re-translation
+                            # or manual edits. Fast operation (regex + math).
+                            if translation and (stored_qs is None or stored_qs <= 70):
+                                display_qs = _quality_score(orig, translation)
                             else:
                                 display_qs = stored_qs
                             status = _str_status(orig, translation, display_qs)

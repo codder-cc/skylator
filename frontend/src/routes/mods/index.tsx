@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Search, RefreshCw, Play, FileText, Archive } from 'lucide-react'
@@ -182,18 +182,23 @@ function ModsPage() {
     return () => clearTimeout(timer)
   }, [inputValue]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const queryParams = {
-    ...(status !== 'all' ? { status } : {}),
-    ...(q ? { q } : {}),
-  }
-
-  const { data: mods, isLoading, isFetching, refetch } = useQuery({
-    queryKey: QK.mods(queryParams),
-    queryFn: () => modsApi.list(queryParams),
-    staleTime: 30_000,
+  // Load all mods once — filter/search client-side (backend ignores q/status params anyway)
+  const { data: allMods, isLoading, isFetching, refetch } = useQuery({
+    queryKey: QK.mods(),
+    queryFn: () => modsApi.list(),
+    staleTime: 60_000,
   })
 
-  const sorted = mods ? sortMods(mods) : []
+  const sorted = useMemo(() => {
+    if (!allMods) return []
+    const needle = q.toLowerCase()
+    const filtered = allMods.filter((m) => {
+      if (status !== 'all' && m.status !== status) return false
+      if (needle && !m.folder_name.toLowerCase().includes(needle)) return false
+      return true
+    })
+    return sortMods(filtered)
+  }, [allMods, q, status])
 
   return (
     <div className="space-y-5">
@@ -201,9 +206,11 @@ function ModsPage() {
       <div className="flex items-center gap-4">
         <div>
           <h1 className="text-2xl font-bold text-text-main">Mods</h1>
-          {mods && (
+          {allMods && (
             <p className="text-sm text-text-muted mt-0.5">
-              {mods.length} mod{mods.length !== 1 ? 's' : ''} found
+              {sorted.length !== allMods.length
+                ? `${sorted.length} of ${allMods.length} mods`
+                : `${allMods.length} mod${allMods.length !== 1 ? 's' : ''}`}
             </p>
           )}
         </div>

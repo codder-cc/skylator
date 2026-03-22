@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import { workersApi } from '@/api/workers'
 import { QK } from '@/lib/queryKeys'
 import { timeAgo, cn } from '@/lib/utils'
-import type { WorkerInfo, SetupReport } from '@/types'
+import type { WorkerInfo, SetupReport, CachedModel } from '@/types'
 import {
   Server,
   RefreshCw,
@@ -31,19 +31,31 @@ interface Preset {
 
 const PRESETS: Preset[] = [
   {
-    label: 'Qwen3.5-27B Q4_K_M Huihui GGUF',
-    repo_id: 'huihui-ai/Qwen3.5-27B-Instruct-GGUF',
-    gguf_filename: 'Qwen3.5-27B-Instruct-Q4_K_M.gguf',
+    label: 'Qwen3.5-27B 4bit MLX — Huihui (Apple Silicon)',
+    repo_id: 'mlx-community/Huihui-Qwen3.5-27B-Claude-4.6-Opus-abliterated-4bit',
+    gguf_filename: '',
+    backend_type: 'mlx',
+  },
+  {
+    label: 'Qwen3.5-27B Q4_K_M GGUF — Huihui (CUDA / Metal)',
+    repo_id: 'Sepolian/Huihui-Qwen3.5-27B-Claude-4.6-Opus-abliterated-Q4_K_M',
+    gguf_filename: 'Huihui-Qwen3.5-27B-Claude-4.6-Opus-abliterated-Q4_K_M.gguf',
     backend_type: 'llamacpp',
   },
   {
-    label: 'Qwen3.5-27B MLX',
+    label: 'Qwen3.5-27B 4bit MLX — Instruct',
     repo_id: 'mlx-community/Qwen3.5-27B-Instruct-4bit',
     gguf_filename: '',
     backend_type: 'mlx',
   },
   {
-    label: 'Qwen3-14B Q4_K_M',
+    label: 'Qwen3.5-27B Q4_K_M GGUF — Instruct',
+    repo_id: 'huihui-ai/Qwen3.5-27B-Instruct-GGUF',
+    gguf_filename: 'Qwen3.5-27B-Instruct-Q4_K_M.gguf',
+    backend_type: 'llamacpp',
+  },
+  {
+    label: 'Qwen3-14B Q4_K_M GGUF',
     repo_id: 'bartowski/Qwen3-14B-GGUF',
     gguf_filename: 'Qwen3-14B-Q4_K_M.gguf',
     backend_type: 'llamacpp',
@@ -58,6 +70,7 @@ interface LoadModelDialogProps {
 }
 
 function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
+  const qc = useQueryClient()
   const [tab, setTab] = useState<'hf' | 'local'>('hf')
   const [presetIdx, setPresetIdx] = useState(0)
   const [repoId, setRepoId] = useState(PRESETS[0].repo_id)
@@ -65,9 +78,9 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
   const [localPath, setLocalPath] = useState('')
   const [backendType, setBackendType] = useState<'llamacpp' | 'mlx'>(PRESETS[0].backend_type)
   const [gpuLayers, setGpuLayers] = useState(-1)
-  const [contextSize, setContextSize] = useState(8192)
+  const [nCtx, setNCtx] = useState(8192)
   const [batchSize, setBatchSize] = useState(12)
-  const [maxTokens, setMaxTokens] = useState(2048)
+  const [maxNewTokens, setMaxNewTokens] = useState(2048)
   const [loadStatus, setLoadStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
   const [errorMsg, setErrorMsg] = useState('')
 
@@ -79,6 +92,13 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
     setBackendType(p.backend_type)
   }
 
+  const selectCached = (m: CachedModel) => {
+    setTab('local')
+    setLocalPath(m.path)
+    setBackendType(m.backend === 'mlx' ? 'mlx' : 'llamacpp')
+    setPresetIdx(PRESETS.length - 1) // Custom
+  }
+
   const handleSubmit = async () => {
     setLoadStatus('loading')
     setErrorMsg('')
@@ -86,27 +106,32 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
       const body: Record<string, unknown> = {
         backend_type: backendType,
         n_gpu_layers: gpuLayers,
-        context_size: contextSize,
+        n_ctx: nCtx,
         batch_size: batchSize,
-        max_tokens: maxTokens,
+        max_new_tokens: maxNewTokens,
       }
       if (tab === 'hf') {
         body.repo_id = repoId
         if (ggufFile) body.gguf_filename = ggufFile
-        body.model = ggufFile ? ggufFile : repoId
+        body.model = ggufFile || repoId
       } else {
         body.model_path = localPath
         body.model = localPath
       }
-      await workersApi.loadModel(worker.label, body as { model: string; n_gpu_layers?: number; context_size?: number; [key: string]: unknown })
+      await workersApi.loadModel(worker.label, body as Parameters<typeof workersApi.loadModel>[1])
       setLoadStatus('success')
+      qc.invalidateQueries({ queryKey: QK.workers() })
+      setTimeout(onClose, 1200)
     } catch (e: unknown) {
       setLoadStatus('error')
       setErrorMsg(e instanceof Error ? e.message : 'Unknown error')
     }
   }
 
-  const cachedModels: string[] = Array.isArray(worker.models) ? worker.models : []
+  const cachedModels: CachedModel[] = Array.isArray(worker.models) ? worker.models : []
+  const isDownload = tab === 'hf' && !cachedModels.some(
+    (m) => m.name === (ggufFile || repoId.split('/').pop())
+  )
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
@@ -188,15 +213,17 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
           {/* Cached models badges */}
           {cachedModels.length > 0 && (
             <div>
-              <label className="block text-xs text-text-muted mb-1">Cached on worker</label>
+              <label className="block text-xs text-text-muted mb-1">Cached on worker — click to load from local path</label>
               <div className="flex flex-wrap gap-1.5">
                 {cachedModels.map((m) => (
                   <button
-                    key={m}
-                    onClick={() => { setTab('local'); setLocalPath(m) }}
+                    key={m.path}
+                    onClick={() => selectCached(m)}
+                    title={`${m.path} · ${m.size_mb} MB`}
                     className="px-2 py-0.5 rounded text-xs bg-success/20 text-success border border-success/30 hover:bg-success/30 font-mono"
                   >
-                    {m}
+                    {m.name}
+                    <span className="ml-1 opacity-60 text-[10px] uppercase">{m.backend}</span>
                   </button>
                 ))}
               </div>
@@ -226,11 +253,11 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
               />
             </div>
             <div>
-              <label className="block text-xs text-text-muted mb-1">Context</label>
+              <label className="block text-xs text-text-muted mb-1">Context (n_ctx)</label>
               <input
                 type="number"
-                value={contextSize}
-                onChange={(e) => setContextSize(Number(e.target.value))}
+                value={nCtx}
+                onChange={(e) => setNCtx(Number(e.target.value))}
                 className="w-full bg-bg-card2 border border-border-subtle rounded px-3 py-2 text-sm text-text-main"
               />
             </div>
@@ -244,11 +271,11 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
               />
             </div>
             <div className="col-span-2">
-              <label className="block text-xs text-text-muted mb-1">Max Tokens</label>
+              <label className="block text-xs text-text-muted mb-1">Max New Tokens</label>
               <input
                 type="number"
-                value={maxTokens}
-                onChange={(e) => setMaxTokens(Number(e.target.value))}
+                value={maxNewTokens}
+                onChange={(e) => setMaxNewTokens(Number(e.target.value))}
                 className="w-full bg-bg-card2 border border-border-subtle rounded px-3 py-2 text-sm text-text-main"
               />
             </div>
@@ -258,7 +285,9 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
           {loadStatus === 'loading' && (
             <div className="flex items-center gap-2 text-sm text-accent">
               <Loader2 className="w-4 h-4 animate-spin" />
-              Loading model — this may take several minutes…
+              {isDownload
+                ? 'Downloading + loading model — may take 10–30 min depending on model size…'
+                : 'Loading model into memory — may take 1–2 min…'}
             </div>
           )}
           {loadStatus === 'success' && (

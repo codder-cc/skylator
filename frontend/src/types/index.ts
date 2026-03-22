@@ -81,6 +81,13 @@ export interface StringEntry {
   dict_match?: boolean
 }
 
+export interface CachedModel {
+  name: string
+  path: string
+  size_mb: number
+  backend: string   // "mlx" | "llamacpp"
+}
+
 export interface WorkerInfo {
   label: string
   url: string
@@ -91,7 +98,8 @@ export interface WorkerInfo {
   capabilities: string[]
   last_seen: number
   current_task: string | null
-  models: string[]
+  models: CachedModel[]
+  stats: { tps_avg: number; tps_last: number; queue_depth: number; jobs_completed: number } | null
   alive: boolean
 }
 

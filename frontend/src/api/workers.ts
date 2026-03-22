@@ -1,10 +1,16 @@
 import { apiFetch, apiPost } from './client'
-import type { WorkerInfo, SetupReport } from '@/types'
+import type { WorkerInfo, SetupReport, CachedModel } from '@/types'
 
 interface ModelLoadBody {
   model: string
+  backend_type?: string
   n_gpu_layers?: number
-  context_size?: number
+  n_ctx?: number
+  batch_size?: number
+  max_new_tokens?: number
+  repo_id?: string
+  gguf_filename?: string
+  model_path?: string
   [key: string]: unknown
 }
 
@@ -22,7 +28,7 @@ export const workersApi = {
     apiPost<{ ok: boolean }>(`/api/workers/${encodeURIComponent(label)}/register`, data),
 
   getModels: (label: string) =>
-    apiFetch<{ models: string[] }>(`/api/workers/${encodeURIComponent(label)}/models`),
+    apiFetch<{ models: CachedModel[] }>(`/api/workers/${encodeURIComponent(label)}/models`),
 
   loadModel: (label: string, body: ModelLoadBody) =>
     apiPost<{ ok: boolean; job_id?: string }>(

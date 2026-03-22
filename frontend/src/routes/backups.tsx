@@ -49,12 +49,13 @@ function CreateBackupDialog({ onClose, onCreated }: CreateDialogProps) {
 
   const snapshotMut = useMutation({
     mutationFn: () =>
-      apiPost<{ ok: boolean; files_saved: number }>('/backups/trans-json/snapshot', {
+      apiPost<{ ok: boolean; saved: string[] }>('/backups/trans-json/snapshot', {
         mod_name: modName.trim() || undefined,
       }),
     onSuccess: (data) => {
+      const n = data.saved?.length ?? 0
       setSnapshotStatus('success')
-      setSnapshotMsg(`Snapshot saved (${data.files_saved} file${data.files_saved !== 1 ? 's' : ''})`)
+      setSnapshotMsg(`Snapshot saved (${n} file${n !== 1 ? 's' : ''})`)
       setTimeout(() => {
         setSnapshotStatus('idle')
         setSnapshotMsg('')

@@ -12,7 +12,13 @@ import {
   RefreshCw,
   BookOpen,
   Globe,
+  ScanSearch,
+  ShieldCheck,
+  Cpu,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react'
+import { useState } from 'react'
 import { modsApi } from '@/api/mods'
 import { jobsApi } from '@/api/jobs'
 import { QK } from '@/lib/queryKeys'
@@ -28,13 +34,15 @@ export const Route = createFileRoute('/mods/$modName/')({
 
 // ── Pipeline step types ──────────────────────────────────────────────────────
 
-type StepStatus = 'done' | 'partial' | 'pending' | 'inactive'
+type StepStatus = 'done' | 'partial' | 'pending' | 'inactive' | 'running'
 
 interface PipelineStep {
   label: string
   icon: React.ReactNode
   status: StepStatus
   tooltip?: string
+  onClick?: () => void
+  isPending?: boolean
 }
 
 function StepDot({ status }: { status: StepStatus }) {
@@ -45,6 +53,7 @@ function StepDot({ status }: { status: StepStatus }) {
         status === 'done' && 'bg-success',
         status === 'partial' && 'bg-warning',
         status === 'pending' && 'bg-accent',
+        status === 'running' && 'bg-accent animate-pulse',
         status === 'inactive' && 'bg-text-muted/30',
       )}
     />
@@ -57,29 +66,33 @@ function PipelineSteps({ steps }: { steps: PipelineStep[] }) {
       <div className="flex items-center">
         {steps.map((step, i) => (
           <div key={step.label} className="flex items-center flex-1 min-w-0">
-            <div
-              className={cn(
-                'flex flex-col items-center gap-1.5 px-2 py-1 flex-1 min-w-0',
-              )}
-              title={step.tooltip}
-            >
-              <div
+            <div className="flex flex-col items-center gap-1.5 flex-1 min-w-0">
+              <button
+                onClick={step.onClick}
+                disabled={!step.onClick || step.isPending}
                 className={cn(
-                  'flex items-center justify-center w-9 h-9 rounded-full border-2 transition-colors',
+                  'flex items-center justify-center w-9 h-9 rounded-full border-2 transition-all',
                   step.status === 'done' && 'border-success bg-success/10 text-success',
                   step.status === 'partial' && 'border-warning bg-warning/10 text-warning',
                   step.status === 'pending' && 'border-accent bg-accent/10 text-accent',
+                  step.status === 'running' && 'border-accent bg-accent/20 text-accent',
                   step.status === 'inactive' && 'border-border-subtle bg-bg-card2 text-text-muted/40',
+                  step.onClick && !step.isPending && 'hover:scale-110 cursor-pointer hover:shadow-md',
+                  (!step.onClick || step.isPending) && 'cursor-default',
                 )}
+                title={step.tooltip}
               >
-                {step.icon}
-              </div>
+                {step.isPending
+                  ? <RefreshCw size={14} className="animate-spin" />
+                  : step.icon}
+              </button>
               <div className="flex items-center gap-1">
                 <StepDot status={step.status} />
                 <span
                   className={cn(
                     'text-xs font-medium truncate',
                     step.status === 'inactive' ? 'text-text-muted/40' : 'text-text-muted',
+                    step.onClick && 'hover:text-text-main',
                   )}
                 >
                   {step.label}
@@ -157,6 +170,127 @@ function ActionButton({
   )
 }
 
+// ── Validation panel ─────────────────────────────────────────────────────────
+
+function ValidationPanel({ modName }: { modName: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const qc = useQueryClient()
+
+  const { data, isLoading, isFetching } = useQuery({
+    queryKey: QK.modValidation(modName),
+    queryFn: () => modsApi.getValidation(modName),
+    enabled: expanded,
+    staleTime: 30_000,
+  })
+
+  return (
+    <div className="card overflow-hidden">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center gap-2 px-4 py-3 hover:bg-bg-card2 transition-colors text-left"
+      >
+        <ShieldCheck size={14} className="text-accent shrink-0" />
+        <span className="text-sm font-semibold text-text-main uppercase tracking-wide flex-1">
+          Validation
+        </span>
+        {isFetching && <RefreshCw size={12} className="animate-spin text-text-muted" />}
+        {expanded
+          ? <ChevronUp size={14} className="text-text-muted" />
+          : <ChevronDown size={14} className="text-text-muted" />}
+      </button>
+
+      {expanded && (
+        <div className="border-t border-border-subtle p-4 space-y-3">
+          {isLoading ? (
+            <p className="text-sm text-text-muted">Loading…</p>
+          ) : !data?.ok ? (
+            <div className="space-y-2">
+              <p className="text-sm text-text-muted italic">
+                {data?.error ?? 'No validation data. Run the Validate step first.'}
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3 text-sm">
+              {Object.entries(data)
+                .filter(([k]) => k !== 'ok')
+                .map(([k, v]) => (
+                  <div key={k} className="flex items-start gap-2">
+                    <span className="text-text-muted w-32 shrink-0 font-medium">{k}</span>
+                    <span className="text-text-main font-mono text-xs break-all">
+                      {JSON.stringify(v)}
+                    </span>
+                  </div>
+                ))}
+            </div>
+          )}
+          <button
+            onClick={() => qc.invalidateQueries({ queryKey: QK.modValidation(modName) })}
+            className="flex items-center gap-1.5 text-xs text-text-muted hover:text-text-main"
+          >
+            <RefreshCw size={11} />
+            Refresh
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Context summary panel ─────────────────────────────────────────────────────
+
+function ContextPanel({ modName, encodedName }: { modName: string; encodedName: string }) {
+  const [expanded, setExpanded] = useState(false)
+
+  const { data, isLoading } = useQuery({
+    queryKey: QK.modContext(modName),
+    queryFn: () => modsApi.getContext(modName),
+    enabled: expanded,
+    staleTime: 60_000,
+  })
+
+  return (
+    <div className="card overflow-hidden">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center gap-2 px-4 py-3 hover:bg-bg-card2 transition-colors text-left"
+      >
+        <BookOpen size={14} className="text-accent shrink-0" />
+        <span className="text-sm font-semibold text-text-main uppercase tracking-wide flex-1">
+          AI Context / Nexus Summary
+        </span>
+        {expanded
+          ? <ChevronUp size={14} className="text-text-muted" />
+          : <ChevronDown size={14} className="text-text-muted" />}
+      </button>
+
+      {expanded && (
+        <div className="border-t border-border-subtle p-4 space-y-3">
+          {isLoading ? (
+            <p className="text-sm text-text-muted">Loading…</p>
+          ) : data?.auto_context ? (
+            <pre className="text-xs text-text-muted font-mono whitespace-pre-wrap bg-bg-base p-3 rounded-md max-h-40 overflow-auto">
+              {data.auto_context}
+            </pre>
+          ) : data?.context ? (
+            <pre className="text-xs text-text-muted font-mono whitespace-pre-wrap bg-bg-base p-3 rounded-md max-h-40 overflow-auto">
+              {data.context}
+            </pre>
+          ) : (
+            <p className="text-sm text-text-muted italic">No context yet.</p>
+          )}
+          <Link
+            to="/mods/$modName/context"
+            params={{ modName: encodedName }}
+            className="text-xs text-accent hover:underline"
+          >
+            Edit context →
+          </Link>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main page ────────────────────────────────────────────────────────────────
 
 function ModDetailPage() {
@@ -188,14 +322,14 @@ function ModDetailPage() {
 
   // ── Mutations ──────────────────────────────────────────────────────────────
 
-  function makeTranslateMutation(type: string, extraBody?: Record<string, unknown>) {
+  function makeJobMutation(type: string, extra?: Record<string, unknown>) {
     return useMutation({ // eslint-disable-line react-hooks/rules-of-hooks
       mutationFn: () =>
         jobsApi.create({
           type,
           mods: [decodedName],
           options: { machines },
-          ...extraBody,
+          ...extra,
         }),
       onSuccess: (data) => {
         if (data.ok && data.job_id) {
@@ -206,9 +340,13 @@ function ModDetailPage() {
     })
   }
 
-  const translateAllMut = makeTranslateMutation('translate_mod')
-  const translateEspMut = makeTranslateMutation('translate_mod', { scope: 'esp' })
-  const translateBsaMut = makeTranslateMutation('translate_mod', { scope: 'bsa' })
+  const scanMut          = makeJobMutation('scan')
+  const translateAllMut  = makeJobMutation('translate_mod')
+  const translateEspMut  = makeJobMutation('translate_mod', { scope: 'esp' })
+  const translateBsaMut  = makeJobMutation('translate_mod', { scope: 'bsa' })
+  const validateMut      = makeJobMutation('validate')
+  const applyMut         = makeJobMutation('apply_mod')
+  const fetchNexusMut    = makeJobMutation('fetch_nexus')
 
   // ── Pipeline steps ─────────────────────────────────────────────────────────
 
@@ -216,40 +354,43 @@ function ModDetailPage() {
     ? [
         {
           label: 'Scan',
-          icon: <Globe size={16} />,
+          icon: <ScanSearch size={16} />,
           status: mod.cached_at ? 'done' : 'pending',
-          tooltip: mod.cached_at
-            ? `Scanned ${timeAgo(mod.cached_at)}`
-            : 'Not yet scanned',
+          tooltip: mod.cached_at ? `Scanned ${timeAgo(mod.cached_at)}` : 'Click to scan mod files',
+          onClick: () => scanMut.mutate(),
+          isPending: scanMut.isPending,
         },
         {
-          label: 'Context',
-          icon: <BookOpen size={16} />,
+          label: 'Nexus',
+          icon: <Globe size={16} />,
           status: 'inactive',
-          tooltip: 'Context enrichment (future)',
+          tooltip: 'Fetch Nexus Mods description for AI context',
+          onClick: () => fetchNexusMut.mutate(),
+          isPending: fetchNexusMut.isPending,
         },
         {
           label: 'Translate',
           icon: <Play size={16} />,
-          status:
-            mod.pct >= 100
-              ? 'done'
-              : mod.pct > 0
-              ? 'partial'
-              : 'pending',
-          tooltip: `${mod.pct.toFixed(1)}% translated`,
+          status: mod.pct >= 100 ? 'done' : mod.pct > 0 ? 'partial' : 'pending',
+          tooltip: `${mod.pct.toFixed(1)}% translated — click to translate`,
+          onClick: () => translateAllMut.mutate(),
+          isPending: translateAllMut.isPending,
         },
         {
           label: 'Validate',
-          icon: <CheckCircle size={16} />,
+          icon: <ShieldCheck size={16} />,
           status: 'inactive',
-          tooltip: 'Validation (future)',
+          tooltip: 'Run validation — checks token preservation and quality scores',
+          onClick: () => validateMut.mutate(),
+          isPending: validateMut.isPending,
         },
         {
-          label: 'Apply',
-          icon: <Archive size={16} />,
+          label: 'Apply ESP',
+          icon: <Cpu size={16} />,
           status: 'inactive',
-          tooltip: 'Apply patches (future)',
+          tooltip: 'Apply translations to ESP binary files',
+          onClick: () => applyMut.mutate(),
+          isPending: applyMut.isPending,
         },
       ]
     : []
@@ -303,7 +444,7 @@ function ModDetailPage() {
         <StatusBadge status={mod.status} />
       </div>
 
-      {/* Pipeline */}
+      {/* Pipeline — each step is clickable */}
       <PipelineSteps steps={pipelineSteps} />
 
       {/* Progress */}
@@ -337,7 +478,7 @@ function ModDetailPage() {
         <div className="card p-4 space-y-3">
           <h2 className="text-sm font-semibold text-text-main uppercase tracking-wide">Files</h2>
           {mod.esp_files.length === 0 && mod.bsa_files.length === 0 ? (
-            <p className="text-text-muted text-sm italic">No files indexed yet.</p>
+            <p className="text-text-muted text-sm italic">No files indexed. Run Scan first.</p>
           ) : (
             <div className="space-y-1">
               {mod.esp_files.map((f) => (
@@ -383,9 +524,27 @@ function ModDetailPage() {
                 onClick={() => translateBsaMut.mutate()}
                 isPending={translateBsaMut.isPending}
                 icon={<Archive size={14} />}
-                label="Translate BSA"
+                label="Translate BSA / MCM"
               />
             )}
+            <ActionButton
+              onClick={() => scanMut.mutate()}
+              isPending={scanMut.isPending}
+              icon={<ScanSearch size={14} />}
+              label="Scan Files"
+            />
+            <ActionButton
+              onClick={() => validateMut.mutate()}
+              isPending={validateMut.isPending}
+              icon={<ShieldCheck size={14} />}
+              label="Validate Translations"
+            />
+            <ActionButton
+              onClick={() => applyMut.mutate()}
+              isPending={applyMut.isPending}
+              icon={<Cpu size={14} />}
+              label="Apply to ESP"
+            />
             <Link
               to="/mods/$modName/strings"
               params={{ modName }}
@@ -407,11 +566,15 @@ function ModDetailPage() {
               )}
             >
               <BookOpen size={14} />
-              Edit Context
+              Edit AI Context
             </Link>
           </div>
         </div>
       </div>
+
+      {/* Collapsible validation + context panels */}
+      <ValidationPanel modName={decodedName} />
+      <ContextPanel modName={decodedName} encodedName={modName} />
 
       {/* Recent jobs */}
       <div className="space-y-3">

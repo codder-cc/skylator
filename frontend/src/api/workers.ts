@@ -39,7 +39,8 @@ export const workersApi = {
     apiPost<{ servers: LanServer[] }>('/servers/scan'),
 
   getServers: () =>
-    apiFetch<LanServer[]>('/api/servers'),
+    apiFetch<{ servers: LanServer[]; scanning: boolean }>('/api/servers')
+      .then((d) => d.servers ?? []),
 
   getSetupReports: () =>
     apiFetch<SetupReport[]>('/api/setup-reports'),

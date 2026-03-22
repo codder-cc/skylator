@@ -73,4 +73,9 @@ export const modsApi = {
 
   saveContext: (name: string, context: string) =>
     apiPost(`/api/mods/${encodeURIComponent(name)}/context`, { context }),
+
+  getValidation: (name: string) =>
+    apiFetch<{ ok: boolean; error?: string; [key: string]: unknown }>(
+      `/api/mods/${encodeURIComponent(name)}/validation`,
+    ),
 }

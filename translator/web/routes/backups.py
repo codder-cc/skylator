@@ -18,7 +18,7 @@ bp = Blueprint("backups", __name__, url_prefix="/backups")
 def backup_list():
     if not request.headers.get("Accept", "").startswith("application/json"):
         return redirect("/app/backups")
-    return jsonify({"backups": _list_backups(current_app)})
+    return jsonify(_list_backups(current_app))
 
 
 @bp.route("/list")
@@ -328,14 +328,14 @@ def _list_backups(app) -> list[dict]:
             size = sum(f.stat().st_size for f in p.rglob("*") if f.is_file()) if p.is_dir() else p.stat().st_size
             parts = p.name.split("__")
             backups.append({
-                "id":       p.name,
-                "path":     str(p),
-                "mod_name": parts[0] if parts else p.name,
-                "label":    parts[2] if len(parts) > 2 else "",
-                "ts_str":   parts[1] if len(parts) > 1 else "",
-                "mtime":    p.stat().st_mtime,
-                "size":     size,
-                "is_dir":   p.is_dir(),
+                "id":         p.name,
+                "path":       str(p),
+                "mod_name":   parts[0] if parts else p.name,
+                "label":      parts[2] if len(parts) > 2 else "",
+                "ts_str":     parts[1] if len(parts) > 1 else "",
+                "created_at": p.stat().st_mtime,
+                "size_bytes": size,
+                "type":       "dir" if p.is_dir() else "file",
             })
         except Exception:
             pass

@@ -387,16 +387,16 @@ class ModScanner:
         mods_no_strings  = sum(1 for m in mods if m.status == "no_strings")
 
         return {
-            "total_mods":      total_mods,
-            "total_strings":   total_strings,
-            "translated":      translated,
-            "pending":         total_strings - translated,
-            "pct":             round(translated / max(total_strings, 1) * 100, 1),
-            "mods_done":       mods_done,
-            "mods_partial":    mods_partial,
-            "mods_pending":    mods_pending,
-            "mods_no_strings": mods_no_strings,
-            "scanned_at":      self._scanned_at,
+            "total_mods":          total_mods,
+            "total_strings":       total_strings,
+            "translated_strings":  translated,
+            "pending_strings":     total_strings - translated,
+            "pct_complete":        round(translated / max(total_strings, 1) * 100, 1),
+            "mods_translated":     mods_done,
+            "mods_partial":        mods_partial,
+            "mods_pending":        mods_pending,
+            "mods_no_strings":     mods_no_strings,
+            "scanned_at":          self._scanned_at,
         }
 
     # ── Internals ─────────────────────────────────────────────────────────────

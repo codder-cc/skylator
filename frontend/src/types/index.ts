@@ -131,6 +131,18 @@ export interface TokenStats {
   calls: number
 }
 
+export interface TokenPerf {
+  ok: boolean
+  calls: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  last_completion_tokens: number
+  tps_last: number
+  tps_avg: number
+  last_elapsed_sec: number
+}
+
 export interface BackupEntry {
   id: string
   mod_name: string

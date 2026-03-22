@@ -10,6 +10,7 @@ export const QK = {
   workers:         () => ['workers'] as const,
   servers:         () => ['servers'] as const,
   tokenStats:      () => ['tokenStats'] as const,
+  tokenPerf:       () => ['tokenPerf'] as const,
   config:          () => ['config'] as const,
   terms:           () => ['terms'] as const,
   backups:         () => ['backups'] as const,

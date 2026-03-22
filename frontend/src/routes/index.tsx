@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useState } from 'react'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { QK } from '@/lib/queryKeys'
 import { statsApi } from '@/api/stats'
 import { jobsApi } from '@/api/jobs'
@@ -16,7 +16,103 @@ import {
   Type,
   ChevronDown,
   X,
+  Zap,
+  RotateCcw,
+  Activity,
 } from 'lucide-react'
+
+// ── Token Performance Widget ──────────────────────────────────────────────────
+
+function TokenPerfWidget() {
+  const qc = useQueryClient()
+
+  const { data: perf, isFetching } = useQuery({
+    queryKey: QK.tokenPerf(),
+    queryFn: statsApi.perf,
+    refetchInterval: 5_000,
+  })
+
+  const resetMut = useMutation({
+    mutationFn: statsApi.resetTokens,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.tokenPerf() })
+      qc.invalidateQueries({ queryKey: QK.tokenStats() })
+    },
+  })
+
+  const p = perf
+
+  return (
+    <div className="card p-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <Activity size={14} className="text-accent" />
+        <span className="text-sm font-semibold text-text-main">Translation Engine</span>
+        {isFetching && <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse ml-1" />}
+        <div className="flex-1" />
+        <button
+          onClick={() => resetMut.mutate()}
+          disabled={resetMut.isPending}
+          className="flex items-center gap-1 text-xs text-text-muted hover:text-text-main transition-colors disabled:opacity-50"
+          title="Reset token counters"
+        >
+          <RotateCcw size={11} className={resetMut.isPending ? 'animate-spin' : ''} />
+          Reset
+        </button>
+      </div>
+
+      {!p || !p.ok ? (
+        <p className="text-xs text-text-muted italic">No inference stats yet this session.</p>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <div>
+            <div className="text-xs text-text-muted uppercase tracking-wide mb-0.5">tok/s (last)</div>
+            <div className={cn('text-lg font-bold font-mono tabular-nums',
+              p.tps_last > 0 ? 'text-accent' : 'text-text-muted')}>
+              {p.tps_last > 0 ? p.tps_last.toFixed(1) : '—'}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-text-muted uppercase tracking-wide mb-0.5">tok/s (avg)</div>
+            <div className={cn('text-lg font-bold font-mono tabular-nums',
+              p.tps_avg > 0 ? 'text-success' : 'text-text-muted')}>
+              {p.tps_avg > 0 ? p.tps_avg.toFixed(1) : '—'}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-text-muted uppercase tracking-wide mb-0.5">Last batch</div>
+            <div className="text-lg font-bold font-mono tabular-nums text-text-main">
+              {p.last_completion_tokens > 0 ? p.last_completion_tokens.toLocaleString() : '—'}
+              <span className="text-xs text-text-muted font-normal ml-1">tok</span>
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-text-muted uppercase tracking-wide mb-0.5">Last elapsed</div>
+            <div className="text-lg font-bold font-mono tabular-nums text-text-main">
+              {p.last_elapsed_sec > 0
+                ? p.last_elapsed_sec < 60
+                  ? `${p.last_elapsed_sec.toFixed(1)}s`
+                  : `${(p.last_elapsed_sec / 60).toFixed(1)}m`
+                : '—'}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-text-muted uppercase tracking-wide mb-0.5">Total tokens</div>
+            <div className="text-lg font-bold font-mono tabular-nums text-text-main">
+              {p.total_tokens > 0 ? (p.total_tokens / 1000).toFixed(1) : '—'}
+              <span className="text-xs text-text-muted font-normal ml-1">k</span>
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-text-muted uppercase tracking-wide mb-0.5">Calls</div>
+            <div className="text-lg font-bold font-mono tabular-nums text-text-muted">
+              {p.calls}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 // ── Batch Modal ───────────────────────────────────────────────────────────────
 
@@ -299,6 +395,8 @@ function DashboardPage() {
           </div>
         </>
       )}
+
+      <TokenPerfWidget />
 
       {!stats && (
         <div className="card p-8 text-center text-text-muted">

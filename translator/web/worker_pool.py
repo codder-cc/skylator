@@ -98,7 +98,6 @@ class WorkerPool:
         backend_done: dict[str, int] = {label: 0 for label, _ in self._backends}
 
         def _worker(label: str, backend) -> None:
-            from scripts.esp_engine import translate_texts
             from translator.models.remote_backend import RemoteServerDeadError
 
             status = statuses[label]
@@ -127,26 +126,17 @@ class WorkerPool:
                 chunk_context = context_builder(originals) if context_builder else context
 
                 try:
-                    # Use the backend's translate() directly when it's a backend object,
-                    # or translate_texts() for the local pipeline (None means local)
-                    if backend is None:
-                        # Local pipeline — use translate_texts from esp_engine
-                        core_results = translate_texts(
-                            originals, context=chunk_context, params=params, force=force
-                        )
-                    else:
-                        # Remote backend — call translate() on the backend object
-                        raw = backend.translate(originals, context=chunk_context, params=params)
-                        # Wrap raw strings into result dicts matching translate_texts format
-                        core_results = []
-                        for orig, trans in zip(originals, raw):
-                            core_results.append({
-                                "translation":  trans or "",
-                                "status":       "translated" if trans else "failed",
-                                "quality_score": None,
-                                "token_issues": [],
-                                "skipped":      False,
-                            })
+                    raw = backend.translate(originals, context=chunk_context, params=params)
+                    # Wrap raw strings into result dicts matching translate_texts format
+                    core_results = []
+                    for orig, trans in zip(originals, raw):
+                        core_results.append({
+                            "translation":  trans or "",
+                            "status":       "translated" if trans else "failed",
+                            "quality_score": None,
+                            "token_issues": [],
+                            "skipped":      False,
+                        })
 
                     t_now = time.monotonic()
                     elapsed = max(t_now - t_last, 0.001)

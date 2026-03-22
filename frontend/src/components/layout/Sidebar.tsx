@@ -87,9 +87,7 @@ export function Sidebar() {
           <span
             className={cn(
               'text-xs px-2 py-0.5 rounded-full font-medium',
-              mode === 'local'
-                ? 'bg-text-muted/20 text-text-muted'
-                : mode === 'smart'
+              mode === 'smart'
                 ? 'bg-accent/20 text-accent'
                 : 'bg-accent2/20 text-accent2',
             )}

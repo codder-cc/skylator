@@ -402,8 +402,7 @@ def translate_all_worker(job, cfg, dry_run: bool = False, resume: bool = True,
     total = len(mod_folders)
     job.add_log(f"Found {total} mod folders")
 
-    use_filtered = (scope != "all" or status_filter != "all" or force
-                    or (backends and len(backends) > 1))
+    use_filtered = (scope != "all" or status_filter != "all" or force or backends)
 
     for i, folder in enumerate(mod_folders):
         if job.status.value == "cancelled":
@@ -957,7 +956,7 @@ def translate_strings_worker(job, cfg, mod_name: str,
     from translator.web.job_manager import JobManager
     from translator.web.mod_scanner import ModScanner
     from translator.web.global_dict import GlobalTextDict
-    from scripts.esp_engine import translate_texts, prepare_for_ai
+    from scripts.esp_engine import prepare_for_ai
     from translator.context.builder import ContextBuilder
     from translator.models.remote_backend import RemoteServerDeadError
 
@@ -1079,8 +1078,8 @@ def translate_strings_worker(job, cfg, mod_name: str,
             gd.add(s["original"], translation)
             gd_dirty = True
 
-    if backends and len(backends) > 1:
-        # ── Parallel multi-backend path ──────────────────────────────────────
+    if backends:
+        # ── WorkerPool path (1 or more registry backends) ────────────────────
         from translator.web.worker_pool import WorkerPool
         import threading as _threading
 
@@ -1133,40 +1132,9 @@ def translate_strings_worker(job, cfg, mod_name: str,
             context_builder  = _build_chunk_context,
         )
     else:
-        # ── Single-backend sequential path (unchanged behaviour) ─────────────
-        CHUNK = 10
-        done  = 0
-        for chunk_start in range(0, total, CHUNK):
-            if job.status.value == "cancelled":
-                break
-            chunk    = strings[chunk_start:chunk_start + CHUNK]
-            end_idx  = min(done + CHUNK, total)
-            originals = [s["original"] for s in chunk]
-
-            jm.update_progress(job, done, total,
-                               f"Translating {done + 1}–{end_idx} / {total}")
-
-            ai_originals_preview, _ = prepare_for_ai(originals)
-            chunk_context = enrich_context(context,
-                                           build_tm_block(tm_pairs, ai_originals_preview),
-                                           ai_originals_preview)
-
-            try:
-                core_results = translate_texts(originals, context=chunk_context,
-                                               params=params, force=force)
-            except RemoteServerDeadError as exc:
-                job.add_log(f"REMOTE SERVER DEAD at {done}/{total}: {exc}")
-                job.add_log(f"Progress saved: {done} strings translated. Use Resume to continue.")
-                raise
-            except Exception as exc:
-                for s in chunk:
-                    job.add_log(f"ERROR chunk at {s['key']}: {exc}")
-                done += len(chunk)
-                continue
-
-            for s, r in zip(chunk, core_results):
-                done += 1
-                _on_string_done(s, r)
+        # ── No backends configured ───────────────────────────────────────────
+        job.add_log("ERROR: No inference workers registered. Start a worker server and connect it to this host.")
+        raise RuntimeError("No inference backends configured — register a worker first")
 
     if gd and gd_dirty:
         gd.save()

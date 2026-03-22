@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
-type MachinesMode = 'local' | 'smart' | 'custom'
+type MachinesMode = 'smart' | 'custom'
 
 interface MachinesState {
   mode: MachinesMode
@@ -14,7 +14,7 @@ interface MachinesState {
 export const useMachinesStore = create<MachinesState>()(
   persist(
     (set) => ({
-      mode: 'local',
+      mode: 'smart',
       custom: [],
 
       setMode: (mode) => set({ mode }),

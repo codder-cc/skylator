@@ -136,7 +136,7 @@ function BatchModal({ onClose }: BatchModalProps) {
   const [scope, setScope] = useState<BatchScope>('all')
   const [force, setForce] = useState(false)
   const [resume, setResume] = useState(true)
-  const [machines, setMachines] = useState<string[]>(['local'])
+  const [machines, setMachines] = useState<string[]>([])
 
   const { data: workers = [] } = useQuery({
     queryKey: QK.workers(),
@@ -231,15 +231,9 @@ function BatchModal({ onClose }: BatchModalProps) {
         <div className="space-y-2">
           <p className="text-xs font-semibold text-text-muted uppercase tracking-wide">Machines</p>
           <div className="space-y-1.5">
-            <label className="flex items-center gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={machines.includes('local')}
-                onChange={() => toggleMachine('local')}
-                className="w-4 h-4 rounded border-border-subtle bg-bg-card2 accent-accent"
-              />
-              <span className="text-sm text-text-main">Local (this machine)</span>
-            </label>
+            {workers.length === 0 && (
+              <p className="text-xs text-text-muted italic">No workers registered. Start a worker server and connect it to this host.</p>
+            )}
             {workers.map((w) => (
               <label key={w.label} className="flex items-center gap-3 cursor-pointer">
                 <input

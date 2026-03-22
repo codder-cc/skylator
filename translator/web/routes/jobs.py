@@ -242,15 +242,14 @@ def _create_batch_job(jm, cfg, mod_names: list, options: dict):
 
 
 def _resolve_backends(cfg, machines: list | None):
-    """Build a (label, backend_or_None) list from machine labels.
+    """Build a (label, backend) list from machine labels.
 
-    "local" → None (uses translate_texts local pipeline in WorkerPool).
+    All inference goes through registered pull-mode workers — no local pipeline.
     Registered worker → RegistryPullBackend (pull-mode; remote → host only,
       works across subnets without port-forwarding the remote side).
 
     Returns (backends_or_None, skipped_labels):
-      - backends_or_None is None when machines is None or resolves to only 1 entry
-        (single-backend path, no WorkerPool overhead).
+      - backends_or_None is None when machines is None or empty after resolution.
       - skipped_labels is a list of requested machine names that weren't found
         in the registry — callers should surface these in the job log.
     """
@@ -266,24 +265,21 @@ def _resolve_backends(cfg, machines: list | None):
     result  = []
     skipped = []
     for label in machines:
-        if label == "local":
-            result.append(("local", None))
+        worker = registry.get(label) if registry else None
+        if worker:
+            result.append((label, RegistryPullBackend(
+                label       = label,
+                registry    = registry,
+                source_lang = src_lang,
+                target_lang = tgt_lang,
+            )))
         else:
-            worker = registry.get(label) if registry else None
-            if worker:
-                result.append((label, RegistryPullBackend(
-                    label       = label,
-                    registry    = registry,
-                    source_lang = src_lang,
-                    target_lang = tgt_lang,
-                )))
-            else:
-                import logging
-                logging.getLogger(__name__).warning(
-                    "Machine '%s' not found in registry — skipping", label)
-                skipped.append(label)
+            import logging
+            logging.getLogger(__name__).warning(
+                "Machine '%s' not found in registry — skipping", label)
+            skipped.append(label)
 
-    return (result if len(result) > 1 else None), skipped
+    return (result if result else None), skipped
 
 
 def _create_translate_all_job(jm, cfg, options: dict):

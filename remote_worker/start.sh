@@ -57,13 +57,17 @@ fi
 if [ ! -d "$VENV" ]; then
   echo "...  Creating virtual environment with $(python3 --version)..."
   python3 -m venv "$VENV"
-  source "$VENV/bin/activate"
-  pip install --upgrade pip --quiet
-  echo "...  Installing dependencies..."
-  pip install -r requirements.txt --quiet
 fi
 
 source "$VENV/bin/activate"
+
+echo "...  Checking dependencies..."
+pip install --upgrade pip --quiet
+pip install -r requirements.txt --quiet || {
+  echo ""
+  echo "WARN  Some packages failed to install. Retrying with verbose output..."
+  pip install -r requirements.txt
+}
 
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8765}"

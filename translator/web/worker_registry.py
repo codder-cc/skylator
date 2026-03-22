@@ -29,7 +29,8 @@ class WorkerInfo:
     capabilities: list = field(default_factory=list)
     last_seen:    float = 0.0     # time.time() of last heartbeat
     current_task: str = ""        # current string key (for UI)
-    models:       list = field(default_factory=list)  # cached .gguf files (pushed via heartbeat)
+    models:       list = field(default_factory=list)  # cached model files (pushed via heartbeat)
+    stats:        dict = field(default_factory=dict)  # tps_avg, tps_last, queue_depth, jobs_completed
 
     def to_dict(self) -> dict:
         return {
@@ -43,6 +44,7 @@ class WorkerInfo:
             "last_seen":    self.last_seen,
             "current_task": self.current_task,
             "models":       self.models,
+            "stats":        self.stats,
             "alive":        (time.time() - self.last_seen) < WorkerRegistry.HEARTBEAT_TTL,
         }
 
@@ -77,7 +79,8 @@ class WorkerRegistry:
                 self._work_queues[info.label] = queue.Queue()
 
     def heartbeat(self, label: str, models: list | None = None,
-                  model: str | None = None, backend_type: str | None = None) -> bool:
+                  model: str | None = None, backend_type: str | None = None,
+                  stats: dict | None = None) -> bool:
         """Update last_seen and any pushed fields.
         Returns False if unknown (caller should ask remote to re-register)."""
         with self._lock:
@@ -88,6 +91,7 @@ class WorkerRegistry:
             if models       is not None: w.models       = models
             if model        is not None: w.model        = model
             if backend_type is not None: w.backend_type = backend_type
+            if stats        is not None: w.stats        = stats
             return True
 
     def remove(self, label: str) -> None:

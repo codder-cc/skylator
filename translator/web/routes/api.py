@@ -254,10 +254,30 @@ def models_status():
 
 @bp.route("/servers/test")
 def servers_test():
-    """Proxy a health check to a remote server — avoids browser CORS restrictions."""
+    """Test a remote server — uses registry cache for pull-mode workers (no inbound connection).
+    Falls back to direct HTTP only for LAN-discovered servers not in the registry."""
+    import time as _time
     url = request.args.get("url", "").rstrip("/")
     if not url:
         return jsonify({"ok": False, "error": "Missing url parameter"}), 400
+
+    # Registry-first: no inbound connection needed for pull-mode workers
+    registry = current_app.config.get("WORKER_REGISTRY")
+    if registry:
+        from translator.web.worker_registry import WorkerRegistry
+        for w in registry.get_all():
+            if w.url.rstrip("/") == url:
+                alive = (_time.time() - w.last_seen) < WorkerRegistry.HEARTBEAT_TTL
+                return jsonify({
+                    "ok":          alive,
+                    "model_loaded": bool(w.model),
+                    "model":       w.model,
+                    "platform":    w.platform,
+                    "queue_depth": (w.stats or {}).get("queue_depth", 0),
+                    "source":      "registry",
+                })
+
+    # Fallback: direct HTTP (works for same-subnet LAN-scanned servers or legacy mode)
     try:
         import requests as _requests
         r = _requests.get(f"{url}/health", timeout=5.0)
@@ -312,16 +332,22 @@ def remote_config_get():
             "gpu_layers": mc.n_gpu_layers,
         })
 
-    # Remote server info (non-blocking)
+    # Remote server info — read from registry cache (no inbound connection to worker)
+    import time as _time
     remote_info = None
-    if cfg.remote.server_url:
-        try:
-            import requests as _req
-            r = _req.get(f"{cfg.remote.server_url.rstrip('/')}/info", timeout=3.0)
-            if r.status_code == 200:
-                remote_info = r.json()
-        except Exception:
-            pass
+    registry = current_app.config.get("WORKER_REGISTRY")
+    if cfg.remote.server_url and registry:
+        from translator.web.worker_registry import WorkerRegistry
+        for w in registry.get_all():
+            if w.url.rstrip("/") == cfg.remote.server_url.rstrip("/"):
+                if (_time.time() - w.last_seen) < WorkerRegistry.HEARTBEAT_TTL:
+                    remote_info = {
+                        "model":        w.model,
+                        "platform":     w.platform,
+                        "gpu":          w.gpu,
+                        "backend_type": w.backend_type,
+                    }
+                break
 
     return jsonify({
         "ok":           True,
@@ -334,18 +360,28 @@ def remote_config_get():
 
 @bp.route("/remote/stats")
 def remote_stats():
-    """Proxy stats from the configured remote server."""
+    """Return stats for the configured remote server from registry cache (no inbound connection)."""
     cfg = current_app.config.get("TRANSLATOR_CFG")
     if not cfg or not cfg.remote.server_url:
         return jsonify({"ok": False, "error": "No remote server configured"})
-    try:
-        from translator.remote.client import TranslationClient
-        client = TranslationClient(cfg.remote.server_url, timeout=5.0)
-        stats = client.get_stats()
-        client.close()
-        return jsonify({"ok": True, **stats})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)})
+    registry = current_app.config.get("WORKER_REGISTRY")
+    if not registry:
+        return jsonify({"ok": False, "error": "Registry not available"})
+    worker = None
+    for w in registry.get_all():
+        if w.url.rstrip("/") == cfg.remote.server_url.rstrip("/"):
+            worker = w
+            break
+    if not worker:
+        return jsonify({"ok": False, "error": "Worker not registered — start worker with --host-url"})
+    s = worker.stats or {}
+    return jsonify({
+        "ok":            True,
+        "tps_avg":       s.get("tps_avg", 0),
+        "tps_last":      s.get("tps_last", 0),
+        "jobs_completed": s.get("jobs_completed", 0),
+        "queue_depth":   s.get("queue_depth", 0),
+    })
 
 
 @bp.route("/tokens/perf")
@@ -614,7 +650,9 @@ def workers_heartbeat():
     models       = data.get("models")        # list[{name, path, size_mb}] or None
     model        = data.get("model")         # currently loaded model label
     backend_type = data.get("backend_type")  # llamacpp | mlx
-    found = registry.heartbeat(label, models=models, model=model, backend_type=backend_type)
+    stats        = data.get("stats")         # {tps_avg, tps_last, queue_depth, jobs_completed}
+    found = registry.heartbeat(label, models=models, model=model, backend_type=backend_type,
+                               stats=stats)
     if not found:
         return jsonify({"ok": False, "reregister": True}), 404
     return jsonify({"ok": True})
@@ -757,21 +795,8 @@ def workers_list_models(label: str):
     if not worker:
         return jsonify({"error": f"Worker '{label}' not found"}), 404
 
-    # Prefer cached data from heartbeat (no reverse TCP needed)
-    if worker.models:
-        return jsonify({"models": worker.models, "source": "heartbeat"})
-
-    # Fallback: try direct proxy (works only when host can reach worker URL)
-    try:
-        import httpx
-        r = httpx.get(f"{worker.url.rstrip('/')}/models", timeout=5.0)
-        data = r.json()
-        # Cache the result so future calls don't need the reverse connection
-        if registry and isinstance(data.get("models"), list):
-            registry.heartbeat(label, models=data["models"])
-        return jsonify(data), r.status_code
-    except Exception:
-        return jsonify({"models": [], "source": "unavailable"})
+    # Always use heartbeat cache — no reverse TCP to worker needed
+    return jsonify({"models": worker.models, "source": "heartbeat"})
 
 
 @bp.route("/remote/config", methods=["POST"])

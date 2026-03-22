@@ -573,6 +573,12 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
                                "model":        _state.model_label,
                                "backend_type": _state.backend_type,
                                "models":       _get_cached_models(),
+                               "stats": {
+                                   "tps_avg":        _state.tps_avg,
+                                   "tps_last":       _state.tps_last,
+                                   "queue_depth":    _state.queue_depth,
+                                   "jobs_completed": len(_state.completed_order),
+                               },
                            }, timeout=8.0)
             # Re-register if host came back after being down, or if it lost us
             if needs_register or r.status_code == 404:

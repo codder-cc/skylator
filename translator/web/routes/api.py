@@ -882,17 +882,20 @@ def model_transfer_file():
     if session_dir is None:
         return jsonify({"error": "Unknown staging_id"}), 404
 
+    from pathlib import PurePosixPath
     try:
-        target = (session_dir / rel_path).resolve()
-        if not str(target).startswith(str(session_dir.resolve())):
+        # Block path traversal without resolve() — HuggingFace snapshot dirs
+        # use symlinks (files → ../blobs/…), so resolve() escapes session_dir.
+        if ".." in PurePosixPath(rel_path).parts:
             return jsonify({"error": "Forbidden"}), 403
+        target = session_dir / rel_path
     except Exception:
         return jsonify({"error": "Bad path"}), 400
 
     if not target.exists() or not target.is_file():
         return jsonify({"error": "Not found"}), 404
 
-    return _send_file(str(target), as_attachment=False,
+    return _send_file(str(target.resolve()), as_attachment=False,
                       mimetype="application/octet-stream")
 
 

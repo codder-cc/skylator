@@ -240,6 +240,11 @@
                     {% if mod.total_strings > 0 %}/ {{ mod.total_strings }} total{% endif %}
                   </span>
                 {% endif %}
+                <span class="ms-2">
+                  <a href="/config" class="text-decoration-none" title="Configure machines in Settings">
+                    <span class="badge bg-secondary" id="translate-machines-badge" style="font-size:10px">Local</span>
+                  </a>
+                </span>
               </div>
             </div>
             <span class="step-status me-2" id="status-translate">{{ step_badge(pipeline_states.translate) }}</span>
@@ -554,11 +559,12 @@ async function runStep(step, btn) {
   if (step === 'translate') {
     // Step 3: AI translation only — saves .trans.json, does NOT write ESP binary
     stepBusy(btn);
-    const force = !!(document.getElementById('translate-force')?.checked);
+    const force    = !!(document.getElementById('translate-force')?.checked);
+    const machines = await getMachines();
     const r = await POST('/jobs/create', {
       type: 'translate_mod',
       mods: [MOD_NAME],
-      options: { only_esp: true, translate_only: true, force }
+      options: { only_esp: true, translate_only: true, force, machines }
     });
     if (r.job_id) location.assign('/jobs/' + r.job_id);
     else stepDone(btn, 'status-translate', false, r.error);
@@ -595,9 +601,10 @@ async function runStep(step, btn) {
 
 async function resumeTranslate(btn) {
   btn.disabled = true;
+  const machines = await getMachines();
   const r = await POST('/jobs/create', {
     type: 'translate_strings', mods: [MOD_NAME],
-    scope: 'all', options: { force: false }
+    scope: 'all', options: { force: false, machines }
   });
   if (r.job_id) location.assign('/jobs/' + r.job_id);
   else { btn.disabled = false; toast('Resume failed: ' + (r.error || 'unknown'), 'danger'); }
@@ -605,9 +612,10 @@ async function resumeTranslate(btn) {
 
 async function retranslateReview(btn) {
   btn.disabled = true;
+  const machines = await getMachines();
   const r = await POST('/jobs/create', {
     type: 'translate_strings', mods: [MOD_NAME],
-    scope: 'review', options: { force: true }
+    scope: 'review', options: { force: true, machines }
   });
   if (r.job_id) location.assign('/jobs/' + r.job_id);
   else { btn.disabled = false; toast('Failed: ' + (r.error || 'unknown'), 'danger'); }
@@ -645,6 +653,26 @@ async function retranslateReview(btn) {
     } catch (_) {}
   };
   es.onerror = function() { es.close(); };
+})();
+
+// Update machines badge on step 3
+(async function() {
+  const badge = document.getElementById('translate-machines-badge');
+  if (!badge) return;
+  const mode = getMachinesMode();
+  if (mode === 'local') return; // default 'Local' text already set
+  try {
+    const workers = await fetch('/api/workers').then(r => r.json());
+    const alive = Array.isArray(workers) ? workers.filter(w => w.alive).length : 0;
+    if (mode === 'smart') {
+      badge.textContent = `Smart (${alive + 1})`;
+      badge.className = 'badge bg-primary';
+    } else {
+      const custom = getMachinesCustom();
+      badge.textContent = `Custom (${custom.length})`;
+      badge.className = 'badge bg-info text-dark';
+    }
+  } catch (_) {}
 })();
 </script>
 {% endblock %}

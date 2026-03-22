@@ -61,6 +61,70 @@ function _mkToastContainer() {
   return c;
 }
 
+// ── Machine selection (global preference, stored in localStorage) ─────────────
+
+const _MACHINES_MODE_KEY   = 'translator_machines_mode';
+const _MACHINES_CUSTOM_KEY = 'translator_machines_custom';
+
+function getMachinesMode() {
+  return localStorage.getItem(_MACHINES_MODE_KEY) || 'local';
+}
+
+function getMachinesCustom() {
+  try { return JSON.parse(localStorage.getItem(_MACHINES_CUSTOM_KEY) || '["local"]'); }
+  catch { return ['local']; }
+}
+
+/** Returns array of machine labels to pass as `machines` in any job create request. */
+async function getMachines() {
+  const mode = getMachinesMode();
+  if (mode === 'local') return ['local'];
+
+  let alive = ['local'];
+  try {
+    const workers = await fetch('/api/workers').then(r => r.json());
+    if (Array.isArray(workers))
+      alive = ['local', ...workers.filter(w => w.alive).map(w => w.label)];
+  } catch (_) {}
+
+  if (mode === 'smart') return alive;
+
+  // custom: intersect stored labels with currently alive
+  const custom = getMachinesCustom();
+  const result = alive.filter(l => custom.includes(l));
+  return result.length > 0 ? result : ['local'];
+}
+
+/** Update the topbar machines badge (if present on page). */
+async function refreshMachinesBadge() {
+  const badge = document.getElementById('topbar-machines-badge');
+  if (!badge) return;
+  const mode = getMachinesMode();
+  if (mode === 'local') {
+    badge.textContent = 'Local';
+    badge.className = 'badge bg-secondary';
+    badge.title = 'Translation: Local only — click to configure';
+    return;
+  }
+  try {
+    const workers = await fetch('/api/workers').then(r => r.json());
+    const alive = Array.isArray(workers) ? workers.filter(w => w.alive).length : 0;
+    if (mode === 'smart') {
+      badge.textContent = `Smart (${alive + 1})`;
+      badge.className = 'badge bg-primary';
+      badge.title = `Smart mode: Local + ${alive} remote worker(s)`;
+    } else {
+      const custom = getMachinesCustom();
+      badge.textContent = `Custom (${custom.length})`;
+      badge.className = 'badge bg-info text-dark';
+      badge.title = `Custom: ${custom.join(', ')}`;
+    }
+  } catch (_) {
+    badge.textContent = mode.charAt(0).toUpperCase() + mode.slice(1);
+    badge.className = 'badge bg-secondary';
+  }
+}
+
 // ── Job creation helpers ─────────────────────────────────────────────────────
 
 async function startTranslateMod(modName, options = {}) {

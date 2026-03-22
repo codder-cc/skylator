@@ -88,6 +88,51 @@
       </div>
     </div>
 
+    <!-- Translation Machines -->
+    <div class="card mb-3">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <span><i class="bi bi-cpu me-2"></i>Translation Machines</span>
+        <button class="btn btn-sm btn-outline-secondary" onclick="refreshWorkersList()" title="Refresh worker list">
+          <i class="bi bi-arrow-repeat"></i>
+        </button>
+      </div>
+      <div class="card-body">
+        <div class="mb-3">
+          <div class="d-flex flex-column gap-2">
+            <div class="form-check">
+              <input class="form-check-input" type="radio" name="machinesMode" id="mode-local" value="local">
+              <label class="form-check-label" for="mode-local">
+                <i class="bi bi-pc-display me-1"></i><strong>Local only</strong>
+                <div class="text-muted" style="font-size:11px">Always use this PC</div>
+              </label>
+            </div>
+            <div class="form-check">
+              <input class="form-check-input" type="radio" name="machinesMode" id="mode-smart" value="smart">
+              <label class="form-check-label" for="mode-smart">
+                <i class="bi bi-diagram-3 me-1"></i><strong>Smart</strong>
+                <div class="text-muted" style="font-size:11px">All available workers automatically</div>
+              </label>
+            </div>
+            <div class="form-check">
+              <input class="form-check-input" type="radio" name="machinesMode" id="mode-custom" value="custom">
+              <label class="form-check-label" for="mode-custom">
+                <i class="bi bi-sliders me-1"></i><strong>Custom</strong>
+                <div class="text-muted" style="font-size:11px">Pick specific machines</div>
+              </label>
+            </div>
+          </div>
+        </div>
+        <!-- Custom worker checklist — visible only in custom mode -->
+        <div id="custom-machines-list" style="display:none">
+          <hr class="border-subtle my-2">
+          <div id="workers-checklist" style="font-size:12px">
+            <div class="text-muted"><i class="bi bi-hourglass-split me-1"></i>Loading…</div>
+          </div>
+        </div>
+        <div id="machines-status" class="mt-2" style="font-size:11px; color:var(--text-muted)"></div>
+      </div>
+    </div>
+
     <div class="card">
       <div class="card-header"><i class="bi bi-info-circle me-2"></i>Notes</div>
       <div class="card-body text-muted" style="font-size:12px">
@@ -145,5 +190,72 @@ async function testNexus() {
   if (r.ok) toast('Nexus API: Connected', 'success');
   else toast('Nexus: ' + r.error, 'danger');
 }
+
+// ── Translation Machines settings ────────────────────────────────────────────
+(function() {
+  // Init radio to saved mode
+  const mode = getMachinesMode();
+  document.querySelectorAll('input[name="machinesMode"]').forEach(r => {
+    r.checked = (r.value === mode);
+    r.addEventListener('change', onModeChange);
+  });
+  updateCustomVisibility(mode);
+  if (mode !== 'local') loadWorkers();
+
+  function onModeChange(e) {
+    const m = e.target.value;
+    localStorage.setItem('translator_machines_mode', m);
+    updateCustomVisibility(m);
+    if (m !== 'local') loadWorkers();
+    refreshMachinesBadge();
+  }
+
+  function updateCustomVisibility(m) {
+    document.getElementById('custom-machines-list').style.display = m === 'custom' ? '' : 'none';
+  }
+
+  async function loadWorkers() {
+    const checklist = document.getElementById('workers-checklist');
+    const status    = document.getElementById('machines-status');
+    checklist.innerHTML = '<div class="text-muted"><i class="bi bi-hourglass-split me-1"></i>Loading…</div>';
+    try {
+      const workers = await fetch('/api/workers').then(r => r.json());
+      const custom  = getMachinesCustom();
+      const alive   = Array.isArray(workers) ? workers.filter(w => w.alive) : [];
+      const all     = [{ label: 'local', platform: 'Local PC', model: '' }, ...alive];
+
+      checklist.innerHTML = all.map(w => {
+        const chk  = custom.includes(w.label) ? 'checked' : '';
+        const icon = w.label === 'local' ? 'bi-pc-display' : 'bi-globe';
+        const sub  = w.label === 'local' ? 'This PC' : [w.platform, w.model].filter(Boolean).join(' — ');
+        return `<div class="form-check mb-1">
+          <input class="form-check-input worker-check" type="checkbox" value="${escHtml(w.label)}"
+                 id="wc-${escHtml(w.label)}" ${chk}>
+          <label class="form-check-label" for="wc-${escHtml(w.label)}">
+            <i class="bi ${icon} me-1"></i>${escHtml(w.label)}
+            <span class="text-muted ms-1" style="font-size:10px">${escHtml(sub)}</span>
+          </label>
+        </div>`;
+      }).join('');
+
+      status.innerHTML = alive.length === 0
+        ? '<i class="bi bi-exclamation-circle me-1 text-warning"></i>No remote workers connected'
+        : `<i class="bi bi-check-circle me-1 text-success"></i>${alive.length} remote worker${alive.length > 1 ? 's' : ''} alive`;
+
+      checklist.querySelectorAll('.worker-check').forEach(cb =>
+        cb.addEventListener('change', saveCustom));
+    } catch (e) {
+      checklist.innerHTML = '<div class="text-danger">Failed to load workers</div>';
+    }
+  }
+
+  function saveCustom() {
+    const sel = [...document.querySelectorAll('.worker-check:checked')].map(cb => cb.value);
+    localStorage.setItem('translator_machines_custom', JSON.stringify(sel.length ? sel : ['local']));
+    refreshMachinesBadge();
+  }
+
+  window.refreshWorkersList = loadWorkers;
+})();
 </script>
 {% endblock %}

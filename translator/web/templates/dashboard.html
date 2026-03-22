@@ -264,20 +264,15 @@
             </label>
           </div>
         </div>
-        <!-- Machines -->
+        <!-- Machines summary (configured in Settings) -->
         <div class="mb-2">
-          <label class="form-label text-muted fw-semibold" style="font-size:12px">
-            MACHINES
-            <span class="spinner-border spinner-border-sm ms-1 text-muted" id="workers-spinner"></span>
-          </label>
-          <div id="batch-machines">
-            <!-- populated on modal open -->
-            <div class="form-check">
-              <input class="form-check-input" type="checkbox" value="local" id="m-local" checked>
-              <label class="form-check-label" for="m-local" style="font-size:13px">
-                <i class="bi bi-laptop me-1 text-accent"></i>Local (this machine)
-              </label>
-            </div>
+          <label class="form-label text-muted fw-semibold" style="font-size:12px">MACHINES</label>
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <span class="badge bg-secondary" id="batch-machines-badge">Local</span>
+            <span class="text-muted" id="batch-machines-detail" style="font-size:11px"></span>
+            <a href="/config" class="text-muted ms-auto" style="font-size:12px" title="Change machine selection">
+              <i class="bi bi-gear me-1"></i>Settings
+            </a>
           </div>
         </div>
       </div>
@@ -344,43 +339,41 @@ async function resetTokenStats() {
 loadTokenStats();
 setInterval(loadTokenStats, 10000);
 
-// Batch modal — load registered workers when opened
+// Batch modal — show current machines setting when opened
 document.getElementById('batchModal').addEventListener('show.bs.modal', async () => {
-  const spinner   = document.getElementById('workers-spinner');
-  const container = document.getElementById('batch-machines');
-  spinner.style.display = '';
+  const badge  = document.getElementById('batch-machines-badge');
+  const detail = document.getElementById('batch-machines-detail');
+  const mode   = getMachinesMode();
+  if (mode === 'local') {
+    badge.textContent = 'Local only';
+    badge.className = 'badge bg-secondary';
+    detail.textContent = 'This PC only';
+    return;
+  }
   try {
     const workers = await fetch('/api/workers').then(r => r.json());
-    // Keep local checkbox, add remote workers
-    let html = `<div class="form-check">
-      <input class="form-check-input" type="checkbox" value="local" id="m-local" checked>
-      <label class="form-check-label" for="m-local" style="font-size:13px">
-        <i class="bi bi-laptop me-1 text-accent"></i>Local (this machine)
-      </label>
-    </div>`;
-    workers.filter(w => w.alive).forEach((w, i) => {
-      const lbl = escHtml(w.label);
-      const url = escHtml(w.url);
-      const mdl = escHtml(w.model || '?');
-      const gpu = escHtml(w.gpu || '?');
-      html += `<div class="form-check">
-        <input class="form-check-input" type="checkbox" value="${lbl}" id="m-w-${i}" checked>
-        <label class="form-check-label" for="m-w-${i}" style="font-size:13px">
-          <i class="bi bi-hdd-network me-1 text-accent"></i>${lbl}
-          <span class="text-muted" style="font-size:11px">${url} — ${mdl} — ${gpu}</span>
-        </label>
-      </div>`;
-    });
-    container.innerHTML = html;
-  } catch(e) { /* keep local only */ }
-  spinner.style.display = 'none';
+    const alive = Array.isArray(workers) ? workers.filter(w => w.alive) : [];
+    if (mode === 'smart') {
+      badge.textContent = `Smart (${alive.length + 1})`;
+      badge.className = 'badge bg-primary';
+      detail.textContent = ['Local', ...alive.map(w => w.label)].join(', ');
+    } else {
+      const custom = getMachinesCustom();
+      badge.textContent = `Custom (${custom.length})`;
+      badge.className = 'badge bg-info text-dark';
+      detail.textContent = custom.join(', ');
+    }
+  } catch (_) {
+    badge.textContent = mode;
+    detail.textContent = '';
+  }
 });
 
 async function startBatch() {
   const scope    = document.querySelector('input[name="batchScope"]:checked')?.value || 'all';
   const force    = document.getElementById('batch-force').checked;
   const resume   = document.getElementById('batch-resume').checked;
-  const machines = [...document.querySelectorAll('#batch-machines input:checked')].map(el => el.value);
+  const machines = await getMachines();
   const btn      = document.getElementById('batch-start-btn');
   btn.disabled   = true;
   btn.innerHTML  = '<span class="spinner-border spinner-border-sm me-1"></span>Starting...';
@@ -389,7 +382,7 @@ async function startBatch() {
       resume, force,
       scope:         scope === 'pending' ? 'all' : scope,
       status_filter: scope === 'pending' ? 'pending' : scope === 'review' ? 'review' : 'all',
-      machines:      machines.length > 0 ? machines : undefined,
+      machines,
     });
     if (id) {
       bootstrap.Modal.getInstance(document.getElementById('batchModal')).hide();

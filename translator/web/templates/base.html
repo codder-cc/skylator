@@ -84,6 +84,10 @@
     <div class="topbar-title">{% block page_title %}{% endblock %}</div>
     <div class="d-flex align-items-center gap-3">
       <span class="badge bg-secondary" id="topbar-status">Ready</span>
+      <a href="{{ url_for('config_rt.config_page') }}" class="text-decoration-none"
+         title="Translation Machines — click to configure">
+        <span class="badge bg-secondary" id="topbar-machines-badge">Local</span>
+      </a>
       <a href="{{ url_for('jobs.job_list') }}" class="btn btn-sm btn-outline-secondary">
         <i class="bi bi-activity"></i> Jobs
       </a>
@@ -146,6 +150,9 @@ function pollJobs() {
 }
 pollJobs();
 setInterval(pollJobs, 3000);
+
+// Machines badge (uses getMachines from app.js — loaded after this block)
+window.addEventListener('load', () => { if (typeof refreshMachinesBadge === 'function') refreshMachinesBadge(); });
 </script>
 {% block scripts %}{% endblock %}
 </body>

@@ -81,5 +81,11 @@ echo "Docs:   http://localhost:$PORT/docs"
 [ -n "$HOST_URL" ] && echo "Host:   $HOST_URL  (pull-mode)"
 echo ""
 
+# mDNS is only useful for auto-discovery without a known host.
+# When connecting to an explicit host, disable it to avoid zeroconf errors
+# (e.g. VPN interfaces that don't support multicast).
+MDNS_FLAG=""
+[ -n "$HOST_URL" ] && MDNS_FLAG="--no-mdns"
+
 exec python server.py --host "$HOST" --port "$PORT" \
-  ${HOST_URL:+--host-url "$HOST_URL"} "$@"
+  ${HOST_URL:+--host-url "$HOST_URL"} $MDNS_FLAG "$@"

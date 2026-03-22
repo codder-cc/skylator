@@ -822,6 +822,8 @@ def translate_strings_worker(job, cfg, mod_name: str,
             strings = [s for s in strings if s["key"].startswith("bsa-mcm:")]
         elif scope == "swf":
             strings = [s for s in strings if s["key"].startswith("swf:")]
+        elif scope == "review":
+            strings = [s for s in strings if s.get("status") == "needs_review"]
 
         # Only untranslated strings (skipped when force=True)
         if not force:

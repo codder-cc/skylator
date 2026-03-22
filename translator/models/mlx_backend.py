@@ -66,15 +66,26 @@ class MlxBackend(BaseBackend):
             )
 
         log.info("MlxBackend: loading %s via MLX (Apple Silicon)...", self._repo_id)
-        # Download to project cache dir if specified, then load from local path
+        # Download to project cache dir if specified, then load from local path.
+        # Try local_files_only first — avoids SSL/network issues when model is already cached
+        # (e.g. corporate VPN with SSL inspection blocks HuggingFace Hub TLS handshake).
         load_path = self._repo_id
         if self._local_cache_dir:
             from huggingface_hub import snapshot_download
-            load_path = snapshot_download(
-                self._repo_id,
-                cache_dir=str(self._local_cache_dir),
-            )
-            log.info("MlxBackend: cached to %s", load_path)
+            try:
+                load_path = snapshot_download(
+                    self._repo_id,
+                    cache_dir=str(self._local_cache_dir),
+                    local_files_only=True,
+                )
+                log.info("MlxBackend: loaded from local cache %s", load_path)
+            except Exception:
+                log.info("MlxBackend: not in local cache — downloading from Hub...")
+                load_path = snapshot_download(
+                    self._repo_id,
+                    cache_dir=str(self._local_cache_dir),
+                )
+                log.info("MlxBackend: downloaded to %s", load_path)
         self._model, self._tokenizer = mlx_lm.load(load_path)
         self._state = ModelState.LOADED
         log.info("MlxBackend: model loaded into unified memory")

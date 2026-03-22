@@ -8,6 +8,18 @@ log = logging.getLogger(__name__)
 bp = Blueprint("api", __name__, url_prefix="/api")
 
 
+@bp.route("/setup-reports")
+def setup_reports():
+    reports = current_app.config.get("SETUP_REPORTS", [])
+    return jsonify(reports)
+
+
+@bp.route("/setup-reports/clear", methods=["POST"])
+def clear_setup_reports():
+    current_app.config["SETUP_REPORTS"] = []
+    return jsonify({"ok": True})
+
+
 @bp.route("/stats")
 def stats():
     scanner = current_app.config["SCANNER"]

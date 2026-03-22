@@ -426,6 +426,29 @@ python server.py --no-mdns                          # disable mDNS announcement<
     </div>
   </div>
 </div>
+<!-- Setup Reports -->
+<div class="card mt-3" id="setup-reports-card">
+  <div class="card-header d-flex align-items-center justify-content-between">
+    <span><i class="bi bi-terminal me-2 text-accent"></i>Remote Setup Reports
+      <span class="badge bg-danger ms-2" id="setup-error-badge" style="display:none">0 errors</span>
+    </span>
+    <div class="d-flex gap-2 align-items-center">
+      <span class="text-muted" style="font-size:11px">Received when a remote runs
+        <code>curl HOST/setup.sh | bash</code></span>
+      <button class="btn btn-sm btn-outline-secondary" onclick="loadSetupReports()">
+        <i class="bi bi-arrow-repeat"></i>
+      </button>
+      <button class="btn btn-sm btn-outline-danger" onclick="clearSetupReports()">
+        <i class="bi bi-trash me-1"></i>Clear
+      </button>
+    </div>
+  </div>
+  <div class="card-body p-0" id="setup-reports-body">
+    <div class="text-muted p-3" style="font-size:13px">
+      <i class="bi bi-hourglass-split me-1"></i>Loading…
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -914,5 +937,57 @@ function copyUrl(url) {
     toast(`URL: ${url}`, 'info');
   });
 }
+
+// ── Setup Reports ─────────────────────────────────────────────────────────────
+
+async function loadSetupReports() {
+  const body  = document.getElementById('setup-reports-body');
+  const badge = document.getElementById('setup-error-badge');
+  try {
+    const reports = await fetch('/api/setup-reports').then(r => r.json());
+    if (!reports.length) {
+      body.innerHTML = '<div class="text-muted p-3" style="font-size:13px">No reports yet — run <code>curl HOST/setup.sh | bash</code> on a remote machine.</div>';
+      badge.style.display = 'none';
+      return;
+    }
+    const errors = reports.filter(r => r.status === 'error').length;
+    if (errors > 0) {
+      badge.textContent = errors + ' error' + (errors > 1 ? 's' : '');
+      badge.style.display = '';
+    } else {
+      badge.style.display = 'none';
+    }
+    body.innerHTML = reports.map((r, i) => {
+      const ts   = new Date(r.ts * 1000).toLocaleString();
+      const ok   = r.status === 'success';
+      const icon = ok ? 'check-circle-fill text-success' : 'x-circle-fill text-danger';
+      const lines   = escHtml(r.log || '').split('\n');
+      const preview = lines.slice(0, 5).join('\n');
+      const rest    = lines.slice(5).join('\n');
+      return `<div class="p-3 border-bottom border-subtle">
+        <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
+          <i class="bi bi-${icon}"></i>
+          <strong style="font-size:13px">${escHtml(r.machine)}</strong>
+          <span class="text-muted" style="font-size:12px">${escHtml(r.os)}</span>
+          <span class="badge ${ok ? 'bg-success' : 'bg-danger'}">${escHtml(r.status)}</span>
+          ${r.exit_code !== '0' && r.exit_code !== 0 ? `<span class="badge bg-secondary">exit&nbsp;${escHtml(String(r.exit_code))}</span>` : ''}
+          <span class="text-muted ms-auto" style="font-size:11px">${ts}</span>
+        </div>
+        ${r.log ? `<pre class="mt-2 mb-0 p-2 rounded" style="font-size:10px;max-height:200px;overflow-y:auto;background:rgba(0,0,0,.35);color:#ccc;white-space:pre-wrap">${preview}${rest ? `\n<span id="sr-more-${i}" style="display:none">${rest}</span><a href="#" style="font-size:11px;color:#88aaff" onclick="document.getElementById('sr-more-${i}').style.display='';this.remove();return false">… show full log</a>` : ''}</pre>` : ''}
+      </div>`;
+    }).join('');
+  } catch (e) {
+    body.innerHTML = '<div class="text-danger p-3">Failed to load reports</div>';
+  }
+}
+
+async function clearSetupReports() {
+  await fetch('/api/setup-reports/clear', { method: 'POST' });
+  loadSetupReports();
+  toast('Setup reports cleared', 'success');
+}
+
+loadSetupReports();
+setInterval(loadSetupReports, 10000);
 </script>
 {% endblock %}

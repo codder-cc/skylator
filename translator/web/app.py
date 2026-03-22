@@ -87,10 +87,35 @@ def create_app(config_path: Path | None = None) -> Flask:
     # ── Init worker registry (reverse-connected remote workers) ─────────────
     from translator.web.worker_registry import WorkerRegistry
     app.config["WORKER_REGISTRY"] = WorkerRegistry()
+    app.config["SETUP_REPORTS"]   = []   # in-memory list of remote setup reports
 
     # ── Register blueprints ─────────────────────────────────────────────────
     from translator.web.routes import register_routes
     register_routes(app)
+
+    # ── Remote worker setup report receiver ────────────────────────────────
+    @app.route("/setup-report", methods=["POST"])
+    def setup_report():
+        import time as _time
+        reports = app.config["SETUP_REPORTS"]
+        report = {
+            "ts":        _time.time(),
+            "status":    flask_request.form.get("status", "unknown"),
+            "exit_code": flask_request.form.get("exit_code", "?"),
+            "machine":   flask_request.form.get("machine", "unknown"),
+            "os":        flask_request.form.get("os", "unknown"),
+            "log":       "",
+        }
+        f = flask_request.files.get("log")
+        if f:
+            report["log"] = f.read().decode("utf-8", errors="replace")
+        reports.insert(0, report)
+        if len(reports) > 50:
+            del reports[50:]
+        lvl = logging.ERROR if report["status"] == "error" else logging.INFO
+        log.log(lvl, "Setup report from %s (%s): status=%s exit=%s",
+                report["machine"], report["os"], report["status"], report["exit_code"])
+        return jsonify({"ok": True})
 
     # ── Remote worker bootstrap script ─────────────────────────────────────
     @app.route("/setup.sh")
@@ -113,6 +138,30 @@ set -e
 HOST_URL="{host_url}"
 REPO_URL="{repo_url}"
 INSTALL_DIR="$HOME/Documents/skylator"
+LOG_FILE="$(mktemp /tmp/skylator-setup-XXXXXX.log)"
+
+# -- Capture all output to log file AND terminal ------------------------------
+exec > >(tee "$LOG_FILE") 2>&1
+
+# -- Report to host on exit (success or error) --------------------------------
+_on_exit() {{
+  local code=$?
+  local status="success"
+  [ "$code" -ne 0 ] && status="error"
+  echo ""
+  echo "Sending $status report to host..."
+  curl -s -m 10 -X POST "$HOST_URL/setup-report" \
+    -F "status=$status" \
+    -F "exit_code=$code" \
+    -F "machine=$(hostname 2>/dev/null || echo unknown)" \
+    -F "os=$(uname -s)/$(uname -m)" \
+    -F "log=@$LOG_FILE;type=text/plain" \
+    >/dev/null 2>&1 \
+    && echo "Report delivered to $HOST_URL/setup-report" \
+    || echo "(host unreachable -- report not delivered)"
+  rm -f "$LOG_FILE"
+}}
+trap '_on_exit' EXIT
 
 echo ""
 echo "========================================================"

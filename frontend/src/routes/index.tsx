@@ -194,11 +194,24 @@ function BatchModal({ onClose }: BatchModalProps) {
 function DashboardPage() {
   const [showBatchModal, setShowBatchModal] = useState(false)
 
-  const { data: stats } = useQuery({
+  const { data: rawStats } = useQuery({
     queryKey: QK.stats(),
     queryFn: statsApi.get,
     refetchInterval: 15_000,
   })
+  // Normalise field names — backend was renamed in a deploy; accept both old and new keys
+  const stats = rawStats
+    ? (() => {
+        const r = rawStats as unknown as Record<string, number>
+        return {
+          ...rawStats,
+          mods_translated:    rawStats.mods_translated    ?? r['mods_done']  ?? 0,
+          translated_strings: rawStats.translated_strings ?? r['translated'] ?? 0,
+          pending_strings:    rawStats.pending_strings    ?? r['pending']    ?? 0,
+          pct_complete:       rawStats.pct_complete       ?? r['pct']        ?? 0,
+        }
+      })()
+    : undefined
 
   return (
     <div className="space-y-6">

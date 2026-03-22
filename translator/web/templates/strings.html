@@ -134,6 +134,12 @@
           <label class="form-check-label small" for="ai-thinking">Thinking</label>
         </div>
       </div>
+      <div class="col-auto">
+        <div class="form-check form-switch mb-1">
+          <input class="form-check-input" type="checkbox" id="ai-force" role="switch">
+          <label class="form-check-label small text-warning" for="ai-force">Force re-translate</label>
+        </div>
+      </div>
       <div class="col-12">
         <label class="form-label mb-1 small text-muted">System prompt override
           <span class="text-muted fw-normal">(empty = use default)</span>
@@ -507,11 +513,13 @@ async function translateAll() {
   const btn = document.getElementById('btn-translate-all');
   btn.disabled = true;
 
+  const force = !!(document.getElementById('ai-force')?.checked);
   const r = await POST('/jobs/create', {
-    type:   'translate_strings',
-    mods:   [MOD_NAME],
-    scope:  CURR_SCOPE,
-    params: getAiParams(),
+    type:    'translate_strings',
+    mods:    [MOD_NAME],
+    scope:   CURR_SCOPE,
+    params:  getAiParams(),
+    options: { force },
   });
 
   if (!r.job_id) {

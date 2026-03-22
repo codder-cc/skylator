@@ -247,7 +247,8 @@ def translate_mod_worker(job, cfg, mod_name: str,
                          dry_run: bool = False,
                          only_mcm: bool = False,
                          only_esp: bool = False,
-                         translate_only: bool = False):
+                         translate_only: bool = False,
+                         force: bool = False):
     """Translate a single mod (MCM + ESP).
     translate_only=True: run AI translation, save .trans.json, do NOT write ESP binary.
     """
@@ -297,7 +298,7 @@ def translate_mod_worker(job, cfg, mod_name: str,
                 try:
                     cmd_translate(esp_path, esp_path, mod_dir, dry_run=dry_run,
                                   progress_cb=_make_progress(i, total, esp_path.name),
-                                  apply_esp=not translate_only)
+                                  apply_esp=not translate_only, force=force)
                     job.add_log(f"  OK: {esp_path.name}")
                 except Exception as exc:
                     job.add_log(f"  ERROR {esp_path.name}: {exc}")
@@ -765,7 +766,7 @@ def validate_translations_worker(job, cfg, mod_name: str):
 def translate_strings_worker(job, cfg, mod_name: str,
                              keys: list | None = None,
                              scope: str = "all",
-                             params=None):
+                             params=None, force: bool = False):
     """
     Translate strings for a mod with real-time per-string SSE updates.
     Processes strings in chunks of 10 for efficient batching.
@@ -821,16 +822,18 @@ def translate_strings_worker(job, cfg, mod_name: str,
         elif scope == "swf":
             strings = [s for s in strings if s["key"].startswith("swf:")]
 
-        # Only untranslated, non-localized strings
-        strings = [s for s in strings
-                   if not s["translation"]
-                   and not s["original"].startswith("[LOC:")]
+        # Only untranslated strings (skipped when force=True)
+        if not force:
+            strings = [s for s in strings if not s["translation"]]
+        strings = [s for s in strings if not s["original"].startswith("[LOC:")]
 
     total = len(strings)
     if total == 0:
         job.result = "No strings to translate"
         return
 
+    if force:
+        job.add_log(f"Force mode: re-translating all {total} strings (bypassing cache)")
     jm.update_progress(job, 0, total, f"Building context for {mod_name}...")
     mod_folder = cfg.paths.mods_dir / mod_name
     context = ContextBuilder().get_mod_context(mod_folder, force=False)
@@ -891,7 +894,7 @@ def translate_strings_worker(job, cfg, mod_name: str,
 
         # Core pipeline: mask → AI → unmask → validate → quality_score → status
         try:
-            core_results = translate_texts(originals, context=chunk_context, params=params)
+            core_results = translate_texts(originals, context=chunk_context, params=params, force=force)
         except Exception as exc:
             for s in chunk:
                 job.add_log(f"ERROR chunk at {s['key']}: {exc}")

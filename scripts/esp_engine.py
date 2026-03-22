@@ -586,7 +586,7 @@ def translate_batch(texts: list, context: str = '', params=None, progress_cb=Non
         return _tb(texts, context, params=params, progress_cb=progress_cb, force=force)
     except Exception:
         log.exception("translate_batch error")
-        return list(texts)
+        return [""] * len(texts)
 
 
 def translate_texts(texts: list[str], context: str = '', params=None, force: bool = False,
@@ -718,7 +718,7 @@ def quality_score(original: str, translation: str) -> int:
 
 
 def translate_strings(strings: list, progress_path: Path = None, context: str = '',
-                      progress_cb=None) -> list:
+                      progress_cb=None, force: bool = False) -> list:
     """
     Translate all strings in one pipeline call (model loads once, not per batch).
     progress_cb(done, total) called after translation completes.
@@ -735,8 +735,8 @@ def translate_strings(strings: list, progress_path: Path = None, context: str = 
             pass
 
     to_do    = [(i, s) for i, s in enumerate(strings)
-                if needs_translation(s['text']) and not s.get('translation')]
-    uncached = [(i, s) for i, s in to_do if s['text'] not in done]
+                if needs_translation(s['text']) and (force or not s.get('translation'))]
+    uncached = [(i, s) for i, s in to_do if force or s['text'] not in done]
 
     log.info("Strings needing translation: %d / %d  (%d cached)",
              len(to_do), len(strings), len(to_do) - len(uncached))
@@ -754,7 +754,7 @@ def translate_strings(strings: list, progress_path: Path = None, context: str = 
             if progress_cb:
                 progress_cb(cached_count + batch_done, total_todo)
 
-        new_results = translate_texts(texts_full, context=context, progress_cb=_inner_cb)
+        new_results = translate_texts(texts_full, context=context, progress_cb=_inner_cb, force=force)
         for (i, s), r in zip(uncached, new_results):
             if not r["skipped"]:
                 done[s['text']] = r["translation"]
@@ -891,7 +891,8 @@ def _backup_esp(esp_path: Path, out_path: Path) -> None:
 
 
 def cmd_translate(esp_path: Path, out_path: Path, mod_folder: Path = None,
-                  dry_run: bool = False, progress_cb=None, apply_esp: bool = True):
+                  dry_run: bool = False, progress_cb=None, apply_esp: bool = True,
+                  force: bool = False):
     """
     Translate an ESP.
     apply_esp=True  → full pipeline: AI translate + rewrite ESP binary (default).
@@ -925,7 +926,7 @@ def cmd_translate(esp_path: Path, out_path: Path, mod_folder: Path = None,
 
     log.info("Starting translation of %s ...", esp_path.name)
     strings = translate_strings(strings, progress_path=json_path, context=context,
-                                progress_cb=progress_cb)
+                                progress_cb=progress_cb, force=force)
 
     done = sum(1 for s in strings if s.get('translation'))
     log.info("Done: %d / %d strings translated in %s", done, len(strings), esp_path.name)

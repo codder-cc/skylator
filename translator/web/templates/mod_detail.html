@@ -243,6 +243,10 @@
               </div>
             </div>
             <span class="step-status me-2" id="status-translate">{{ step_badge(pipeline_states.translate) }}</span>
+            <div class="form-check form-switch me-2 mb-0">
+              <input class="form-check-input" type="checkbox" id="translate-force" role="switch" title="Force re-translate already-cached strings">
+              <label class="form-check-label small text-warning" for="translate-force">Force</label>
+            </div>
             <button class="btn btn-sm btn-primary" id="btn-translate" onclick="runStep('translate', this)">Run</button>
           </div>
 
@@ -525,10 +529,11 @@ async function runStep(step, btn) {
   if (step === 'translate') {
     // Step 3: AI translation only — saves .trans.json, does NOT write ESP binary
     stepBusy(btn);
+    const force = !!(document.getElementById('translate-force')?.checked);
     const r = await POST('/jobs/create', {
       type: 'translate_mod',
       mods: [MOD_NAME],
-      options: { only_esp: true, translate_only: true }
+      options: { only_esp: true, translate_only: true, force }
     });
     if (r.job_id) location.assign('/jobs/' + r.job_id);
     else stepDone(btn, 'status-translate', false, r.error);

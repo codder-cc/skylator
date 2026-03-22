@@ -118,8 +118,8 @@ class RemoteBackend(BaseBackend):
                 log.info("RemoteBackend: batch %d/%d translated",
                          i // batch_size + 1, num_batches)
             except Exception:
-                log.exception("RemoteBackend: batch %d failed — returning originals", i)
-                results.extend(batch)
+                log.exception("RemoteBackend: batch %d failed — skipping (empty strings)", i)
+                results.extend([""] * len(batch))
 
             if progress_cb:
                 progress_cb(min(i + batch_size, len(texts)), len(texts))

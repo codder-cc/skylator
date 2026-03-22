@@ -54,6 +54,8 @@ def load_config(path) -> _Cfg:
     m    = ens.get("model_b", {})
     t    = raw.get("translation", {})
 
+    cache_dir = raw.get("model_cache_dir") or str(MODELS_CACHE)
+
     model_b = ModelConfig(
         repo_id            = m.get("repo_id", ""),
         local_dir_name     = m.get("local_dir_name", ""),
@@ -69,6 +71,6 @@ def load_config(path) -> _Cfg:
         flash_attn         = m.get("flash_attn", False),
         source_lang        = t.get("source_lang", "English"),
         target_lang        = t.get("target_lang", "Russian"),
-        local_cache_dir    = str(MODELS_CACHE),
+        local_cache_dir    = cache_dir,
     )
     return _Cfg(model_b, ens.get("backend_type", "llamacpp"))

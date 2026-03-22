@@ -14,20 +14,12 @@ fi
 
 source "$VENV/bin/activate"
 
-CONFIG="${CONFIG:-server_config.yaml}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8765}"
 
-if [ ! -f "$CONFIG" ]; then
-  echo "Config not found: $CONFIG"
-  echo "Copy and edit server_config.yaml or set CONFIG= env var."
-  exit 1
-fi
-
 echo "=== Skylator Translation Server ==="
-echo "Config: $CONFIG"
 echo "URL:    http://$HOST:$PORT"
 echo "Docs:   http://localhost:$PORT/docs"
 echo ""
 
-exec python server.py --config "$CONFIG" --host "$HOST" --port "$PORT" "$@"
+exec python remote_worker/server.py --host "$HOST" --port "$PORT" "$@"

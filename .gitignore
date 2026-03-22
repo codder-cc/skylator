@@ -29,6 +29,8 @@ cache/
 
 # ── Model files (GGUF weights — large binaries, never commit) ─────────────────
 /models/
+/remote_worker/models_cache/
+/remote_worker/server_config.yaml
 *.gguf
 *.safetensors
 

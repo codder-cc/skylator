@@ -67,6 +67,12 @@ def main():
         help="Disable mDNS service announcement",
     )
     parser.add_argument(
+        "--host-url", default="",
+        help="Host Flask URL for reverse registration (e.g. http://192.168.1.100:5000). "
+             "When set, this server will announce itself to the host on startup "
+             "and send heartbeats every 15 s.",
+    )
+    parser.add_argument(
         "--log-level", default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
     )
@@ -132,6 +138,7 @@ def main():
         mdns_enabled    = not args.no_mdns,
         mdns_host       = args.host if args.host != "0.0.0.0" else "",
         mdns_port       = args.port,
+        host_url        = args.host_url.strip(),
     )
 
     print(f"\n{'=' * 60}")
@@ -139,6 +146,8 @@ def main():
     print(f"  http://{args.host}:{args.port}")
     print(f"  Docs: http://{args.host}:{args.port}/docs")
     print(f"  mDNS: {'disabled' if args.no_mdns else 'enabled (_skylator._tcp.local.)'}")
+    if args.host_url:
+        print(f"  Host: {args.host_url} (reverse registration)")
     print(f"{'=' * 60}\n")
 
     import uvicorn

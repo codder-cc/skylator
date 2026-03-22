@@ -84,6 +84,10 @@ def create_app(config_path: Path | None = None) -> Flask:
     jm.set_persist_path(jobs_file)
     app.config["JOB_MANAGER"] = jm
 
+    # ── Init worker registry (reverse-connected remote workers) ─────────────
+    from translator.web.worker_registry import WorkerRegistry
+    app.config["WORKER_REGISTRY"] = WorkerRegistry()
+
     # ── Register blueprints ─────────────────────────────────────────────────
     from translator.web.routes import register_routes
     register_routes(app)

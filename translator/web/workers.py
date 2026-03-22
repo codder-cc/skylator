@@ -309,8 +309,17 @@ def translate_mod_worker(job, cfg, mod_name: str,
     job.result = f"Done: {mod_name}"
 
 
-def translate_all_worker(job, cfg, dry_run: bool = False, resume: bool = True):
-    """Translate all mods in mods_dir."""
+def translate_all_worker(job, cfg, dry_run: bool = False, resume: bool = True,
+                         scope: str = "all", status_filter: str = "all",
+                         force: bool = False, backends=None):
+    """Translate all mods in mods_dir.
+
+    scope:         "all" | "esp" | "mcm" | "bsa" | "swf" | "review"
+    status_filter: "all" | "pending" | "review"
+    force:         bypass translation cache (re-translate already-translated strings)
+    backends:      list of (label, backend) tuples for parallel translation;
+                   None means use single default backend
+    """
     from translator.web.job_manager import JobManager
     jm = JobManager.get()
 
@@ -326,6 +335,9 @@ def translate_all_worker(job, cfg, dry_run: bool = False, resume: bool = True):
     total = len(mod_folders)
     job.add_log(f"Found {total} mod folders")
 
+    use_filtered = (scope != "all" or status_filter != "all" or force
+                    or (backends and len(backends) > 1))
+
     for i, folder in enumerate(mod_folders):
         if job.status.value == "cancelled":
             return
@@ -337,7 +349,14 @@ def translate_all_worker(job, cfg, dry_run: bool = False, resume: bool = True):
         job.add_log(f"\n=== [{i+1}/{total}] {folder.name} ===")
 
         try:
-            translate_mod_worker(job, cfg, folder.name, dry_run=dry_run)
+            if use_filtered:
+                _translate_mod_filtered(job, cfg, folder.name,
+                                        scope=scope, status_filter=status_filter,
+                                        force=force, dry_run=dry_run,
+                                        backends=backends)
+            else:
+                translate_mod_worker(job, cfg, folder.name, dry_run=dry_run)
+
             if not dry_run:
                 with open(done_file, "a", encoding="utf-8") as f:
                     f.write(folder.name + "\n")
@@ -347,6 +366,30 @@ def translate_all_worker(job, cfg, dry_run: bool = False, resume: bool = True):
 
     jm.update_progress(job, total, total, "All mods done")
     job.result = f"Translated {total - len(done)} mods"
+
+
+def _translate_mod_filtered(job, cfg, mod_name: str, scope: str = "all",
+                             status_filter: str = "all", force: bool = False,
+                             dry_run: bool = False, backends=None):
+    """Helper: translate a mod using translate_strings_worker with filter options.
+
+    Used by translate_all_worker when scope/status_filter/force/backends are set.
+    Maps status_filter → scope+force adjustments expected by translate_strings_worker.
+    """
+    eff_scope = scope
+    eff_force = force
+
+    # status_filter overrides
+    if status_filter == "review":
+        eff_scope = "review"
+        eff_force = True     # review strings already have a translation to replace
+    elif status_filter == "pending":
+        eff_force = False    # only untranslated (force=False naturally skips translated)
+
+    if not dry_run:
+        translate_strings_worker(job, cfg, mod_name,
+                                 scope=eff_scope, params=None,
+                                 force=eff_force, backends=backends)
 
 
 def translate_esp_worker(job, cfg, esp_path: str, dry_run: bool = False):
@@ -766,13 +809,16 @@ def validate_translations_worker(job, cfg, mod_name: str):
 def translate_strings_worker(job, cfg, mod_name: str,
                              keys: list | None = None,
                              scope: str = "all",
-                             params=None, force: bool = False):
+                             params=None, force: bool = False,
+                             backends=None):
     """
     Translate strings for a mod with real-time per-string SSE updates.
     Processes strings in chunks of 10 for efficient batching.
-    keys:  if provided, translate only those specific cache key strings.
-    scope: "all" | "esp" | "mcm" | "bsa" | "swf" — limits which source
-           types are included when keys is None.
+    keys:     if provided, translate only those specific cache key strings.
+    scope:    "all" | "esp" | "mcm" | "bsa" | "swf" | "review"
+    force:    bypass cache (re-translate already-translated strings)
+    backends: list of (label, backend) tuples; when >1, uses WorkerPool for
+              parallel multi-machine translation.
     """
     from translator.web.job_manager import JobManager
     from translator.web.mod_scanner import ModScanner
@@ -877,54 +923,116 @@ def translate_strings_worker(job, cfg, mod_name: str,
             return
 
     gd_dirty = False
-    CHUNK = 10
-    done  = 0
-    for chunk_start in range(0, total, CHUNK):
-        if job.status.value == "cancelled":
-            break
-        chunk    = strings[chunk_start:chunk_start + CHUNK]
-        end_idx  = min(done + CHUNK, total)
-        originals = [s["original"] for s in chunk]
 
-        jm.update_progress(job, done, total,
-                           f"Translating {done + 1}–{end_idx} / {total}")
+    def _on_string_done(s: dict, r: dict) -> None:
+        """Called by both single and multi-backend paths after each string."""
+        nonlocal gd_dirty
+        if r.get("skipped") or not r.get("translation"):
+            return
+        translation = r["translation"]
+        if r.get("token_issues"):
+            job.add_log(f"Token mismatch [{s['key']}]: {'; '.join(r['token_issues'])}")
+        save_translation(cfg.paths.mods_dir, mod_name,
+                         cfg.paths.translation_cache,
+                         s["esp"], s["key"], translation, cfg=cfg,
+                         quality_score=r.get("quality_score"),
+                         status=r.get("status"))
+        jm.add_string_update(job, s["key"], s["esp"],
+                             translation, r.get("status", "translated"),
+                             r.get("quality_score"))
+        tm_pairs[s["original"]] = translation
+        if gd:
+            gd.add(s["original"], translation)
+            gd_dirty = True
 
-        # Enrich context with relevant terms + TM for this chunk
-        # (prepare_for_ai here only for masked text needed by enrich_context)
-        ai_originals_preview, _ = prepare_for_ai(originals)
-        chunk_context = enrich_context(context, build_tm_block(tm_pairs, ai_originals_preview),
-                                       ai_originals_preview)
+    if backends and len(backends) > 1:
+        # ── Parallel multi-backend path ──────────────────────────────────────
+        from translator.web.worker_pool import WorkerPool
+        import threading as _threading
 
-        # Core pipeline: mask → AI → unmask → validate → quality_score → status
-        try:
-            core_results = translate_texts(originals, context=chunk_context, params=params, force=force)
-        except RemoteServerDeadError as exc:
-            job.add_log(f"REMOTE SERVER DEAD at {done}/{total}: {exc}")
-            job.add_log(f"Progress saved: {done} strings translated. Use Resume to continue.")
-            raise  # JobManager._worker() will set status=FAILED with this message
-        except Exception as exc:
-            for s in chunk:
-                job.add_log(f"ERROR chunk at {s['key']}: {exc}")
-            done += len(chunk)
-            continue
+        _tm_lock = _threading.Lock()
 
-        for s, r in zip(chunk, core_results):
-            done += 1
-            if r["skipped"] or not r["translation"]:
-                continue
+        def _on_status(statuses) -> None:
+            job._worker_statuses = {st.label: st.to_dict() for st in statuses}
+
+        def _build_chunk_context(originals: list[str]) -> str:
+            """Build TM-enriched context for a chunk (called from worker threads)."""
+            with _tm_lock:
+                tm_snapshot = dict(tm_pairs)
+            ai_preview, _ = prepare_for_ai(originals)
+            return enrich_context(context, build_tm_block(tm_snapshot, ai_preview), ai_preview)
+
+        def _on_string_done_safe(s: dict, r: dict) -> None:
+            # Like _on_string_done but guards tm_pairs writes with _tm_lock so
+            # _build_chunk_context gets a consistent snapshot from other threads.
+            nonlocal gd_dirty
+            if r.get("skipped") or not r.get("translation"):
+                return
             translation = r["translation"]
-            if r["token_issues"]:
+            if r.get("token_issues"):
                 job.add_log(f"Token mismatch [{s['key']}]: {'; '.join(r['token_issues'])}")
             save_translation(cfg.paths.mods_dir, mod_name,
                              cfg.paths.translation_cache,
-                             s["esp"], s["key"], translation, cfg=cfg)
+                             s["esp"], s["key"], translation, cfg=cfg,
+                             quality_score=r.get("quality_score"),
+                             status=r.get("status"))
             jm.add_string_update(job, s["key"], s["esp"],
-                                 translation, r["status"], r["quality_score"])
-            # Add to TM and global dict so subsequent chunks + future mods benefit
-            tm_pairs[s["original"]] = translation
+                                 translation, r.get("status", "translated"),
+                                 r.get("quality_score"))
+            with _tm_lock:
+                tm_pairs[s["original"]] = translation
             if gd:
                 gd.add(s["original"], translation)
                 gd_dirty = True
+
+        pool = WorkerPool(backends, chunk_size=10)
+        pool.run(
+            strings          = strings,
+            context          = context,
+            params           = params,
+            force            = force,
+            on_string_done   = _on_string_done_safe,
+            on_progress      = lambda done, tot: jm.update_progress(
+                job, done, tot, f"Translating {done}/{tot}"),
+            on_status        = _on_status,
+            should_stop      = lambda: job.status.value == "cancelled",
+            context_builder  = _build_chunk_context,
+        )
+    else:
+        # ── Single-backend sequential path (unchanged behaviour) ─────────────
+        CHUNK = 10
+        done  = 0
+        for chunk_start in range(0, total, CHUNK):
+            if job.status.value == "cancelled":
+                break
+            chunk    = strings[chunk_start:chunk_start + CHUNK]
+            end_idx  = min(done + CHUNK, total)
+            originals = [s["original"] for s in chunk]
+
+            jm.update_progress(job, done, total,
+                               f"Translating {done + 1}–{end_idx} / {total}")
+
+            ai_originals_preview, _ = prepare_for_ai(originals)
+            chunk_context = enrich_context(context,
+                                           build_tm_block(tm_pairs, ai_originals_preview),
+                                           ai_originals_preview)
+
+            try:
+                core_results = translate_texts(originals, context=chunk_context,
+                                               params=params, force=force)
+            except RemoteServerDeadError as exc:
+                job.add_log(f"REMOTE SERVER DEAD at {done}/{total}: {exc}")
+                job.add_log(f"Progress saved: {done} strings translated. Use Resume to continue.")
+                raise
+            except Exception as exc:
+                for s in chunk:
+                    job.add_log(f"ERROR chunk at {s['key']}: {exc}")
+                done += len(chunk)
+                continue
+
+            for s, r in zip(chunk, core_results):
+                done += 1
+                _on_string_done(s, r)
 
     if gd and gd_dirty:
         gd.save()

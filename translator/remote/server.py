@@ -397,6 +397,161 @@ async def _run_chat(job: JobRecord, state: ServerState, loop: asyncio.AbstractEv
     job.progress = 1
 
 
+# ── Reverse registration helpers ──────────────────────────────────────────────
+
+def _get_my_url(host: str, port: int) -> str:
+    """Determine this server's LAN URL to report to the host."""
+    if host:
+        return f"http://{host}:{port}"
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return f"http://{ip}:{port}"
+    except Exception:
+        return f"http://{socket.gethostbyname(socket.gethostname())}:{port}"
+
+
+def _register_with_host(host_url: str, my_url: str) -> bool:
+    """POST /api/workers/register to the Windows host.  Returns True on success."""
+    try:
+        import httpx
+        label = f"{platform.system().lower()}-{socket.gethostname()}"
+        payload = {
+            "label":    label,
+            "url":      my_url,
+            "platform": platform.system().lower(),
+            "model":    _state.model_label,
+            "gpu":      _state.gpu_label,
+        }
+        r = httpx.post(f"{host_url.rstrip('/')}/api/workers/register",
+                       json=payload, timeout=10.0)
+        if r.status_code == 200:
+            log.info("Registered with host %s as %s", host_url, label)
+            return True
+        log.warning("Host registration returned HTTP %s", r.status_code)
+    except Exception as exc:
+        log.warning("Could not register with host %s: %s", host_url, exc)
+    return False
+
+
+def _unregister_from_host(host_url: str) -> None:
+    try:
+        import httpx
+        label = f"{platform.system().lower()}-{socket.gethostname()}"
+        httpx.delete(f"{host_url.rstrip('/')}/api/workers/{label}", timeout=5.0)
+        log.info("Unregistered from host %s", host_url)
+    except Exception as exc:
+        log.debug("Unregister from host failed (non-fatal): %s", exc)
+
+
+async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int) -> None:
+    """Background task: register on startup, then send heartbeats every 15 s."""
+    import asyncio as _asyncio
+    my_url = _get_my_url(mdns_host, mdns_port)
+    label  = f"{platform.system().lower()}-{socket.gethostname()}"
+
+    # Retry registration a few times in case the host isn't up yet
+    for attempt in range(5):
+        if _register_with_host(host_url, my_url):
+            break
+        await _asyncio.sleep(10)
+
+    # Heartbeat loop
+    while True:
+        await _asyncio.sleep(15)
+        try:
+            import httpx
+            r = httpx.post(
+                f"{host_url.rstrip('/')}/api/workers/heartbeat",
+                json={"label": label}, timeout=8.0,
+            )
+            if r.status_code == 404:
+                # Host asked us to re-register (e.g. after restart)
+                _register_with_host(host_url, my_url)
+        except Exception:
+            pass   # host unreachable — keep trying
+
+
+async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int) -> None:
+    """Pull-mode inference worker: polls host for chunks, infers, posts results.
+
+    Eliminates the need for the host to connect to this server — only outbound
+    connections from this machine to the host are used.  Works across subnets
+    and behind NAT without any port-forwarding on the remote side.
+
+    Flow per chunk:
+      1. GET /api/workers/{label}/chunk?timeout=15  →  chunk dict or null
+      2. Run _state.backend._infer(prompt, params)  (via existing async queue)
+      3. POST /api/workers/{label}/result  →  {"chunk_id": ..., "result": ...}
+    """
+    import asyncio as _asyncio
+    import httpx
+
+    loop  = _asyncio.get_running_loop()
+    label = f"{platform.system().lower()}-{socket.gethostname()}"
+    base  = host_url.rstrip("/")
+
+    log.info("Pull worker started — polling %s for inference chunks", base)
+
+    while True:
+        try:
+            # Long-poll: host blocks up to 15 s if no work is available
+            r = await loop.run_in_executor(
+                None,
+                lambda: httpx.get(
+                    f"{base}/api/workers/{label}/chunk",
+                    params={"timeout": "15"},
+                    timeout=22.0,
+                ),
+            )
+            data  = r.json()
+            chunk = data.get("chunk")
+            if not chunk:
+                continue   # no work — poll immediately again
+
+            chunk_id = chunk["chunk_id"]
+            prompt   = chunk["prompt"]
+            raw_params = chunk.get("params") or {}
+
+            log.debug("Pull worker: got chunk %s (%d chars)", chunk_id[:8], len(prompt))
+
+            # Submit to the existing serialised inference queue so it doesn't
+            # conflict with jobs submitted directly to this server's /infer endpoint
+            from translator.models.inference_params import InferenceParams
+            params = InferenceParams.from_dict(raw_params)
+
+            # Run inference in the thread pool (same as _run_infer)
+            t0 = time.time()
+            try:
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: _state.backend._infer(prompt, params=params),
+                )
+            except Exception as exc:
+                log.error("Pull worker: inference failed for chunk %s: %s", chunk_id[:8], exc)
+                result = ""
+
+            elapsed = time.time() - t0
+            log.debug("Pull worker: chunk %s done in %.1fs (%d chars out)",
+                      chunk_id[:8], elapsed, len(result) if result else 0)
+
+            # Post result back to host
+            await loop.run_in_executor(
+                None,
+                lambda: httpx.post(
+                    f"{base}/api/workers/{label}/result",
+                    json={"chunk_id": chunk_id, "result": result or ""},
+                    timeout=15.0,
+                ),
+            )
+
+        except Exception as exc:
+            log.debug("Pull worker loop error (will retry): %s", exc)
+            await _asyncio.sleep(3)
+
+
 # ── App factory ───────────────────────────────────────────────────────────────
 
 def create_server_app(
@@ -407,6 +562,7 @@ def create_server_app(
     mdns_enabled: bool = True,
     mdns_host: str = "",
     mdns_port: int = 8765,
+    host_url: str = "",    # Windows host Flask URL for reverse registration
 ):
     """Build the FastAPI application with async job queue."""
     from fastapi import FastAPI, HTTPException
@@ -447,11 +603,19 @@ def create_server_app(
         if mdns_enabled:
             _register_mdns(mdns_host, mdns_port, _state)
 
+        # Reverse registration — announce this server to the Windows host
+        if host_url:
+            asyncio.create_task(_register_and_heartbeat(host_url, mdns_host, mdns_port))
+            # Pull-mode inference worker (cross-subnet safe — no inbound port needed)
+            asyncio.create_task(_pull_worker_loop(host_url, mdns_host, mdns_port))
+
     @app.on_event("shutdown")
     async def _shutdown():
         if _state.backend and _state.backend.is_loaded:
             _state.backend.unload()
         _unregister_mdns()
+        if host_url:
+            _unregister_from_host(host_url)
 
     # ── Endpoints ──────────────────────────────────────────────────────────
 

@@ -111,6 +111,72 @@
   </div>
 </div>
 
+<!-- Registered Workers -->
+<div class="row g-3 mb-4">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <span><i class="bi bi-hdd-network me-2 text-accent"></i>Registered Workers
+          <span class="badge bg-secondary ms-2" id="workers-count">{{ registered_workers | length }}</span>
+        </span>
+        <button class="btn btn-sm btn-outline-secondary" onclick="refreshWorkers()">
+          <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+        </button>
+      </div>
+      <div class="card-body p-0">
+        <div id="workers-list">
+          {% if registered_workers %}
+          <table class="table table-dark table-sm mb-0" style="font-size:13px">
+            <thead>
+              <tr>
+                <th>Label</th><th>URL</th><th>Model</th><th>GPU</th><th>Last Seen</th><th>Current Task</th><th></th>
+              </tr>
+            </thead>
+            <tbody>
+            {% for w in registered_workers %}
+            <tr>
+              <td>
+                <span class="{% if w.alive %}text-success{% else %}text-danger{% endif %}">●</span>
+                {{ w.label }}
+              </td>
+              <td class="mono text-muted" style="font-size:11px">{{ w.url }}</td>
+              <td class="text-muted" style="font-size:11px">{{ w.model or '—' }}</td>
+              <td class="text-muted" style="font-size:11px">{{ w.gpu or '—' }}</td>
+              <td class="text-muted" style="font-size:11px">{{ w.last_seen | timeago }}</td>
+              <td class="text-muted" style="font-size:11px">{{ w.current_task[:40] if w.current_task else '—' }}</td>
+              <td class="text-end" style="white-space:nowrap">
+                <button class="btn btn-sm btn-outline-primary py-0 me-1"
+                        onclick="openLoadModel('{{ w.label }}')"
+                        title="Load / swap model">
+                  <i class="bi bi-upload"></i>
+                </button>
+                <button class="btn btn-sm btn-outline-warning py-0 me-1"
+                        onclick="unloadModel('{{ w.label }}')"
+                        title="Unload model">
+                  <i class="bi bi-eject"></i>
+                </button>
+                <button class="btn btn-sm btn-outline-danger py-0"
+                        onclick="disconnectWorker('{{ w.label }}')">
+                  <i class="bi bi-x"></i>
+                </button>
+              </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+          {% else %}
+          <div class="text-center text-muted py-4" id="no-workers-msg">
+            <i class="bi bi-hdd-network d-block mb-2" style="font-size:2rem"></i>
+            No remote workers connected.<br>
+            <small>Start a remote server with <code>--host-url http://THIS_IP:5000</code> to register it here.</small>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="row g-3 mb-4">
   <div class="col-12">
     <div class="card">
@@ -200,32 +266,291 @@
       </div>
       <div class="card-body">
         <p class="text-muted mb-2">Run on the machine with the GPU (Mac or Windows):</p>
-        <pre class="bg-body-secondary rounded p-3" style="font-size:12px">python server.py --host 0.0.0.0 --port 8765
+        <p class="text-muted mb-2">
+          <span class="badge bg-success me-1">Recommended</span>
+          <strong>Reverse registration + pull mode</strong> — only outbound connections from the Mac to this host.
+          Works even if Mac is on a different subnet (WiFi vs wired), no port forwarding needed on the Mac.
+        </p>
+        <pre class="bg-body-secondary rounded p-3" style="font-size:12px"># On Mac/remote server — replace HOST_IP with this Windows machine's IP
+python server.py --host 0.0.0.0 --port 8765 --host-url http://HOST_IP:5000
 
-# Override model path:
-python server.py --model-path /path/to/model.gguf
+# The remote will:
+# 1. Register itself with the host (POST /api/workers/register)
+# 2. Send heartbeats every 15s (POST /api/workers/heartbeat)
+# 3. Poll the host for translation chunks (GET /api/workers/{label}/chunk)
+# 4. Post results back (POST /api/workers/{label}/result)
+# → Mac only makes outbound connections to HOST_IP — no port forwarding on Mac needed
 
-# Disable mDNS (use TCP scan only):
-python server.py --no-mdns
-
-# CPU only (no GPU):
-python server.py --gpu-layers 0</pre>
-        <p class="text-muted mb-2 mt-3">Then in <code>config.yaml</code> set the translation mode:</p>
+# Other options:
+python server.py --model-path /path/to/model.gguf  # override model path
+python server.py --gpu-layers 0                     # CPU only
+python server.py --no-mdns                          # disable mDNS announcement</pre>
+        <p class="text-muted mb-2 mt-3">For legacy direct connection (same subnet only):</p>
         <pre class="bg-body-secondary rounded p-3" style="font-size:12px">remote:
-  mode: remote            # always use remote server
-  server_url: "http://192.168.1.x:8765"
-
-# or auto-discover:
-remote:
-  mode: auto              # try LAN first, fall back to local</pre>
+  mode: remote
+  server_url: "http://192.168.1.x:8765"  # host connects to remote directly</pre>
       </div>
     </div>
   </div>
 </div>
 {% endblock %}
 
+<!-- Load Model Modal -->
+<div class="modal fade" id="loadModelModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content bg-dark border-secondary">
+      <div class="modal-header border-secondary">
+        <h5 class="modal-title"><i class="bi bi-upload me-2 text-accent"></i>Load Model on <span id="lm-worker-label"></span></h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <!-- Backend -->
+        <div class="row g-3 mb-3">
+          <div class="col-md-4">
+            <label class="form-label">Backend</label>
+            <select class="form-select bg-dark text-light border-secondary" id="lm-backend">
+              <option value="llamacpp">llama-cpp-python (CUDA / Metal)</option>
+              <option value="mlx">mlx-lm (Apple Silicon only)</option>
+            </select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Source language</label>
+            <input type="text" class="form-control bg-dark text-light border-secondary" id="lm-src" value="English">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Target language</label>
+            <input type="text" class="form-control bg-dark text-light border-secondary" id="lm-tgt" value="Russian">
+          </div>
+        </div>
+
+        <!-- Model source — tabs -->
+        <ul class="nav nav-tabs mb-3" id="lm-tabs">
+          <li class="nav-item">
+            <button class="nav-link active" onclick="switchLmTab('path')" id="lm-tab-path">Local Path</button>
+          </li>
+          <li class="nav-item">
+            <button class="nav-link" onclick="switchLmTab('hf')" id="lm-tab-hf">HuggingFace</button>
+          </li>
+        </ul>
+
+        <div id="lm-path-panel">
+          <label class="form-label">Absolute path to .gguf file on the remote machine</label>
+          <input type="text" class="form-control bg-dark text-light border-secondary mono" id="lm-model-path"
+                 placeholder="/Users/you/models/qwen3.5-27b-q4_k_m.gguf">
+        </div>
+        <div id="lm-hf-panel" style="display:none">
+          <div class="row g-2">
+            <div class="col-md-6">
+              <label class="form-label">HuggingFace repo_id</label>
+              <input type="text" class="form-control bg-dark text-light border-secondary mono" id="lm-repo"
+                     placeholder="Qwen/Qwen3.5-27B-GGUF">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">GGUF filename</label>
+              <input type="text" class="form-control bg-dark text-light border-secondary mono" id="lm-gguf"
+                     placeholder="qwen3.5-27b-q4_k_m.gguf">
+            </div>
+          </div>
+          <div class="text-muted mt-1" style="font-size:11px">
+            Model will be downloaded to <code>remote_worker/models_cache/</code> on the remote machine on first use.
+          </div>
+        </div>
+
+        <!-- Parameters -->
+        <div class="row g-3 mt-3">
+          <div class="col-md-3">
+            <label class="form-label">GPU layers</label>
+            <input type="number" class="form-control bg-dark text-light border-secondary" id="lm-gpu-layers" value="-1">
+            <div class="text-muted" style="font-size:11px">-1 = all on GPU</div>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Context (n_ctx)</label>
+            <input type="number" class="form-control bg-dark text-light border-secondary" id="lm-ctx" value="8192">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Batch size</label>
+            <input type="number" class="form-control bg-dark text-light border-secondary" id="lm-batch" value="12">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Max tokens</label>
+            <input type="number" class="form-control bg-dark text-light border-secondary" id="lm-max-tokens" value="2048">
+          </div>
+        </div>
+        <div class="row g-3 mt-1">
+          <div class="col-md-3">
+            <label class="form-label">Temperature</label>
+            <input type="number" class="form-control bg-dark text-light border-secondary" id="lm-temp" value="0.3" step="0.05">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Top-K</label>
+            <input type="number" class="form-control bg-dark text-light border-secondary" id="lm-topk" value="20">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Top-P</label>
+            <input type="number" class="form-control bg-dark text-light border-secondary" id="lm-topp" value="0.9" step="0.05">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Rep. penalty</label>
+            <input type="number" class="form-control bg-dark text-light border-secondary" id="lm-rep" value="1.05" step="0.01">
+          </div>
+        </div>
+        <div class="form-check mt-3">
+          <input class="form-check-input" type="checkbox" id="lm-flash">
+          <label class="form-check-label" for="lm-flash">Flash attention</label>
+        </div>
+
+        <div id="lm-status" class="mt-3" style="display:none"></div>
+      </div>
+      <div class="modal-footer border-secondary">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" onclick="submitLoadModel()" id="lm-submit-btn">
+          <i class="bi bi-upload me-1"></i>Load Model
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 {% block scripts %}
 <script>
+// ── Load Model modal ──────────────────────────────────────────────────────────
+
+let _lmActiveWorker = null;
+let _lmTab = 'path';
+
+function switchLmTab(tab) {
+  _lmTab = tab;
+  document.getElementById('lm-path-panel').style.display = tab === 'path' ? '' : 'none';
+  document.getElementById('lm-hf-panel').style.display   = tab === 'hf'   ? '' : 'none';
+  document.getElementById('lm-tab-path').classList.toggle('active', tab === 'path');
+  document.getElementById('lm-tab-hf').classList.toggle('active',   tab === 'hf');
+}
+
+async function openLoadModel(label) {
+  _lmActiveWorker = label;
+  document.getElementById('lm-worker-label').textContent = label;
+  document.getElementById('lm-status').style.display = 'none';
+  document.getElementById('lm-submit-btn').disabled   = false;
+  document.getElementById('lm-submit-btn').textContent = 'Load Model';
+
+  // Pre-fill from worker's current /info
+  try {
+    const info = await fetch(`/api/workers/${encodeURIComponent(label)}/info`).then(r => r.json());
+    if (info.backend_type) document.getElementById('lm-backend').value = info.backend_type;
+  } catch(e) {}
+
+  new bootstrap.Modal(document.getElementById('loadModelModal')).show();
+}
+
+async function submitLoadModel() {
+  const btn    = document.getElementById('lm-submit-btn');
+  const status = document.getElementById('lm-status');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Loading…';
+
+  const body = {
+    backend_type:       document.getElementById('lm-backend').value,
+    source_lang:        document.getElementById('lm-src').value.trim(),
+    target_lang:        document.getElementById('lm-tgt').value.trim(),
+    n_gpu_layers:       parseInt(document.getElementById('lm-gpu-layers').value),
+    n_ctx:              parseInt(document.getElementById('lm-ctx').value),
+    batch_size:         parseInt(document.getElementById('lm-batch').value),
+    max_new_tokens:     parseInt(document.getElementById('lm-max-tokens').value),
+    temperature:        parseFloat(document.getElementById('lm-temp').value),
+    top_k:              parseInt(document.getElementById('lm-topk').value),
+    top_p:              parseFloat(document.getElementById('lm-topp').value),
+    repetition_penalty: parseFloat(document.getElementById('lm-rep').value),
+    flash_attn:         document.getElementById('lm-flash').checked,
+  };
+
+  if (_lmTab === 'path') {
+    body.model_path = document.getElementById('lm-model-path').value.trim();
+  } else {
+    body.repo_id       = document.getElementById('lm-repo').value.trim();
+    body.gguf_filename = document.getElementById('lm-gguf').value.trim();
+  }
+
+  try {
+    const r = await fetch(`/api/workers/${encodeURIComponent(_lmActiveWorker)}/model/load`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    status.style.display = '';
+    if (r.ok && d.ok) {
+      status.innerHTML = `<div class="alert alert-success py-2 mb-0">
+        <i class="bi bi-check-circle me-1"></i>Model loaded: <strong>${d.model}</strong>
+      </div>`;
+      toast(`Model loaded on ${_lmActiveWorker}: ${d.model}`, 'success');
+      setTimeout(() => refreshWorkers(), 1000);
+    } else {
+      status.innerHTML = `<div class="alert alert-danger py-2 mb-0">
+        <i class="bi bi-x-circle me-1"></i>${d.error || d.detail || 'Load failed'}
+      </div>`;
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-upload me-1"></i>Load Model';
+    }
+  } catch(e) {
+    status.style.display = '';
+    status.innerHTML = `<div class="alert alert-danger py-2 mb-0">${e.message}</div>`;
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-upload me-1"></i>Load Model';
+  }
+}
+
+async function unloadModel(label) {
+  if (!confirm(`Unload model on "${label}"?`)) return;
+  try {
+    const r = await fetch(`/api/workers/${encodeURIComponent(label)}/model/unload`, {method: 'POST'});
+    const d = await r.json();
+    toast(d.ok ? `Model unloaded on ${label}` : (d.error || 'Unload failed'),
+          d.ok ? 'success' : 'danger');
+    setTimeout(() => refreshWorkers(), 500);
+  } catch(e) { toast('Unload error: ' + e.message, 'danger'); }
+}
+
+// ── Registered Workers ────────────────────────────────────────────────────────
+
+async function refreshWorkers() {
+  try {
+    const workers = await fetch('/api/workers').then(r => r.json());
+    document.getElementById('workers-count').textContent = workers.length;
+    const el = document.getElementById('workers-list');
+    if (!workers.length) {
+      el.innerHTML = `<div class="text-center text-muted py-4">
+        <i class="bi bi-hdd-network d-block mb-2" style="font-size:2rem"></i>
+        No remote workers connected.
+      </div>`;
+      return;
+    }
+    let rows = workers.map(w => `<tr>
+      <td><span class="${w.alive ? 'text-success' : 'text-danger'}">●</span> ${w.label}</td>
+      <td class="mono text-muted" style="font-size:11px">${w.url}</td>
+      <td class="text-muted" style="font-size:11px">${w.model || '—'}</td>
+      <td class="text-muted" style="font-size:11px">${w.gpu || '—'}</td>
+      <td class="text-muted" style="font-size:11px">${w.last_seen ? Math.round((Date.now()/1000 - w.last_seen)) + 's ago' : '—'}</td>
+      <td class="text-muted" style="font-size:11px">${(w.current_task || '—').slice(0,40)}</td>
+      <td class="text-end" style="white-space:nowrap">
+        <button class="btn btn-sm btn-outline-primary py-0 me-1" onclick="openLoadModel('${w.label}')" title="Load / swap model"><i class="bi bi-upload"></i></button>
+        <button class="btn btn-sm btn-outline-warning py-0 me-1" onclick="unloadModel('${w.label}')" title="Unload model"><i class="bi bi-eject"></i></button>
+        <button class="btn btn-sm btn-outline-danger py-0" onclick="disconnectWorker('${w.label}')"><i class="bi bi-x"></i></button>
+      </td>
+    </tr>`).join('');
+    el.innerHTML = `<table class="table table-dark table-sm mb-0" style="font-size:13px">
+      <thead><tr><th>Label</th><th>URL</th><th>Model</th><th>GPU</th><th>Last Seen</th><th>Current Task</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  } catch(e) { toast('Failed to load workers: ' + e.message, 'danger'); }
+}
+
+async function disconnectWorker(label) {
+  if (!confirm(`Disconnect worker "${label}"?`)) return;
+  await fetch(`/api/workers/${encodeURIComponent(label)}`, {method: 'DELETE'});
+  toast(`Worker ${label} disconnected`, 'success');
+  refreshWorkers();
+}
+
 // ── Backend Configuration ────────────────────────────────────────────────────
 
 async function loadBackendInfo() {

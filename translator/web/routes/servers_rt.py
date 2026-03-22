@@ -14,12 +14,15 @@ _scanning   = False
 
 @bp.route("/")
 def servers_page():
-    cfg = current_app.config.get("TRANSLATOR_CFG")
+    cfg      = current_app.config.get("TRANSLATOR_CFG")
+    registry = current_app.config.get("WORKER_REGISTRY")
+    workers  = registry.get_all() if registry else []
     return render_template(
         "servers.html",
-        cfg         = cfg,
-        servers     = _scan_cache,
-        is_scanning = _scanning,
+        cfg             = cfg,
+        servers         = _scan_cache,
+        is_scanning     = _scanning,
+        registered_workers = workers,
     )
 
 

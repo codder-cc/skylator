@@ -556,6 +556,144 @@ def global_dict_toggle():
         return jsonify({"error": str(exc)}), 500
 
 
+@bp.route("/workers", methods=["GET"])
+def workers_list():
+    """Return all registered remote workers (active + recently seen)."""
+    registry = current_app.config.get("WORKER_REGISTRY")
+    if registry is None:
+        return jsonify([])
+    return jsonify([w.to_dict() for w in registry.get_all()])
+
+
+@bp.route("/workers/register", methods=["POST"])
+def workers_register():
+    """Remote server calls this on startup to announce itself."""
+    from translator.web.worker_registry import WorkerInfo
+    data     = request.get_json() or {}
+    label    = data.get("label", "").strip()
+    url      = data.get("url", "").strip()
+    if not label or not url:
+        return jsonify({"error": "label and url are required"}), 400
+    registry = current_app.config.get("WORKER_REGISTRY")
+    if registry is None:
+        return jsonify({"error": "Registry not initialized"}), 500
+    info = WorkerInfo(
+        label    = label,
+        url      = url,
+        platform = data.get("platform", ""),
+        model    = data.get("model", ""),
+        gpu      = data.get("gpu", ""),
+    )
+    registry.register(info)
+    log.info("Worker registered: %s @ %s  model=%s", label, url, info.model)
+    return jsonify({"ok": True, "label": label})
+
+
+@bp.route("/workers/heartbeat", methods=["POST"])
+def workers_heartbeat():
+    """Remote server calls this every ~15 s to stay alive in the registry."""
+    data     = request.get_json() or {}
+    label    = data.get("label", "").strip()
+    registry = current_app.config.get("WORKER_REGISTRY")
+    if not label or registry is None:
+        return jsonify({"ok": False}), 400
+    found = registry.heartbeat(label)
+    if not found:
+        # Unknown worker — ask it to re-register
+        return jsonify({"ok": False, "reregister": True}), 404
+    return jsonify({"ok": True})
+
+
+@bp.route("/workers/<label>", methods=["DELETE"])
+def workers_unregister(label: str):
+    """Remote server calls this on clean shutdown."""
+    registry = current_app.config.get("WORKER_REGISTRY")
+    if registry:
+        registry.remove(label)
+        log.info("Worker unregistered: %s", label)
+    return jsonify({"ok": True})
+
+
+@bp.route("/workers/<label>/chunk", methods=["GET"])
+def workers_get_chunk(label: str):
+    """Pull-mode: remote polls for next inference chunk.
+
+    Long-polls for up to `timeout` seconds (default 15).
+    Returns {"ok": true, "chunk": {...} | null}.
+    chunk fields: chunk_id, prompt, params, count.
+    """
+    registry = current_app.config.get("WORKER_REGISTRY")
+    if registry is None:
+        return jsonify({"ok": False, "error": "Registry not initialized"}), 500
+    timeout = float(request.args.get("timeout", 15))
+    chunk   = registry.dequeue_chunk(label, timeout=timeout)
+    return jsonify({"ok": True, "chunk": chunk})
+
+
+@bp.route("/workers/<label>/result", methods=["POST"])
+def workers_post_result(label: str):
+    """Pull-mode: remote posts completed inference result.
+
+    Body: {"chunk_id": "...", "result": "raw inference string"}
+    """
+    registry = current_app.config.get("WORKER_REGISTRY")
+    if registry is None:
+        return jsonify({"ok": False, "error": "Registry not initialized"}), 500
+    data     = request.get_json() or {}
+    chunk_id = data.get("chunk_id", "")
+    result   = data.get("result", "")
+    found    = registry.deliver_result(chunk_id, result)
+    if not found:
+        log.warning("Unexpected result for chunk_id %s from worker %s", chunk_id[:8], label)
+    return jsonify({"ok": True, "matched": found})
+
+
+@bp.route("/workers/<label>/model/load", methods=["POST"])
+def workers_model_load(label: str):
+    """Proxy POST /model/load to the remote worker's REST API."""
+    registry = current_app.config.get("WORKER_REGISTRY")
+    worker   = registry.get(label) if registry else None
+    if not worker:
+        return jsonify({"error": f"Worker '{label}' not found"}), 404
+    try:
+        import httpx
+        r = httpx.post(f"{worker.url.rstrip('/')}/model/load",
+                       json=request.get_json() or {}, timeout=60.0)
+        return jsonify(r.json()), r.status_code
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 502
+
+
+@bp.route("/workers/<label>/model/unload", methods=["POST"])
+def workers_model_unload(label: str):
+    """Proxy POST /model/unload to the remote worker."""
+    registry = current_app.config.get("WORKER_REGISTRY")
+    worker   = registry.get(label) if registry else None
+    if not worker:
+        return jsonify({"error": f"Worker '{label}' not found"}), 404
+    try:
+        import httpx
+        r = httpx.post(f"{worker.url.rstrip('/')}/model/unload", timeout=15.0)
+        return jsonify(r.json()), r.status_code
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 502
+
+
+@bp.route("/workers/<label>/info", methods=["GET"])
+def workers_get_info(label: str):
+    """Proxy GET /info from the remote worker (capabilities, GPU, model)."""
+    registry = current_app.config.get("WORKER_REGISTRY")
+    worker   = registry.get(label) if registry else None
+    if not worker:
+        return jsonify({"error": f"Worker '{label}' not found"}), 404
+    try:
+        import httpx
+        r = httpx.get(f"{worker.url.rstrip('/')}/info", timeout=8.0)
+        return jsonify(r.json()), r.status_code
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 502
+
+
 @bp.route("/remote/config", methods=["POST"])
 def remote_config_set():
     """Save remote.mode and remote.server_url to config.yaml and reload config."""

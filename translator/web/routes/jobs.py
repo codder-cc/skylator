@@ -120,10 +120,12 @@ def create_job():
     elif job_type == "translate_bsa" and mod_names:
         job = _create_translate_bsa_job(jm, cfg, mod_names[0], options)
     elif job_type == "translate_strings" and mod_names:
-        keys  = data.get("keys")   # optional list of specific cache key strings
-        scope = data.get("scope", "all")
-        force = options.get("force", False)
-        job   = _create_translate_strings_job(jm, cfg, mod_names[0], keys, scope, inf_params, force=force)
+        keys     = data.get("keys")   # optional list of specific cache key strings
+        scope    = data.get("scope", "all")
+        force    = options.get("force", False)
+        machines = options.get("machines")
+        job      = _create_translate_strings_job(jm, cfg, mod_names[0], keys, scope,
+                                                  inf_params, force=force, machines=machines)
     else:
         return jsonify({"error": "Unknown job type"}), 400
 
@@ -213,18 +215,67 @@ def _create_batch_job(jm, cfg, mod_names: list, options: dict):
     )
 
 
+def _resolve_backends(cfg, machines: list | None):
+    """Build a (label, backend_or_None) list from machine labels.
+
+    "local" → None (uses translate_texts local pipeline in WorkerPool).
+    Registered worker → RegistryPullBackend (pull-mode; remote → host only,
+      works across subnets without port-forwarding the remote side).
+
+    Returns None when machines is None or has only 1 entry so the
+    single-backend path is used (no WorkerPool overhead).
+    """
+    if not machines:
+        return None
+
+    from flask import current_app
+    from translator.web.pull_backend import RegistryPullBackend
+    registry = current_app.config.get("WORKER_REGISTRY")
+    src_lang = getattr(getattr(cfg, "translation", None), "source_lang", "English") if cfg else "English"
+    tgt_lang = getattr(getattr(cfg, "translation", None), "target_lang", "Russian") if cfg else "Russian"
+
+    result = []
+    for label in machines:
+        if label == "local":
+            result.append(("local", None))
+        else:
+            worker = registry.get(label) if registry else None
+            if worker:
+                result.append((label, RegistryPullBackend(
+                    label       = label,
+                    registry    = registry,
+                    source_lang = src_lang,
+                    target_lang = tgt_lang,
+                )))
+            else:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Machine '%s' not found in registry — skipping", label)
+
+    return result if len(result) > 1 else None
+
+
 def _create_translate_all_job(jm, cfg, options: dict):
-    dry_run = options.get("dry_run", False)
-    resume  = options.get("resume", True)
+    dry_run       = options.get("dry_run", False)
+    resume        = options.get("resume", True)
+    scope         = options.get("scope", "all")
+    status_filter = options.get("status_filter", "all")
+    force         = options.get("force", False)
+    machines      = options.get("machines")    # list of labels or None
+    backends      = _resolve_backends(cfg, machines)
 
     def run(job):
         from translator.web.workers import translate_all_worker
-        translate_all_worker(job, cfg, dry_run=dry_run, resume=resume)
+        translate_all_worker(job, cfg, dry_run=dry_run, resume=resume,
+                             scope=scope, status_filter=status_filter,
+                             force=force, backends=backends)
 
+    scope_label = f" [{scope.upper()}]" if scope != "all" else ""
     return jm.create(
-        name     = "Translate All Mods",
+        name     = f"Translate All Mods{scope_label}",
         job_type = "translate_all",
-        params   = {"dry_run": dry_run, "resume": resume},
+        params   = {"dry_run": dry_run, "resume": resume, "scope": scope,
+                    "status_filter": status_filter, "force": force},
         fn       = run,
     )
 
@@ -277,10 +328,14 @@ def _create_translate_bsa_job(jm, cfg, mod_name: str, options: dict):
 def _create_translate_strings_job(jm, cfg, mod_name: str,
                                    keys: list | None = None,
                                    scope: str = "all",
-                                   params=None, force: bool = False):
+                                   params=None, force: bool = False,
+                                   machines: list | None = None):
+    backends = _resolve_backends(cfg, machines)
+
     def run(job):
         from translator.web.workers import translate_strings_worker
-        translate_strings_worker(job, cfg, mod_name, keys=keys, scope=scope, params=params, force=force)
+        translate_strings_worker(job, cfg, mod_name, keys=keys, scope=scope,
+                                 params=params, force=force, backends=backends)
 
     if keys:
         n = len(keys)

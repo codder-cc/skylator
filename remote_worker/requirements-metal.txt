@@ -1,0 +1,10 @@
+# macOS with Apple Silicon (M1/M2/M3/M4) — two backend options:
+#
+# Option A — llama-cpp-python with Metal (recommended for GGUF models):
+#   CMAKE_ARGS="-DGGML_METAL=on" pip install llama-cpp-python --no-binary llama-cpp-python
+#   Set backend_type: llamacpp in server_config.yaml
+#
+# Option B — mlx-lm (MLX native, fastest on Apple Silicon, requires MLX-format model):
+#   Set backend_type: mlx in server_config.yaml
+-r requirements.txt
+mlx-lm>=0.17.0

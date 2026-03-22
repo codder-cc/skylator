@@ -165,8 +165,8 @@
     <div class="card">
       <div class="card-header"><i class="bi bi-lightning-fill me-2 text-accent"></i>Quick Actions</div>
       <div class="card-body d-grid gap-2">
-        <button class="btn btn-primary" onclick="startTranslateAll({resume:true}).then(id => id && location.assign('/jobs/'+id))">
-          <i class="bi bi-play-fill me-2"></i>Translate All (resume)
+        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#batchModal">
+          <i class="bi bi-play-fill me-2"></i>Translate All&hellip;
         </button>
         <button class="btn btn-outline-secondary" onclick="startTranslateAll({resume:false, dry_run:true})">
           <i class="bi bi-eye me-2"></i>Dry-run All
@@ -230,6 +230,69 @@
 </div>
 {% endblock %}
 
+<!-- Batch Configure Modal -->
+<div class="modal fade" id="batchModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content bg-dark border-subtle">
+      <div class="modal-header border-subtle">
+        <h5 class="modal-title"><i class="bi bi-sliders me-2 text-accent"></i>Configure Batch Run</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <!-- Scope -->
+        <div class="mb-3">
+          <label class="form-label text-muted fw-semibold" style="font-size:12px">SCOPE</label>
+          <div class="d-flex flex-wrap gap-2" id="scope-radios">
+            {% for s, lbl in [('all','All'), ('esp','ESP only'), ('mcm','MCM only'), ('bsa','BSA only'), ('swf','SWF only'), ('review','Review only'), ('pending','Pending only')] %}
+            <div class="form-check form-check-inline">
+              <input class="form-check-input" type="radio" name="batchScope" id="scope-{{ s }}" value="{{ s }}" {% if s == 'all' %}checked{% endif %}>
+              <label class="form-check-label" for="scope-{{ s }}" style="font-size:13px">{{ lbl }}</label>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+        <!-- Force / Resume -->
+        <div class="mb-3 d-flex gap-4">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="batch-force">
+            <label class="form-check-label" for="batch-force" style="font-size:13px">
+              Force re-translate <span class="text-muted">(bypass cache)</span>
+            </label>
+          </div>
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="batch-resume" checked>
+            <label class="form-check-label" for="batch-resume" style="font-size:13px">
+              Resume <span class="text-muted">(skip already-done mods)</span>
+            </label>
+          </div>
+        </div>
+        <!-- Machines -->
+        <div class="mb-2">
+          <label class="form-label text-muted fw-semibold" style="font-size:12px">
+            MACHINES
+            <span class="spinner-border spinner-border-sm ms-1 text-muted" id="workers-spinner"></span>
+          </label>
+          <div id="batch-machines">
+            <!-- populated on modal open -->
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" value="local" id="m-local" checked>
+              <label class="form-check-label" for="m-local" style="font-size:13px">
+                <i class="bi bi-laptop me-1 text-accent"></i>Local (this machine)
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer border-subtle">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="batch-start-btn" onclick="startBatch()">
+          <i class="bi bi-play-fill me-1"></i>Start
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 {% block scripts %}
 <script>
 // Load token stats
@@ -281,6 +344,59 @@ async function resetTokenStats() {
 
 loadTokenStats();
 setInterval(loadTokenStats, 10000);
+
+// Batch modal — load registered workers when opened
+document.getElementById('batchModal').addEventListener('show.bs.modal', async () => {
+  const spinner  = document.getElementById('workers-spinner');
+  const container = document.getElementById('batch-machines');
+  spinner.style.display = '';
+  try {
+    const workers = await fetch('/api/workers').then(r => r.json());
+    // Keep local checkbox, add remote workers
+    let html = `<div class="form-check">
+      <input class="form-check-input" type="checkbox" value="local" id="m-local" checked>
+      <label class="form-check-label" for="m-local" style="font-size:13px">
+        <i class="bi bi-laptop me-1 text-accent"></i>Local (this machine)
+      </label>
+    </div>`;
+    workers.filter(w => w.alive).forEach((w, i) => {
+      html += `<div class="form-check">
+        <input class="form-check-input" type="checkbox" value="${w.label}" id="m-${i}" checked>
+        <label class="form-check-label" for="m-${i}" style="font-size:13px">
+          <i class="bi bi-hdd-network me-1 text-accent"></i>${w.label}
+          <span class="text-muted" style="font-size:11px">${w.url} — ${w.model || '?'} — ${w.gpu || '?'}</span>
+        </label>
+      </div>`;
+    });
+    container.innerHTML = html;
+  } catch(e) { /* keep local only */ }
+  spinner.style.display = 'none';
+});
+
+async function startBatch() {
+  const scope    = document.querySelector('input[name="batchScope"]:checked')?.value || 'all';
+  const force    = document.getElementById('batch-force').checked;
+  const resume   = document.getElementById('batch-resume').checked;
+  const machines = [...document.querySelectorAll('#batch-machines input:checked')].map(el => el.value);
+  const btn      = document.getElementById('batch-start-btn');
+  btn.disabled   = true;
+  btn.innerHTML  = '<span class="spinner-border spinner-border-sm me-1"></span>Starting...';
+  try {
+    const id = await startTranslateAll({
+      resume, force,
+      scope:         scope === 'pending' ? 'all' : scope,
+      status_filter: scope === 'pending' ? 'pending' : scope === 'review' ? 'review' : 'all',
+      machines:      machines.length > 0 ? machines : undefined,
+    });
+    if (id) {
+      bootstrap.Modal.getInstance(document.getElementById('batchModal')).hide();
+      location.assign('/jobs/' + id);
+    }
+  } finally {
+    btn.disabled  = false;
+    btn.innerHTML = '<i class="bi bi-play-fill me-1"></i>Start';
+  }
+}
 
 // Load model status
 fetch('/api/models/status').then(r => r.json()).then(d => {

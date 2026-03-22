@@ -14,10 +14,9 @@
     </button>
   </div>
   <div>
-    <button class="btn btn-primary"
-            onclick="startTranslateAll({resume:true}).then(id => id && location.assign('/jobs/'+id))">
-      <i class="bi bi-play-fill me-2"></i>Start Translate All
-    </button>
+    <a href="{{ url_for('dashboard.index') }}" class="btn btn-primary">
+      <i class="bi bi-play-fill me-2"></i>Start Translate All&hellip;
+    </a>
   </div>
 </div>
 

@@ -1,0 +1,12 @@
+# Windows / Linux with NVIDIA GPU (CUDA 12.x)
+# Install base requirements first: pip install -r requirements.txt
+#
+# Pre-built wheel (fastest — no compilation needed):
+#   pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+#
+# Or build from source with CUDA support:
+#   CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python --no-binary llama-cpp-python
+#
+# See https://github.com/abetlen/llama-cpp-python for the latest wheel index.
+-r requirements.txt
+llama-cpp-python

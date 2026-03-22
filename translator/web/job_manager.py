@@ -53,6 +53,7 @@ class Job:
         self._timing: list[float] = []       # timestamps of progress updates (for ETA)
         self._timing_counts: list[int] = []  # progress counts at each timestamp
         self._string_update_cursor: int = 0  # tracks how many string_updates have been broadcast
+        self._worker_statuses: dict[str, dict] = {}  # label → BackendWorkerStatus.to_dict()
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -194,6 +195,8 @@ class JobManager:
         cursor = job._string_update_cursor
         d["new_string_updates"] = job.string_updates[cursor:]
         job._string_update_cursor = len(job.string_updates)
+        # Per-machine worker status for parallel jobs (empty list for single-backend jobs)
+        d["worker_updates"] = list(job._worker_statuses.values())
         data = json.dumps(d)
         with self._sse_lock:
             for q in list(self._sse.get(job.id, [])):

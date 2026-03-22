@@ -88,6 +88,24 @@
       </div>
     </div>
 
+    <!-- Workers live status (shown for parallel jobs) -->
+    <div class="card mb-3" id="workers-card" style="display:none">
+      <div class="card-header"><i class="bi bi-hdd-network me-2 text-accent"></i>Workers</div>
+      <div class="card-body p-0">
+        <table class="table table-dark table-sm mb-0" style="font-size:12px">
+          <thead>
+            <tr>
+              <th>Machine</th>
+              <th>Done</th>
+              <th>TPS</th>
+              <th>Current</th>
+            </tr>
+          </thead>
+          <tbody id="workers-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- Actions -->
     {% if job.status.value in ['running', 'pending'] %}
     <button class="btn btn-danger btn-sm w-100" onclick="cancelJob('{{ job.id }}').then(() => location.reload())">
@@ -189,6 +207,25 @@ if (IS_RUNNING) {
       const m = Math.floor(d.eta_seconds / 60), s = Math.floor(d.eta_seconds % 60);
       etaEl.textContent = `ETA: ${m}m ${s}s`;
     } else if (etaEl) { etaEl.textContent = ''; }
+
+    // Per-machine worker status table
+    if (d.worker_updates && d.worker_updates.length > 0) {
+      const card  = document.getElementById('workers-card');
+      const tbody = document.getElementById('workers-tbody');
+      card.style.display = '';
+      let rows = '';
+      d.worker_updates.forEach(w => {
+        const dot   = w.alive ? '🟢' : '🔴';
+        const text  = w.current_text ? w.current_text.slice(0, 35) + (w.current_text.length > 35 ? '…' : '') : '—';
+        rows += `<tr>
+          <td>${dot} ${w.label}</td>
+          <td>${w.done}</td>
+          <td>${w.tps > 0 ? w.tps.toFixed(1) : '—'}</td>
+          <td class="text-muted" title="${w.current_text || ''}">${text}</td>
+        </tr>`;
+      });
+      tbody.innerHTML = rows;
+    }
 
     if (['done', 'failed', 'cancelled'].includes(d.status)) {
       es.close();

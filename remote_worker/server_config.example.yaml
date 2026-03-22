@@ -1,0 +1,56 @@
+# Skylator Remote Worker — example config
+# Copy to server_config.yaml and fill in your values.
+#
+# Minimal setup:  only ensemble.model_b is required.
+# All other sections have sensible defaults.
+
+# ── Where to cache downloaded models ──────────────────────────────────────────
+# Defaults to remote_worker/models_cache/ if not set.
+# model_cache_dir: /absolute/path/to/your/models
+
+# ── Inference backend ──────────────────────────────────────────────────────────
+ensemble:
+  # "llamacpp"  — llama-cpp-python  (Windows CUDA / macOS Metal via llama.cpp)
+  # "mlx"       — mlx-lm            (macOS Apple Silicon only, fastest option)
+  backend_type: llamacpp
+
+  model_b:
+    # HuggingFace repo to download from (leave blank if using a local file)
+    repo_id: "Qwen/Qwen3.5-27B-GGUF"
+
+    # Subfolder inside model_cache_dir where the model lives.
+    # If this is an absolute path, the model is loaded directly from there.
+    local_dir_name: "Qwen3.5-27B"
+
+    # Name of the .gguf file (or first shard for multi-part models)
+    gguf_filename: "qwen3.5-27b-q4_k_m.gguf"
+
+    # -1 = all layers on GPU (recommended),  0 = CPU only
+    n_gpu_layers: -1
+
+    # Context window size (tokens)
+    n_ctx: 8192
+
+    # Sampling defaults (can be overridden per-call via params)
+    max_new_tokens: 2048
+    temperature: 0.3
+    top_k: 20
+    top_p: 0.9
+    repetition_penalty: 1.05
+
+    # Batch size: how many strings per prompt
+    batch_size: 12
+
+    # Flash attention (experimental, may improve throughput on newer GPUs)
+    flash_attn: false
+
+# ── Translation settings ───────────────────────────────────────────────────────
+translation:
+  source_lang: English
+  target_lang: Russian
+
+  # Tokens that must NOT be translated (kept verbatim in output)
+  preserve_tokens:
+    - "[PlayerName]"
+    - "[PLAYER]"
+    - "[PLAYERNAME]"

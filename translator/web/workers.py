@@ -31,7 +31,8 @@ def _save_single_to_cache(cache_path: Path, esp_name: str,
 
 def _upsert_trans_json(mods_dir: Path, mod_name: str,
                        esp_name: str, key_str: str, translation: str,
-                       quality_score: int = None, status: str = None) -> None:
+                       quality_score: int = None, status: str = None,
+                       repo=None) -> None:
     """.trans.json is the single source of truth for all translations.
     If the file doesn't exist yet (mod never batch-translated), create it
     by extracting strings from the ESP first, then insert the translation."""
@@ -57,15 +58,19 @@ def _upsert_trans_json(mods_dir: Path, mod_name: str,
                 trans_json  = esp_candidates[0].with_suffix(".trans.json")
                 log.info("_upsert_trans_json: created %s (%d strings)", trans_json.name, len(strings))
 
+            orig_text = ""
+            _computed_status = status
             for s in strings:
                 k = str((s.get("form_id"), s.get("rec_type"),
                           s.get("field_type"), s.get("field_index")))
                 if k == key_str:
+                    orig_text = s.get("text", "")
                     s["translation"] = translation
                     if quality_score is not None:
                         s["quality_score"] = quality_score
                         if status is not None:
                             s["status"] = status
+                            _computed_status = status
                     else:
                         # Manual edit or missing score — recompute from actual strings
                         from scripts.esp_engine import quality_score as _qs, validate_tokens as _vt
@@ -74,9 +79,11 @@ def _upsert_trans_json(mods_dir: Path, mod_name: str,
                             qs = _qs(orig, translation)
                             tok_ok, _ = _vt(orig, translation)
                             s["quality_score"] = qs
-                            s["status"] = "translated" if (tok_ok and qs > 70) else "needs_review"
+                            _computed_status = "translated" if (tok_ok and qs > 70) else "needs_review"
+                            s["status"] = _computed_status
                         elif not translation:
-                            s["status"] = "pending"
+                            _computed_status = "pending"
+                            s["status"] = _computed_status
                             s["quality_score"] = None
                     break
 
@@ -84,6 +91,22 @@ def _upsert_trans_json(mods_dir: Path, mod_name: str,
                 json.dumps(strings, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+
+            # Also write to SQLite if a repo is available
+            if repo is not None:
+                try:
+                    repo.upsert(
+                        mod_name=mod_name,
+                        esp_name=esp_name,
+                        key=key_str,
+                        original=orig_text,
+                        translation=translation,
+                        status=_computed_status or "pending",
+                        quality_score=quality_score,
+                    )
+                except Exception as e:
+                    log.warning("DB upsert failed: %s", e)
+
         except Exception:
             log.exception("_upsert_trans_json failed for %s / %s", mod_name, esp_name)
 
@@ -236,7 +259,8 @@ def _save_swf_translation(cfg, mod_name: str, key_str: str, translation: str) ->
 
 def save_translation(mods_dir: Path, mod_name: str, cache_path: Path,
                      esp_name: str, key_str: str, translation: str,
-                     cfg=None, quality_score: int = None, status: str = None) -> None:
+                     cfg=None, quality_score: int = None, status: str = None,
+                     repo=None) -> None:
     """Unified dispatcher: routes save to the correct backend by key prefix."""
     if key_str.startswith("mcm:"):
         _save_mcm_translation(mods_dir, mod_name, key_str, translation)
@@ -252,7 +276,7 @@ def save_translation(mods_dir: Path, mod_name: str, cache_path: Path,
             log.warning("save_translation: cfg required for swf key")
     else:
         _upsert_trans_json(mods_dir, mod_name, esp_name, key_str, translation,
-                           quality_score=quality_score, status=status)
+                           quality_score=quality_score, status=status, repo=repo)
 
 
 def translate_mod_worker(job, cfg, mod_name: str,

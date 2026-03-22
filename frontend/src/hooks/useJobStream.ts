@@ -47,9 +47,9 @@ export function useJobStream(jobId: string, enabled: boolean): void {
       // Stop streaming on terminal status
       if (JOB_TERMINAL_STATUSES.includes(job.status as (typeof JOB_TERMINAL_STATUSES)[number])) {
         void queryClient.invalidateQueries({ queryKey: QK.job(jobId) })
-        // Also invalidate the mod strings to show final state
+        // Invalidate all mod strings queries so final state is refetched
         if (modName) {
-          void queryClient.invalidateQueries({ queryKey: ['modStrings', modName] })
+          void queryClient.invalidateQueries({ queryKey: ['mods', modName, 'strings'] })
         }
       }
     },

@@ -47,6 +47,15 @@ export interface Job {
   mod_name: string
 }
 
+export interface ModFileInfo {
+  path: string
+  name: string
+  size_bytes: number
+  ext: string
+  has_russian: boolean
+  is_localized: boolean
+}
+
 export interface ModInfo {
   folder_name: string
   total_strings: number
@@ -54,8 +63,8 @@ export interface ModInfo {
   pending_strings: number
   pct: number
   status: ModStatus
-  esp_files: string[]
-  bsa_files: string[]
+  esp_files: ModFileInfo[]
+  bsa_files: ModFileInfo[]
   has_meta_ini: boolean
   nexus_mod_id: number | null
   cached_at: number | null

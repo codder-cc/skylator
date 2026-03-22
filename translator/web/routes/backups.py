@@ -271,6 +271,47 @@ def list_trans_snapshots():
     return jsonify({"snapshots": snapshots})
 
 
+@bp.route("/checkpoints", methods=["GET"])
+def list_checkpoints():
+    mod_name = request.args.get("mod_name")
+    repo = current_app.config.get("STRING_REPO")
+    if repo is None:
+        return jsonify({"checkpoints": []})
+    return jsonify({"checkpoints": repo.list_checkpoints(mod_name or None)})
+
+
+@bp.route("/checkpoints/create", methods=["POST"])
+def create_checkpoint():
+    data = request.get_json() or {}
+    mod_name = data.get("mod_name")
+    esp_name = data.get("esp_name")
+    if not mod_name:
+        return jsonify({"error": "mod_name required"}), 400
+    repo = current_app.config.get("STRING_REPO")
+    if repo is None:
+        return jsonify({"error": "DB not available"}), 500
+    checkpoint_id = repo.create_checkpoint(mod_name, esp_name)
+    return jsonify({"ok": True, "checkpoint_id": checkpoint_id})
+
+
+@bp.route("/checkpoints/<checkpoint_id>/restore", methods=["POST"])
+def restore_checkpoint(checkpoint_id: str):
+    repo = current_app.config.get("STRING_REPO")
+    if repo is None:
+        return jsonify({"error": "DB not available"}), 500
+    n = repo.restore_checkpoint(checkpoint_id)
+    return jsonify({"ok": True, "restored": n})
+
+
+@bp.route("/checkpoints/<checkpoint_id>/delete", methods=["POST"])
+def delete_checkpoint(checkpoint_id: str):
+    repo = current_app.config.get("STRING_REPO")
+    if repo is None:
+        return jsonify({"error": "DB not available"}), 500
+    repo.delete_checkpoint(checkpoint_id)
+    return jsonify({"ok": True})
+
+
 def _list_backups(app) -> list[dict]:
     cfg = app.config.get("TRANSLATOR_CFG")
     if cfg is None:

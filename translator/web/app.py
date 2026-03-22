@@ -6,7 +6,7 @@ import logging
 import sys
 from pathlib import Path
 
-from flask import Flask, Response, request as flask_request
+from flask import Flask, Response, jsonify, request as flask_request
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +54,22 @@ def create_app(config_path: Path | None = None) -> Flask:
             nexus_cache       = ROOT / "cache/nexus_cache.json",
         )
     app.config["SCANNER"] = scanner
+
+    # ── Init SQLite translation DB ─────────────────────────────────────────
+    from translator.db.database import TranslationDB
+    from translator.db.repo import StringRepo
+
+    _db_path = (cfg.paths.translation_cache.parent if cfg else ROOT / "cache") / "translations.db"
+    _db = TranslationDB(_db_path)
+    _repo = StringRepo(_db)
+    app.config["TRANSLATION_DB"] = _db
+    app.config["STRING_REPO"] = _repo
+
+    # Background import from .trans.json if DB is empty
+    if _db.is_empty() and cfg:
+        from translator.db.importer import start_background_import
+        log.info("SQLite DB is empty — starting background import from .trans.json files...")
+        start_background_import(_repo, cfg.paths.mods_dir)
 
     # ── Init BSA / SWF string caches ────────────────────────────────────────
     from translator.web.asset_cache import BsaStringCache, SwfStringCache

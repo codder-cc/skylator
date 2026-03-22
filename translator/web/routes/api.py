@@ -897,3 +897,48 @@ def remote_config_set():
         return jsonify({"ok": True, "mode": new_mode, "server_url": new_url})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
+
+
+# ── Checkpoint (diff-based recovery) endpoints ──────────────────────────────
+
+@bp.route("/checkpoints")
+def list_checkpoints():
+    repo = current_app.config.get("STRING_REPO")
+    if not repo:
+        return jsonify({"checkpoints": []})
+    mod_name = request.args.get("mod")
+    return jsonify({"checkpoints": repo.list_checkpoints(mod_name or None)})
+
+
+@bp.route("/checkpoints/create", methods=["POST"])
+def create_checkpoint():
+    repo = current_app.config.get("STRING_REPO")
+    if not repo:
+        return jsonify({"error": "DB not available"}), 503
+    data     = request.get_json() or {}
+    mod_name = data.get("mod_name")
+    esp_name = data.get("esp_name")
+    if not mod_name:
+        return jsonify({"error": "mod_name required"}), 400
+    cp_id = repo.create_checkpoint(mod_name, esp_name)
+    return jsonify({"ok": True, "checkpoint_id": cp_id})
+
+
+@bp.route("/checkpoints/<checkpoint_id>/restore", methods=["POST"])
+def restore_checkpoint(checkpoint_id: str):
+    repo = current_app.config.get("STRING_REPO")
+    if not repo:
+        return jsonify({"error": "DB not available"}), 503
+    n = repo.restore_checkpoint(checkpoint_id)
+    if n == 0:
+        return jsonify({"error": "Checkpoint not found or empty"}), 404
+    return jsonify({"ok": True, "restored": n})
+
+
+@bp.route("/checkpoints/<checkpoint_id>", methods=["DELETE"])
+def delete_checkpoint(checkpoint_id: str):
+    repo = current_app.config.get("STRING_REPO")
+    if not repo:
+        return jsonify({"error": "DB not available"}), 503
+    repo.delete_checkpoint(checkpoint_id)
+    return jsonify({"ok": True})

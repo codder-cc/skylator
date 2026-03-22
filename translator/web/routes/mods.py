@@ -1,9 +1,9 @@
-"""Mod list and mod detail pages."""
+"""Mod list and mod detail routes — JSON API + legacy HTML fallback."""
 from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from flask import (Blueprint, abort, current_app, jsonify,
+from flask import (Blueprint, abort, current_app, jsonify, redirect,
                    render_template, request)
 
 bp = Blueprint("mods", __name__, url_prefix="/mods")
@@ -11,76 +11,32 @@ bp = Blueprint("mods", __name__, url_prefix="/mods")
 
 @bp.route("/")
 def mod_list():
+    # React SPA uses /api/mods — redirect browsers to the SPA
+    if not request.headers.get("Accept", "").startswith("application/json"):
+        return redirect("/app/mods")
     scanner = current_app.config["SCANNER"]
     mods    = scanner.scan_all()
     status_filter = request.args.get("status", "all")
     search        = request.args.get("q", "").lower()
-
     if status_filter != "all":
         mods = [m for m in mods if m.status == status_filter]
     if search:
         mods = [m for m in mods if search in m.folder_name.lower()]
-
-    return render_template(
-        "mods.html",
-        mods          = mods,
-        status_filter = status_filter,
-        search        = search,
-        total_count   = len(mods),
-    )
+    return jsonify([m.to_dict() for m in mods])
 
 
-@bp.route("/<path:mod_name>")
+@bp.route("/<path:mod_name>", endpoint="mod_detail")
 def mod_detail(mod_name: str):
+    # Skip routes with sub-paths handled by other rules
+    if "/" in mod_name:
+        abort(404)
+    if not request.headers.get("Accept", "").startswith("application/json"):
+        return redirect(f"/app/mods/{mod_name}")
     scanner = current_app.config["SCANNER"]
-    jm      = current_app.config["JOB_MANAGER"]
     mod     = scanner.get_mod(mod_name)
     if mod is None:
-        abort(404)
-
-    # Recent jobs for this mod
-    all_jobs = jm.list_jobs(limit=50)
-    mod_jobs = [j for j in all_jobs if j.params.get("mod_name") == mod_name][:10]
-
-    # Nexus cache data (pass already-fetched mod to avoid a second get_mod call)
-    nexus_data = _load_nexus_cache(mod, current_app)
-
-    # Validation results
-    validation_data = _load_validation(mod_name, current_app)
-
-    # Check for .trans.json files (created by translate step, separate from apply step)
-    any_trans_json = any(
-        Path(f.path).with_suffix('.trans.json').exists()
-        for f in mod.esp_files
-    )
-    all_trans_json = mod.esp_files and all(
-        Path(f.path).with_suffix('.trans.json').exists()
-        for f in mod.esp_files
-    )
-
-    # Pre-compute pipeline step states
-    pipeline_states = {
-        "scan":      "done"    if mod.total_strings > 0    else "pending",
-        "context":   "done"    if nexus_data               else "pending",
-        "translate": "done"    if all_trans_json and mod.translated_strings > 0
-                     else "partial" if any_trans_json or mod.translated_strings > 0
-                     else "pending",
-        "validate":  ("done" if validation_data and validation_data.get("ok")
-                      else "partial" if validation_data and validation_data.get("issues_count", 0) > 0
-                      else "pending"),
-        "apply":     "done"    if mod.status == "done"
-                     else "partial" if mod.status == "partial"
-                     else "pending",
-    }
-
-    return render_template(
-        "mod_detail.html",
-        mod             = mod,
-        mod_jobs        = mod_jobs,
-        nexus_data      = nexus_data,
-        pipeline_states = pipeline_states,
-        validation_data = validation_data,
-    )
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(mod.to_dict())
 
 
 _STRINGS_LOAD_ALL_THRESHOLD = 5000
@@ -122,6 +78,7 @@ def _scope_counts(strings: list) -> dict:
 @bp.route("/<path:mod_name>/strings")
 def mod_strings(mod_name: str):
     scanner = current_app.config["SCANNER"]
+    repo    = current_app.config.get("STRING_REPO")
     mod     = scanner.get_mod(mod_name)
     if mod is None:
         abort(404)
@@ -129,7 +86,64 @@ def mod_strings(mod_name: str):
     scope         = request.args.get("scope", "all")
     filter_status = request.args.get("status", "all")
     search        = request.args.get("q", "")
+    page          = int(request.args.get("page", 1))
+    per_page      = int(request.args.get("per", 100))
 
+    # JSON response for React SPA — prefer SQLite when data is available
+    if request.headers.get("Accept", "").startswith("application/json"):
+        if repo and repo.db.mod_row_count(mod_name) > 0:
+            strings, total = repo.get_strings(
+                mod_name,
+                status=filter_status if filter_status != "all" else None,
+                q=search or None,
+                scope=scope if scope != "all" else None,
+                limit=per_page,
+                offset=(page - 1) * per_page,
+            )
+            scope_counts = repo.scope_counts(mod_name)
+            # Map DB field names to frontend format
+            for s in strings:
+                s["esp"] = s.pop("esp_name", "")
+                s.pop("mod_name", None)
+                s.setdefault("dict_match", "")
+            total_pages = max(1, (total + per_page - 1) // per_page)
+            return jsonify({
+                "strings":      strings,
+                "total":        total,
+                "page":         page,
+                "per":          per_page,
+                "pages":        total_pages,
+                "scope_counts": scope_counts,
+            })
+
+        # DB empty (import still running) — fall back to scanner
+        gd        = current_app.config.get("GLOBAL_DICT")
+        bsa_cache = current_app.config.get("BSA_CACHE")
+        swf_cache = current_app.config.get("SWF_CACHE")
+        all_strings = scanner.get_mod_strings(mod_name, global_dict=gd,
+                                              bsa_cache=bsa_cache, swf_cache=swf_cache)
+        scope_counts = _scope_counts(all_strings)
+        strings = _filter_by_scope(all_strings, scope)
+        if filter_status != "all":
+            strings = [s for s in strings if s["status"] == filter_status]
+        if search:
+            sq = search.lower()
+            strings = [s for s in strings
+                       if sq in s["original"].lower() or sq in s["translation"].lower()]
+        total = len(strings)
+        start = (page - 1) * per_page
+        page_strings = strings[start:start + per_page]
+        total_pages  = max(1, (total + per_page - 1) // per_page)
+        return jsonify({
+            "strings":      page_strings,
+            "total":        total,
+            "page":         page,
+            "per":          per_page,
+            "pages":        total_pages,
+            "scope_counts": scope_counts,
+        })
+
+    # Legacy HTML response (Jinja2 fallback for non-SPA access)
     gd        = current_app.config.get("GLOBAL_DICT")
     bsa_cache = current_app.config.get("BSA_CACHE")
     swf_cache = current_app.config.get("SWF_CACHE")
@@ -141,7 +155,6 @@ def mod_strings(mod_name: str):
     over_threshold = total_all > _STRINGS_LOAD_ALL_THRESHOLD
 
     strings = _filter_by_scope(all_strings, scope)
-
     if filter_status != "all":
         strings = [s for s in strings if s["status"] == filter_status]
     if search:
@@ -155,13 +168,10 @@ def mod_strings(mod_name: str):
 
     if load_all:
         page_strings = strings
-        page         = 1
         per_page     = total
         total_pages  = 1
     else:
-        page     = int(request.args.get("page", 1))
-        per_page = int(request.args.get("per", 100))
-        start    = (page - 1) * per_page
+        start        = (page - 1) * per_page
         page_strings = strings[start:start + per_page]
         total_pages  = max(1, (total + per_page - 1) // per_page)
 
@@ -197,9 +207,10 @@ def update_string(mod_name: str):
     try:
         from translator.web.workers import save_translation
         esp_name = data.get("esp", "")
+        repo = current_app.config.get("STRING_REPO")
         save_translation(cfg.paths.mods_dir, mod_name,
                          cfg.paths.translation_cache,
-                         esp_name, key_str, new_text, cfg=cfg)
+                         esp_name, key_str, new_text, cfg=cfg, repo=repo)
         return jsonify({"ok": True})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -207,32 +218,11 @@ def update_string(mod_name: str):
 
 @bp.route("/<path:mod_name>/context")
 def mod_context(mod_name: str):
-    """Fetch and display Nexus context for a mod."""
-    scanner = current_app.config["SCANNER"]
-    cfg     = current_app.config.get("TRANSLATOR_CFG")
-    mod     = scanner.get_mod(mod_name)
-    if mod is None:
-        abort(404)
-
-    context_text = ""
-    error        = None
-    if cfg and cfg.nexus.api_key and cfg.nexus.api_key != "YOUR_NEXUS_API_KEY_HERE":
-        try:
-            sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
-            from translator.pipeline import get_mod_context
-            folder = Path(scanner.mods_dir) / mod_name
-            context_text = get_mod_context(str(folder))
-        except Exception as exc:
-            error = str(exc)
-    else:
-        error = "Nexus API key not configured"
-
-    return render_template(
-        "mod_context.html",
-        mod          = mod,
-        context_text = context_text,
-        error        = error,
-    )
+    """Redirect to SPA context editor (API is at /api/mods/<name>/context)."""
+    if not request.headers.get("Accept", "").startswith("application/json"):
+        return redirect(f"/app/mods/{mod_name}/context")
+    # Proxy to API route for JSON requests
+    return redirect(f"/api/mods/{mod_name}/context")
 
 
 def _load_validation(mod_name: str, app) -> dict:

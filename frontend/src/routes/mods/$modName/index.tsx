@@ -341,15 +341,15 @@ function ModDetailPage() {
           ) : (
             <div className="space-y-1">
               {mod.esp_files.map((f) => (
-                <div key={f} className="flex items-center gap-2 text-sm text-text-muted py-1">
+                <div key={f.name} className="flex items-center gap-2 text-sm text-text-muted py-1">
                   <FileText size={13} className="shrink-0 text-accent/60" />
-                  <span className="truncate font-mono text-xs" title={f}>{f}</span>
+                  <span className="truncate font-mono text-xs" title={f.path}>{f.name}</span>
                 </div>
               ))}
               {mod.bsa_files.map((f) => (
-                <div key={f} className="flex items-center gap-2 text-sm text-text-muted py-1">
+                <div key={f.name} className="flex items-center gap-2 text-sm text-text-muted py-1">
                   <Archive size={13} className="shrink-0 text-warning/60" />
-                  <span className="truncate font-mono text-xs" title={f}>{f}</span>
+                  <span className="truncate font-mono text-xs" title={f.path}>{f.name}</span>
                 </div>
               ))}
             </div>

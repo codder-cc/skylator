@@ -63,10 +63,17 @@ source "$VENV/bin/activate"
 
 echo "...  Checking dependencies..."
 pip install --upgrade pip --quiet
-pip install -r requirements.txt --quiet || {
+
+# Select requirements file based on platform
+REQ="requirements.txt"
+if [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]]; then
+  REQ="requirements-metal.txt"
+fi
+
+pip install -r "$REQ" --quiet || {
   echo ""
   echo "WARN  Some packages failed to install. Retrying with verbose output..."
-  pip install -r requirements.txt
+  pip install -r "$REQ"
 }
 
 HOST="${HOST:-0.0.0.0}"

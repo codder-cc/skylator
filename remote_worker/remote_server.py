@@ -477,20 +477,43 @@ def _get_my_url(host: str, port: int) -> str:
 
 
 def _get_cached_models() -> list:
-    """Return list of cached .gguf files for inclusion in heartbeat payloads."""
+    """Return list of cached models (GGUF files + MLX dirs) in models_cache/."""
     try:
         from models.loader import MODELS_CACHE
         files = []
-        if MODELS_CACHE.exists():
-            for p in sorted(MODELS_CACHE.rglob("*.gguf")):
-                try:
-                    files.append({
-                        "name":    p.name,
-                        "path":    str(p.relative_to(MODELS_CACHE)),
-                        "size_mb": p.stat().st_size // (1024 * 1024),
-                    })
-                except Exception:
-                    pass
+        if not MODELS_CACHE.exists():
+            return files
+
+        # GGUF files
+        for p in sorted(MODELS_CACHE.rglob("*.gguf")):
+            try:
+                files.append({
+                    "name":    p.name,
+                    "path":    str(p.relative_to(MODELS_CACHE)),
+                    "size_mb": p.stat().st_size // (1024 * 1024),
+                    "backend": "llamacpp",
+                })
+            except Exception:
+                pass
+
+        # MLX model dirs: snapshot dirs containing config.json + *.safetensors
+        for config_file in sorted(MODELS_CACHE.rglob("config.json")):
+            snapshot_dir = config_file.parent
+            if not list(snapshot_dir.glob("*.safetensors")):
+                continue
+            try:
+                size_mb = sum(
+                    f.stat().st_size for f in snapshot_dir.rglob("*") if f.is_file()
+                ) // (1024 * 1024)
+                files.append({
+                    "name":    snapshot_dir.parent.parent.name,  # models--org--name
+                    "path":    str(snapshot_dir.relative_to(MODELS_CACHE)),
+                    "size_mb": size_mb,
+                    "backend": "mlx",
+                })
+            except Exception:
+                pass
+
         return files
     except Exception:
         return []
@@ -819,21 +842,9 @@ def create_server_app(
 
     @app.get("/models")
     async def list_models():
-        """List .gguf files already downloaded in models_cache/."""
+        """List cached models (GGUF + MLX) in models_cache/."""
         from models.loader import MODELS_CACHE
-        files = []
-        if MODELS_CACHE.exists():
-            for p in sorted(MODELS_CACHE.rglob("*.gguf")):
-                try:
-                    rel  = p.relative_to(MODELS_CACHE)
-                    files.append({
-                        "name":    p.name,
-                        "path":    str(rel),          # relative to models_cache
-                        "size_mb": p.stat().st_size // (1024 * 1024),
-                    })
-                except Exception:
-                    pass
-        return {"models": files, "cache_dir": str(MODELS_CACHE)}
+        return {"models": _get_cached_models(), "cache_dir": str(MODELS_CACHE)}
 
     @app.get("/stats")
     async def stats():

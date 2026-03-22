@@ -36,9 +36,10 @@ class ModInfo:
     nexus_game:   str = "skyrimspecialedition"
 
     # Translation stats
-    total_strings:      int = 0
-    translated_strings: int = 0
-    pending_strings:    int = 0
+    total_strings:        int = 0
+    translated_strings:   int = 0
+    pending_strings:      int = 0
+    needs_review_strings: int = 0
 
     # Cache info
     cached_at:    Optional[float] = None
@@ -442,8 +443,9 @@ class ModScanner:
         # Translation stats:
         #   total_strings   — from counts cache (populated by explicit Rescan job)
         #   translated_strings — non-empty entries in translation cache
-        n_total = 0
-        n_trans = 0
+        n_total  = 0
+        n_trans  = 0
+        n_review = 0
         if counts_cache is None:
             counts_cache = self._load_counts_cache()
 
@@ -462,7 +464,8 @@ class ModScanner:
             if trans_json_path.exists():
                 try:
                     saved = json.loads(trans_json_path.read_text(encoding="utf-8"))
-                    n_trans += sum(1 for s in saved if s.get("translation"))
+                    n_trans  += sum(1 for s in saved if s.get("translation"))
+                    n_review += sum(1 for s in saved if s.get("status") == "needs_review")
                     info.cache_file = str(trans_json_path)
                     info.cached_at  = os.path.getmtime(trans_json_path)
                 except Exception:
@@ -480,9 +483,10 @@ class ModScanner:
                     info.cached_at  = os.path.getmtime(self.translation_cache) \
                                        if self.translation_cache.exists() else None
 
-        info.total_strings      = n_total
-        info.translated_strings = n_trans
-        info.pending_strings    = max(0, n_total - n_trans)
+        info.total_strings        = n_total
+        info.translated_strings   = n_trans
+        info.pending_strings      = max(0, n_total - n_trans)
+        info.needs_review_strings = n_review
 
         # Status
         has_esp = bool(info.esp_files)

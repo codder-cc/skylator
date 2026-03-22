@@ -554,7 +554,7 @@ function ModDetailPage() {
     )
   }
 
-  const needsReview = mod.total_strings - mod.translated_strings - mod.pending_strings
+  const needsReview = mod.needs_review_strings ?? 0
 
   return (
     <div className="space-y-5">
@@ -592,11 +592,28 @@ function ModDetailPage() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard label="Total Strings" value={mod.total_strings} />
         <StatCard label="Translated" value={mod.translated_strings} colorClass="text-success" />
-        <StatCard
-          label="Needs Review"
-          value={Math.max(0, needsReview)}
-          colorClass={needsReview > 0 ? 'text-warning' : 'text-text-muted'}
-        />
+        <Link
+          to="/mods/$modName/strings"
+          params={{ modName }}
+          search={{ scope: 'all', status: 'needs_review', q: '', page: 1 }}
+          className={cn(
+            'card p-4 block transition-colors',
+            needsReview > 0 ? 'hover:bg-warning/5 cursor-pointer' : 'pointer-events-none',
+          )}
+        >
+          <div className="text-xs text-text-muted mb-1 font-medium uppercase tracking-wide">
+            Needs Review
+          </div>
+          <div className={cn(
+            'text-2xl font-bold font-mono',
+            needsReview > 0 ? 'text-warning' : 'text-text-muted',
+          )}>
+            {needsReview}
+          </div>
+          {needsReview > 0 && (
+            <div className="text-[10px] text-warning/70 mt-1">click to view →</div>
+          )}
+        </Link>
         <StatCard
           label="Pending"
           value={mod.pending_strings}

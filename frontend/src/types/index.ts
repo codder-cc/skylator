@@ -61,6 +61,7 @@ export interface ModInfo {
   total_strings: number
   translated_strings: number
   pending_strings: number
+  needs_review_strings: number
   pct: number
   status: ModStatus
   esp_files: ModFileInfo[]

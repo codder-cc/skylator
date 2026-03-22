@@ -37,10 +37,14 @@ export const Route = createFileRoute('/mods/$modName/strings')({
 
 function ScoreBadge({ score }: { score: number | null }) {
   if (score === null) return <span className="text-text-muted/40 text-xs">—</span>
-  const colorClass =
-    score >= 80 ? 'text-success' : score >= 50 ? 'text-warning' : 'text-danger'
+  const cls =
+    score >= 80
+      ? 'text-success'
+      : score >= 50
+      ? 'text-warning bg-warning/10 px-1 rounded'
+      : 'text-danger bg-danger/15 px-1 rounded font-bold'
   return (
-    <span className={cn('font-mono text-xs font-semibold tabular-nums', colorClass)}>
+    <span className={cn('font-mono text-xs tabular-nums', cls)}>
       {score}
     </span>
   )
@@ -163,12 +167,17 @@ function StringRow({
 }: StringRowProps) {
   const espShort = entry.esp.split(/[/\\]/).pop() ?? entry.esp
 
+  const isNeedsReview = entry.status === 'needs_review'
+  const isLowScore    = entry.quality_score !== null && entry.quality_score < 50
+
   return (
     <>
       <tr
         className={cn(
           'border-t border-border-subtle hover:bg-bg-card2/30 transition-colors group',
-          flashed && 'ring-1 ring-accent/50 bg-accent/5 transition-all duration-500',
+          flashed       && 'ring-1 ring-accent/50 bg-accent/5 transition-all duration-500',
+          isNeedsReview && !isLowScore && 'border-l-2 border-l-warning/60 bg-warning/5',
+          isLowScore    && 'border-l-2 border-l-danger/60 bg-danger/5',
         )}
       >
         {/* # */}

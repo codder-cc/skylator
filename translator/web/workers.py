@@ -779,6 +779,7 @@ def translate_strings_worker(job, cfg, mod_name: str,
     from translator.web.global_dict import GlobalTextDict
     from scripts.esp_engine import translate_texts, prepare_for_ai
     from translator.context.builder import ContextBuilder
+    from translator.models.remote_backend import RemoteServerDeadError
 
     jm      = JobManager.get()
     scanner = ModScanner(cfg.paths.mods_dir, cfg.paths.translation_cache,
@@ -895,6 +896,10 @@ def translate_strings_worker(job, cfg, mod_name: str,
         # Core pipeline: mask → AI → unmask → validate → quality_score → status
         try:
             core_results = translate_texts(originals, context=chunk_context, params=params, force=force)
+        except RemoteServerDeadError as exc:
+            job.add_log(f"REMOTE SERVER DEAD at {done}/{total}: {exc}")
+            job.add_log(f"Progress saved: {done} strings translated. Use Resume to continue.")
+            raise  # JobManager._worker() will set status=FAILED with this message
         except Exception as exc:
             for s in chunk:
                 job.add_log(f"ERROR chunk at {s['key']}: {exc}")

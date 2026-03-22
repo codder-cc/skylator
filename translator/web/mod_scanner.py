@@ -455,14 +455,29 @@ class ModScanner:
             if cached_ct and cached_ct.get("size") == esp_f.size_bytes:
                 n_total += cached_ct["count"]
 
-            # Count translated entries from cache (non-empty strings only)
-            tc = trans_cache.get(esp_name, {})
-            n_trans += sum(1 for v in tc.values() if v)
-
-            if tc:
-                info.cache_file = str(self.translation_cache)
-                info.cached_at  = os.path.getmtime(self.translation_cache) \
-                                   if self.translation_cache.exists() else None
+            # Prefer .trans.json (authoritative, written by translate step)
+            # Falls back to translation_cache.json for legacy/non-ESP sources
+            trans_json_path = Path(esp_f.path).with_suffix(".trans.json")
+            if trans_json_path.exists():
+                try:
+                    saved = json.loads(trans_json_path.read_text(encoding="utf-8"))
+                    n_trans += sum(1 for s in saved if s.get("translation"))
+                    info.cache_file = str(trans_json_path)
+                    info.cached_at  = os.path.getmtime(trans_json_path)
+                except Exception:
+                    tc = trans_cache.get(esp_name, {})
+                    n_trans += sum(1 for v in tc.values() if v)
+                    if tc:
+                        info.cache_file = str(self.translation_cache)
+                        info.cached_at  = os.path.getmtime(self.translation_cache) \
+                                           if self.translation_cache.exists() else None
+            else:
+                tc = trans_cache.get(esp_name, {})
+                n_trans += sum(1 for v in tc.values() if v)
+                if tc:
+                    info.cache_file = str(self.translation_cache)
+                    info.cached_at  = os.path.getmtime(self.translation_cache) \
+                                       if self.translation_cache.exists() else None
 
         info.total_strings      = n_total
         info.translated_strings = n_trans

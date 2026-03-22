@@ -137,6 +137,28 @@ def cancel_job(job_id: str):
     return jsonify({"ok": True})
 
 
+@bp.route("/<job_id>/resume", methods=["POST"])
+def resume_job(job_id: str):
+    """Create a new job that continues where a failed/cancelled translate job left off.
+    Skips already-translated strings naturally (force=False)."""
+    jm  = current_app.config["JOB_MANAGER"]
+    cfg = current_app.config.get("TRANSLATOR_CFG")
+    job = jm.get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    mod_name = job.params.get("mod_name")
+    if not mod_name:
+        return jsonify({"error": "Cannot resume: no mod_name in job params"}), 400
+    new_job = _create_translate_strings_job(
+        jm, cfg, mod_name,
+        keys=job.params.get("keys"),
+        scope=job.params.get("scope", "all"),
+        params=None,
+        force=False,  # resume = naturally skip already-translated strings
+    )
+    return jsonify({"job_id": new_job.id, "ok": True})
+
+
 @bp.route("/clear", methods=["POST"])
 def clear_finished():
     jm = current_app.config["JOB_MANAGER"]

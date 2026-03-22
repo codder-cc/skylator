@@ -63,10 +63,16 @@
 
   <div class="ms-auto d-flex gap-2">
     <!-- Translate All (scoped to current tab) -->
-    <button id="btn-translate-all" class="btn btn-sm btn-primary" onclick="translateAll()">
-      <i class="bi bi-lightning-fill me-1"></i>Translate
-      {% if scope != 'all' %}<span class="badge bg-light text-dark ms-1">{{ scope.upper() }}</span>{% endif %}
+    <button id="btn-translate-all" class="btn btn-sm {% if scope == 'review' %}btn-warning{% else %}btn-primary{% endif %}" onclick="translateAll()">
+      <i class="bi bi-{% if scope == 'review' %}arrow-repeat{% else %}lightning-fill{% endif %} me-1"></i>
+      {% if scope == 'review' %}Re-translate Review{% else %}Translate{% endif %}
+      {% if scope != 'all' and scope != 'review' %}<span class="badge bg-light text-dark ms-1">{{ scope.upper() }}</span>{% endif %}
     </button>
+    {% if scope == 'review' %}
+    <span class="badge bg-warning text-dark" title="Force mode is automatic for review strings">
+      <i class="bi bi-exclamation-triangle me-1"></i>Force
+    </span>
+    {% endif %}
     <!-- AI inference settings toggle -->
     <button class="btn btn-sm btn-outline-secondary" type="button"
             data-bs-toggle="collapse" data-bs-target="#ai-settings-panel"
@@ -513,7 +519,9 @@ async function translateAll() {
   const btn = document.getElementById('btn-translate-all');
   btn.disabled = true;
 
-  const force = !!(document.getElementById('ai-force')?.checked);
+  // Review scope always forces re-translation (strings are already translated but flagged)
+  const force = CURR_SCOPE === 'review'
+      || !!(document.getElementById('ai-force')?.checked);
   const r = await POST('/jobs/create', {
     type:    'translate_strings',
     mods:    [MOD_NAME],
@@ -551,8 +559,13 @@ async function translateAll() {
       bar.style.display = 'none';
       if (d.status === 'done') {
         toast('Translation complete', 'success');
+      } else if (d.status === 'cancelled') {
+        toast('Translation cancelled. Click Translate again to resume remaining strings.', 'warning');
       } else {
-        toast(`Job ${d.status}`, d.status === 'cancelled' ? 'warning' : 'danger');
+        const msg = d.error && d.error.toLowerCase().includes('remote server')
+          ? 'Remote server died. Progress saved — click Translate to resume.'
+          : `Job ${d.status}. Click Translate to retry remaining strings.`;
+        toast(msg, 'danger');
       }
     },
   });

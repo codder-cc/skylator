@@ -11,6 +11,10 @@ from translator.remote.client import TranslationClient
 log = logging.getLogger(__name__)
 
 
+class RemoteServerDeadError(RuntimeError):
+    """Raised when the remote server stops responding during batch translation."""
+
+
 class RemoteBackend(BaseBackend):
     """
     BaseBackend implementation that POSTs batches to a remote Skylator server.
@@ -99,6 +103,8 @@ class RemoteBackend(BaseBackend):
 
         results: list[str] = []
         num_batches = (len(texts) + batch_size - 1) // batch_size
+        consecutive_failures = 0
+        MAX_CONSECUTIVE = 3
 
         for i in range(0, len(texts), batch_size):
             batch = texts[i: i + batch_size]
@@ -115,11 +121,22 @@ class RemoteBackend(BaseBackend):
                 raw    = self._client.infer(prompt, params=infer_params)
                 parsed = parse_numbered_output(raw, len(batch))
                 results.extend(parsed)
+                consecutive_failures = 0
                 log.info("RemoteBackend: batch %d/%d translated",
                          i // batch_size + 1, num_batches)
+            except TimeoutError as exc:
+                raise RemoteServerDeadError(
+                    f"Remote server stopped responding: {exc}"
+                ) from exc
             except Exception:
-                log.exception("RemoteBackend: batch %d failed — skipping (empty strings)", i)
+                log.exception("RemoteBackend: batch %d/%d failed — skipping",
+                              i // batch_size + 1, num_batches)
                 results.extend([""] * len(batch))
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_CONSECUTIVE:
+                    raise RemoteServerDeadError(
+                        f"Remote server dead after {consecutive_failures} consecutive failures"
+                    )
 
             if progress_cb:
                 progress_cb(min(i + batch_size, len(texts)), len(texts))

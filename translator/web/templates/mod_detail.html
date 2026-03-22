@@ -247,6 +247,16 @@
               <input class="form-check-input" type="checkbox" id="translate-force" role="switch" title="Force re-translate already-cached strings">
               <label class="form-check-label small text-warning" for="translate-force">Force</label>
             </div>
+            {% if pipeline_states.translate == 'partial' %}
+            <button class="btn btn-sm btn-outline-warning me-1" onclick="resumeTranslate(this)"
+                    title="Continue translating remaining pending strings (skips already done)">
+              <i class="bi bi-play-fill me-1"></i>Resume
+            </button>
+            {% endif %}
+            <button class="btn btn-sm btn-outline-warning me-1" onclick="retranslateReview(this)"
+                    title="Re-translate only 'needs_review' strings with force">
+              <i class="bi bi-arrow-repeat me-1"></i>Review
+            </button>
             <button class="btn btn-sm btn-primary" id="btn-translate" onclick="runStep('translate', this)">Run</button>
           </div>
 
@@ -566,6 +576,26 @@ async function runStep(step, btn) {
   }
 
   toast('Step "' + step + '" — use full pipeline', 'info');
+}
+
+async function resumeTranslate(btn) {
+  btn.disabled = true;
+  const r = await POST('/jobs/create', {
+    type: 'translate_strings', mods: [MOD_NAME],
+    scope: 'all', options: { force: false }
+  });
+  if (r.job_id) location.assign('/jobs/' + r.job_id);
+  else { btn.disabled = false; toast('Resume failed: ' + (r.error || 'unknown'), 'danger'); }
+}
+
+async function retranslateReview(btn) {
+  btn.disabled = true;
+  const r = await POST('/jobs/create', {
+    type: 'translate_strings', mods: [MOD_NAME],
+    scope: 'review', options: { force: true }
+  });
+  if (r.job_id) location.assign('/jobs/' + r.job_id);
+  else { btn.disabled = false; toast('Failed: ' + (r.error || 'unknown'), 'danger'); }
 }
 
 // Auto-load cached context when Nexus tab is first opened

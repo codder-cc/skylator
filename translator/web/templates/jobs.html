@@ -86,6 +86,12 @@
             {% else %}
             <a href="{{ url_for('jobs.job_detail', job_id=j.id) }}"
                class="btn btn-sm btn-outline-secondary">Logs</a>
+            {% if j.status.value in ['failed', 'cancelled'] and j.job_type in ['translate_strings', 'translate_mod'] %}
+            <button class="btn btn-sm btn-outline-warning ms-1"
+                    onclick="POST('/jobs/{{ j.id }}/resume').then(r => r.job_id && location.assign('/jobs/'+r.job_id))">
+              Resume
+            </button>
+            {% endif %}
             {% endif %}
           </td>
         </tr>

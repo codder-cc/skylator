@@ -94,6 +94,11 @@
       <i class="bi bi-x-circle me-2"></i>Cancel Job
     </button>
     {% endif %}
+    {% if job.status.value in ['failed', 'cancelled'] and job.job_type in ['translate_strings', 'translate_mod'] %}
+    <button class="btn btn-warning btn-sm w-100 mt-2" onclick="resumeJob('{{ job.id }}')">
+      <i class="bi bi-arrow-repeat me-2"></i>Resume Translation
+    </button>
+    {% endif %}
   </div>
 
   <!-- Log output -->
@@ -126,6 +131,13 @@
 {% block scripts %}
 <script>
 const JOB_ID     = {{ job.id | tojson }};
+
+async function resumeJob(jobId) {
+  const r = await POST(`/jobs/${jobId}/resume`);
+  if (r.job_id) location.assign('/jobs/' + r.job_id);
+  else toast('Resume failed: ' + (r.error || 'unknown'), 'danger');
+}
+
 const IS_RUNNING = {{ (job.status.value in ['running', 'pending']) | tojson }};
 let logSince     = {{ job.log_lines | length }};
 

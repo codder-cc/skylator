@@ -1,10 +1,10 @@
 @echo off
-title Nolvus Translator
+title Skylator
 cd /d "%~dp0"
 
 echo.
 echo  ╔══════════════════════════════════════════╗
-echo  ║        Nolvus Translator v2.0            ║
+echo  ║             Skylator                     ║
 echo  ║   Skyrim Mod Localization Engine         ║
 echo  ╚══════════════════════════════════════════╝
 echo.
@@ -26,9 +26,26 @@ if not exist "config.yaml" (
     exit /b 1
 )
 
-echo  Starting server on http://0.0.0.0:5000
+:: Build frontend if dist is missing or stale
+if not exist "frontend\dist\index.html" (
+    echo  [BUILD] Frontend not built — building now...
+    if not exist "frontend\node_modules" (
+        echo  [SETUP] Installing frontend dependencies...
+        pushd frontend
+        npm install
+        popd
+    )
+    pushd frontend
+    npm run build
+    popd
+    echo.
+)
+
+echo  Server:  http://0.0.0.0:5000
+echo  App:     http://127.0.0.1:5000/app/
+echo.
+echo  For development with hot reload, use dev.bat instead.
 echo  Press Ctrl+C to stop.
-echo  (Use --log-level DEBUG for verbose output)
 echo.
 
 venv\Scripts\python.exe web_server.py --host 0.0.0.0 --log-level INFO

@@ -1,28 +1,31 @@
 @echo off
-echo === Nolvus Translator - venv setup ===
+echo === Skylator - Setup ===
 cd /d "%~dp0"
 
-echo [1/4] Creating virtual environment...
+echo [1/5] Creating Python virtual environment...
 python -m venv venv
 call venv\Scripts\activate.bat
 
-echo [2/4] Installing PyTorch with CUDA 12.8 (RTX 5080 Blackwell)...
+echo [2/5] Installing PyTorch with CUDA 12.8 (RTX 5080 Blackwell)...
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 
-echo [3/4] Installing remaining dependencies...
+echo [3/5] Installing remaining Python dependencies...
 pip install -r requirements.txt
 
-echo [4/4] Installing package in editable mode...
+echo [4/5] Installing package in editable mode...
 pip install -e .
+
+echo [5/5] Installing frontend (Node) dependencies...
+pushd frontend
+npm install
+popd
 
 echo.
 echo === Setup complete! ===
-echo To activate venv: call venv\Scripts\activate.bat
 echo.
-echo CLI usage:
-echo   nolvus-translate translate-mod "ModName"
+echo  Production:    start_server.bat   (builds frontend, serves /app/)
+echo  Development:   dev.bat            (Vite HMR + Flask, open :5173/app/)
 echo.
-echo Web UI:
-echo   python web_server.py
-echo   Open: http://127.0.0.1:5000
+echo  App URL:  http://127.0.0.1:5000/app/
+echo.
 pause

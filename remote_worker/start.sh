@@ -94,5 +94,15 @@ echo ""
 MDNS_FLAG=""
 [ -n "$HOST_URL" ] && MDNS_FLAG="--no-mdns"
 
-exec python server.py --host "$HOST" --port "$PORT" \
-  ${HOST_URL:+--host-url "$HOST_URL"} $MDNS_FLAG "$@"
+# On macOS: use caffeinate to prevent sleep when lid is closed.
+# -s = prevent sleep on AC power, -i = prevent idle sleep.
+# On non-Mac or if caffeinate is missing, just run directly.
+if command -v caffeinate >/dev/null 2>&1; then
+  echo "INFO  caffeinate active — Mac will not sleep while server is running."
+  echo "      (Also enable: System Settings → Battery → Options → Prevent sleeping on power adapter)"
+  exec caffeinate -si python server.py --host "$HOST" --port "$PORT" \
+    ${HOST_URL:+--host-url "$HOST_URL"} $MDNS_FLAG "$@"
+else
+  exec python server.py --host "$HOST" --port "$PORT" \
+    ${HOST_URL:+--host-url "$HOST_URL"} $MDNS_FLAG "$@"
+fi

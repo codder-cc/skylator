@@ -1116,7 +1116,17 @@ def workers_model_load(label: str):
     backend_type  = payload.get("backend_type", "llamacpp")
     repo_id       = payload.get("repo_id", "")
     gguf_filename = payload.get("gguf_filename", "")
+    model_path    = payload.get("model_path", "")
     chunk_id      = str(uuid.uuid4())
+
+    # ── Explicit local path (user clicked cached badge) — forward directly ────
+    if model_path:
+        log.info("Model load with explicit path '%s' for worker %s — forwarding directly",
+                 model_path, label)
+        registry.enqueue_chunk(label, {"type": "load_model", "chunk_id": chunk_id,
+                                       "payload": payload})
+        result_str = registry.collect_result(chunk_id, timeout=120.0)
+        return _finalize_load(registry, label, result_str)
 
     # ── Already cached on remote? ─────────────────────────────────────────────
     cached = _find_in_worker_cache(worker.models, repo_id, gguf_filename, backend_type)

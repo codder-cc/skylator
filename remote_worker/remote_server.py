@@ -536,7 +536,7 @@ def _get_cached_models() -> list:
             try:
                 files.append({
                     "name":    p.name,
-                    "path":    str(p.relative_to(MODELS_CACHE)),
+                    "path":    str(p),   # absolute path so remote worker can load directly
                     "size_mb": p.stat().st_size // (1024 * 1024),
                     "backend": "llamacpp",
                 })
@@ -552,9 +552,16 @@ def _get_cached_models() -> list:
                 size_mb = sum(
                     f.stat().st_size for f in snapshot_dir.rglob("*") if f.is_file()
                 ) // (1024 * 1024)
+                # Derive a human-readable name: strip models--org-- prefix if present
+                raw_name = snapshot_dir.parent.parent.name  # models--org--name in snapshot layout
+                if raw_name.startswith("models--"):
+                    parts = raw_name[len("models--"):].split("--", 1)
+                    display_name = parts[-1]   # just the model name, no org prefix
+                else:
+                    display_name = snapshot_dir.name  # flat layout: dir name IS the model name
                 files.append({
-                    "name":    snapshot_dir.parent.parent.name,  # models--org--name
-                    "path":    str(snapshot_dir.relative_to(MODELS_CACHE)),
+                    "name":    display_name,
+                    "path":    str(snapshot_dir),   # absolute path
                     "size_mb": size_mb,
                     "backend": "mlx",
                 })

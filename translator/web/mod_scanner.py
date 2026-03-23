@@ -518,7 +518,8 @@ class ModScanner:
             info.pending_strings        = max(0, n_total - n_trans)
             info.untranslatable_strings = n_untrans
 
-        # Status
+        # Status — use pending_strings (not raw n_trans < n_total) so that mods where
+        # all remaining strings are untranslatable are correctly marked "done".
         has_esp = bool(info.esp_files)
         if not has_esp:
             info.status = "no_strings"
@@ -527,10 +528,10 @@ class ModScanner:
             info.status = "partial" if n_trans > 0 else "unknown"
         elif n_trans == 0:
             info.status = "pending"
-        elif n_trans < n_total:
-            info.status = "partial"
-        else:
+        elif info.pending_strings == 0 and info.needs_review_strings == 0:
             info.status = "done"
+        else:
+            info.status = "partial"
 
         return info
 
@@ -566,7 +567,8 @@ class ModScanner:
             info.untranslatable_strings = max(0, info.total_strings - n_trans - n_pending - n_review)
             info.cache_file             = "sqlite"
             info.cached_at            = None
-            # Recompute status
+            # Recompute status — use pending_strings so mods with only untranslatable
+            # strings remaining are correctly marked "done".
             has_esp = bool(info.esp_files)
             if not has_esp:
                 info.status = "no_strings"
@@ -574,10 +576,10 @@ class ModScanner:
                 info.status = "partial" if n_trans > 0 else "unknown"
             elif n_trans == 0:
                 info.status = "pending"
-            elif n_trans < info.total_strings:
-                info.status = "partial"
-            else:
+            elif info.pending_strings == 0 and info.needs_review_strings == 0:
                 info.status = "done"
+            else:
+                info.status = "partial"
 
     def scan_string_counts(self, progress_cb=None, mod_name: str | None = None,
                            bsa_cache=None, swf_cache=None) -> dict:

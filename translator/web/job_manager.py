@@ -48,6 +48,8 @@ class Job:
     error:       Optional[str]       = None
     log_lines:      list[str]           = field(default_factory=list)
     string_updates: list[dict]          = field(default_factory=list)
+    tokens_generated: int               = 0
+    tps_avg:          float             = 0.0
 
     def __post_init__(self):
         self._timing: list[float] = []       # timestamps of progress updates (for ETA)
@@ -57,12 +59,16 @@ class Job:
 
     def to_dict(self) -> dict:
         d = asdict(self)
-        d["status"]      = self.status.value
-        d["progress"]    = asdict(self.progress)
-        d["elapsed"]     = self._elapsed()
-        d["pct"]         = self.progress.current / max(self.progress.total, 1) * 100
-        d["mod_name"]    = self.params.get("mod_name", "")
-        d["eta_seconds"] = self._eta_seconds()
+        d["status"]           = self.status.value
+        d["progress"]         = asdict(self.progress)
+        d["elapsed"]          = self._elapsed()
+        d["pct"]              = self.progress.current / max(self.progress.total, 1) * 100
+        d["mod_name"]         = self.params.get("mod_name", "")
+        d["eta_seconds"]      = self._eta_seconds()
+        d["tokens_generated"] = self.tokens_generated
+        d["tps_avg"]          = self.tps_avg
+        # Include worker statuses so completed jobs retain their machine stats
+        d["worker_updates"]   = list(self._worker_statuses.values())
         return d
 
     def _elapsed(self) -> float:
@@ -135,6 +141,59 @@ class JobManager:
         self._notify(job)
         return job
 
+    def record_completed_job(
+        self,
+        name:             str,
+        job_type:         str,
+        params:           dict,
+        result:           str   = "",
+        error:            str   = "",
+        log_lines:        list  = None,
+        string_updates:   list  = None,
+        tokens_generated: int   = 0,
+        tps_avg:          float = 0.0,
+        worker_label:     str   = "",
+        elapsed_sec:      float = 0.0,
+    ) -> "Job":
+        """Create an already-completed job record (no queue, instant DONE/FAILED).
+        Used for synchronous operations (e.g. translate-one) that need history.
+        """
+        now = time.time()
+        status = JobStatus.FAILED if error else JobStatus.DONE
+        job = Job(
+            id               = str(uuid.uuid4()),
+            name             = name,
+            job_type         = job_type,
+            params           = params,
+            status           = status,
+            started_at       = now - elapsed_sec,
+            finished_at      = now,
+            result           = result or None,
+            error            = error or None,
+            log_lines        = list(log_lines or []),
+            string_updates   = list(string_updates or []),
+            tokens_generated = tokens_generated,
+            tps_avg          = tps_avg,
+        )
+        job.progress.current = 1
+        job.progress.total   = 1
+        job.progress.message = "Done" if not error else "Failed"
+        if worker_label:
+            job._worker_statuses = {worker_label: {
+                "label":        worker_label,
+                "done":         1,
+                "current_key":  "",
+                "current_text": "",
+                "tps":          round(tps_avg, 2),
+                "errors":       1 if error else 0,
+                "alive":        False,
+            }}
+        with self._lock:
+            self._jobs[job.id] = job
+        self._notify(job)
+        self._persist()
+        return job
+
     def get_job(self, job_id: str) -> Optional[Job]:
         return self._jobs.get(job_id)
 
@@ -188,17 +247,21 @@ class JobManager:
         Terminal events (done/failed/cancelled) always include full logs.
         new_string_updates contains only entries added since the last broadcast.
         """
-        terminal = job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED)
-        d = job.to_dict()
-        if not terminal and not include_logs:
-            d["log_lines"] = []   # strip logs from in-flight progress events
-        # Send only new string updates since last broadcast (avoids re-sending full list)
-        cursor = job._string_update_cursor
-        d["new_string_updates"] = job.string_updates[cursor:]
-        job._string_update_cursor = len(job.string_updates)
-        # Per-machine worker status for parallel jobs (empty list for single-backend jobs)
-        d["worker_updates"] = list(job._worker_statuses.values())
-        data = json.dumps(d)
+        try:
+            terminal = job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED)
+            d = job.to_dict()
+            if not terminal and not include_logs:
+                d["log_lines"] = []   # strip logs from in-flight progress events
+            # Send only new string updates since last broadcast (avoids re-sending full list)
+            cursor = job._string_update_cursor
+            d["new_string_updates"] = job.string_updates[cursor:]
+            job._string_update_cursor = len(job.string_updates)
+            # Per-machine worker status for parallel jobs (empty list for single-backend jobs)
+            d["worker_updates"] = list(job._worker_statuses.values())
+            data = json.dumps(d)
+        except Exception:
+            log.exception("_notify: failed to serialize job %s", job.id)
+            return
         with self._sse_lock:
             for q in list(self._sse.get(job.id, [])):
                 try:
@@ -313,19 +376,23 @@ class JobManager:
             data = json.loads(self._persist_path.read_text(encoding="utf-8"))
             for jid, d in data.items():
                 j = Job(
-                    id             = d["id"],
-                    name           = d["name"],
-                    job_type       = d.get("job_type", "unknown"),
-                    params         = d.get("params", {}),
-                    status         = JobStatus(d.get("status", "done")),
-                    created_at     = d.get("created_at", 0),
-                    started_at     = d.get("started_at"),
-                    finished_at    = d.get("finished_at"),
-                    result         = d.get("result"),
-                    error          = d.get("error"),
-                    log_lines      = d.get("log_lines", []),
-                    string_updates = d.get("string_updates", []),
+                    id               = d["id"],
+                    name             = d["name"],
+                    job_type         = d.get("job_type", "unknown"),
+                    params           = d.get("params", {}),
+                    status           = JobStatus(d.get("status", "done")),
+                    created_at       = d.get("created_at", 0),
+                    started_at       = d.get("started_at"),
+                    finished_at      = d.get("finished_at"),
+                    result           = d.get("result"),
+                    error            = d.get("error"),
+                    log_lines        = d.get("log_lines", []),
+                    string_updates   = d.get("string_updates", []),
+                    tokens_generated = d.get("tokens_generated", 0),
+                    tps_avg          = d.get("tps_avg", 0.0),
                 )
+                # Restore final worker status snapshot so completed job pages show machine stats
+                j._worker_statuses = {w["label"]: w for w in d.get("worker_updates", [])}
                 p = d.get("progress", {})
                 j.progress = JobProgress(
                     current  = p.get("current", 0),

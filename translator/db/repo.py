@@ -29,11 +29,14 @@ class StringRepo:
         Only updates translation/status/quality_score for existing rows
         (preserves original text).
         Returns the number of rows inserted/updated.
+
+        Key format: str((form_id, rec_type, field_type, field_index, vmad_str_idx))
         """
         rows = []
         for s in strings:
+            vmad_idx = s.get("vmad_str_idx", 0) or 0
             key = str((s.get("form_id"), s.get("rec_type"),
-                       s.get("field_type"), s.get("field_index")))
+                       s.get("field_type"), s.get("field_index"), vmad_idx))
             rows.append((
                 mod_name,
                 esp_name,
@@ -46,14 +49,16 @@ class StringRepo:
                 s.get("rec_type"),
                 s.get("field_type"),
                 s.get("field_index"),
+                vmad_idx,
                 time.time(),
             ))
 
         sql = """
         INSERT INTO strings
             (mod_name, esp_name, key, original, translation, status,
-             quality_score, form_id, rec_type, field_type, field_index, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+             quality_score, form_id, rec_type, field_type, field_index,
+             vmad_str_idx, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(mod_name, esp_name, key) DO UPDATE SET
             translation   = excluded.translation,
             status        = excluded.status,
@@ -71,12 +76,14 @@ class StringRepo:
                original: str, translation: str, status: str,
                quality_score: Optional[int] = None,
                form_id: str = "", rec_type: str = "",
-               field_type: str = "", field_index: Optional[int] = None) -> None:
+               field_type: str = "", field_index: Optional[int] = None,
+               vmad_str_idx: int = 0) -> None:
         sql = """
         INSERT INTO strings
             (mod_name, esp_name, key, original, translation, status,
-             quality_score, form_id, rec_type, field_type, field_index, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+             quality_score, form_id, rec_type, field_type, field_index,
+             vmad_str_idx, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(mod_name, esp_name, key) DO UPDATE SET
             translation   = excluded.translation,
             status        = excluded.status,
@@ -87,47 +94,135 @@ class StringRepo:
             self.db.execute(sql, (
                 mod_name, esp_name, key, original, translation, status,
                 quality_score, form_id, rec_type, field_type,
-                field_index, time.time(),
+                field_index, vmad_str_idx, time.time(),
             ))
             self.db.commit()
+
+    # ── Bulk insert (bootstrap from ESP parse) ───────────────────────────────
+
+    def bulk_insert_strings(self, mod_name: str, esp_name: str,
+                            strings: list[dict]) -> int:
+        """
+        Insert all strings from an ESP parse result into SQLite.
+        Only inserts — does not overwrite existing translations.
+        strings: list of dicts with form_id, rec_type, field_type, field_index,
+                 text, vmad_str_idx (optional).
+        Returns number of rows processed.
+        """
+        rows = []
+        for s in strings:
+            vmad_idx = s.get("vmad_str_idx", 0) or 0
+            key = str((s.get("form_id"), s.get("rec_type"),
+                       s.get("field_type"), s.get("field_index"), vmad_idx))
+            rows.append((
+                mod_name, esp_name, key,
+                s.get("text", ""),
+                s.get("translation", "") or "",
+                s.get("status", "pending"),
+                s.get("quality_score"),
+                s.get("form_id"), s.get("rec_type"),
+                s.get("field_type"), s.get("field_index"),
+                vmad_idx, time.time(),
+            ))
+
+        sql = """
+        INSERT INTO strings
+            (mod_name, esp_name, key, original, translation, status,
+             quality_score, form_id, rec_type, field_type, field_index,
+             vmad_str_idx, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(mod_name, esp_name, key) DO NOTHING
+        """
+        with _write_lock:
+            self.db.executemany(sql, rows)
+            self.db.commit()
+        return len(rows)
+
+    # ── Existence checks ─────────────────────────────────────────────────────
+
+    def esp_exists(self, mod_name: str, esp_name: str) -> bool:
+        """Return True if any rows exist for this mod/esp combination."""
+        row = self.db.execute(
+            "SELECT 1 FROM strings WHERE mod_name=? AND esp_name=? LIMIT 1",
+            (mod_name, esp_name),
+        ).fetchone()
+        return row is not None
+
+    def mod_has_data(self, mod_name: str) -> bool:
+        """Return True if SQLite has any rows for this mod."""
+        row = self.db.execute(
+            "SELECT 1 FROM strings WHERE mod_name=? LIMIT 1",
+            (mod_name,),
+        ).fetchone()
+        return row is not None
 
     # ── Stats queries ────────────────────────────────────────────────────────
 
     def mod_stats(self, mod_name: str) -> dict:
-        """Return {total, translated, pending} for a mod."""
+        """Return {total, translated, pending, needs_review} for a mod."""
         row = self.db.execute("""
             SELECT
                 COUNT(*) AS total,
-                SUM(CASE WHEN status='translated' THEN 1 ELSE 0 END) AS translated,
-                SUM(CASE WHEN status='pending'    THEN 1 ELSE 0 END) AS pending
+                SUM(CASE WHEN status='translated'   THEN 1 ELSE 0 END) AS translated,
+                SUM(CASE WHEN status='pending'       THEN 1 ELSE 0 END) AS pending,
+                SUM(CASE WHEN status='needs_review'  THEN 1 ELSE 0 END) AS needs_review
             FROM strings WHERE mod_name=?
         """, (mod_name,)).fetchone()
         if not row:
-            return {"total": 0, "translated": 0, "pending": 0}
+            return {"total": 0, "translated": 0, "pending": 0, "needs_review": 0}
         return {
-            "total":      row["total"] or 0,
-            "translated": row["translated"] or 0,
-            "pending":    row["pending"] or 0,
+            "total":        row["total"] or 0,
+            "translated":   row["translated"] or 0,
+            "pending":      row["pending"] or 0,
+            "needs_review": row["needs_review"] or 0,
         }
 
     def all_mod_stats(self) -> dict[str, dict]:
-        """Return {mod_name: {total, translated, pending}} for all mods."""
+        """Return {mod_name: {total, translated, pending, needs_review}} for all mods."""
         rows = self.db.execute("""
             SELECT
                 mod_name,
                 COUNT(*) AS total,
-                SUM(CASE WHEN status='translated' THEN 1 ELSE 0 END) AS translated,
-                SUM(CASE WHEN status='pending'    THEN 1 ELSE 0 END) AS pending
+                SUM(CASE WHEN status='translated'   THEN 1 ELSE 0 END) AS translated,
+                SUM(CASE WHEN status='pending'       THEN 1 ELSE 0 END) AS pending,
+                SUM(CASE WHEN status='needs_review'  THEN 1 ELSE 0 END) AS needs_review
             FROM strings GROUP BY mod_name
         """).fetchall()
         return {
             r["mod_name"]: {
-                "total":      r["total"] or 0,
-                "translated": r["translated"] or 0,
-                "pending":    r["pending"] or 0,
+                "total":        r["total"] or 0,
+                "translated":   r["translated"] or 0,
+                "pending":      r["pending"] or 0,
+                "needs_review": r["needs_review"] or 0,
             }
             for r in rows
         }
+
+    # ── Bulk read ────────────────────────────────────────────────────────────
+
+    def get_all_strings(self, mod_name: str,
+                        esp_name: Optional[str] = None) -> list[dict]:
+        """
+        Return all rows for a mod (no pagination).
+        Used by apply_mod, recompute_scores, and translate_strings bootstrap.
+        """
+        if esp_name:
+            rows = self.db.execute("""
+                SELECT mod_name, esp_name, key, original, translation, status,
+                       quality_score, form_id, rec_type, field_type, field_index,
+                       vmad_str_idx
+                FROM strings WHERE mod_name=? AND esp_name=?
+                ORDER BY esp_name, field_index, key
+            """, (mod_name, esp_name)).fetchall()
+        else:
+            rows = self.db.execute("""
+                SELECT mod_name, esp_name, key, original, translation, status,
+                       quality_score, form_id, rec_type, field_type, field_index,
+                       vmad_str_idx
+                FROM strings WHERE mod_name=?
+                ORDER BY esp_name, field_index, key
+            """, (mod_name,)).fetchall()
+        return [dict(r) for r in rows]
 
     # ── String queries ───────────────────────────────────────────────────────
 
@@ -176,7 +271,8 @@ class StringRepo:
 
         rows = self.db.execute(
             f"""SELECT mod_name, esp_name, key, original, translation, status,
-                        quality_score, form_id, rec_type, field_type, field_index
+                        quality_score, form_id, rec_type, field_type, field_index,
+                        vmad_str_idx
                 FROM strings WHERE {where}
                 ORDER BY esp_name, field_index, key
                 LIMIT ? OFFSET ?""",

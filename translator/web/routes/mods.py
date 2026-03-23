@@ -161,10 +161,10 @@ def update_string(mod_name: str):
         from translator.web.workers import save_translation
         esp_name = data.get("esp", "")
         repo = current_app.config.get("STRING_REPO")
-        save_translation(cfg.paths.mods_dir, mod_name,
-                         cfg.paths.translation_cache,
-                         esp_name, key_str, new_text, cfg=cfg, repo=repo)
-        return jsonify({"ok": True})
+        computed_qs, computed_status = save_translation(cfg.paths.mods_dir, mod_name,
+                                                        cfg.paths.translation_cache,
+                                                        esp_name, key_str, new_text, cfg=cfg, repo=repo)
+        return jsonify({"ok": True, "quality_score": computed_qs, "status": computed_status})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 

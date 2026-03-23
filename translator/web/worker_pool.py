@@ -132,7 +132,7 @@ class WorkerPool:
                     for orig, trans in zip(originals, raw):
                         core_results.append({
                             "translation":  trans or "",
-                            "status":       "translated" if trans else "failed",
+                            "status":       None if trans else "failed",  # None → computed from quality score
                             "quality_score": None,
                             "token_issues": [],
                             "skipped":      False,
@@ -151,7 +151,9 @@ class WorkerPool:
                         local_done  = done_count[0]
                         status.done = backend_done[label]
 
-                    status.tps = len(chunk) / elapsed
+                    # Prefer real tok/s from remote worker (set by RegistryPullBackend)
+                    real_tps = getattr(backend, "_last_tps", 0.0)
+                    status.tps = real_tps if real_tps > 0 else len(chunk) / elapsed
                     status.current_key  = ""
                     status.current_text = ""
                     on_progress(local_done, total)

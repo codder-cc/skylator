@@ -11,279 +11,145 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-# Lock for concurrent reads/writes to translation_cache.json
+# Lock for thread-safe ESP bootstrap (parsing ESPs is not thread-safe)
 _CACHE_LOCK = threading.Lock()
 
 
-def _save_single_to_cache(cache_path: Path, esp_name: str,
-                          key_str: str, translation: str) -> None:
-    """Thread-safe write of a single ESP translation entry to the cache file."""
-    with _CACHE_LOCK:
-        cache = (json.loads(cache_path.read_text(encoding="utf-8"))
-                 if cache_path.exists() else {})
-        esp_stem = Path(esp_name).stem
-        cache.setdefault(esp_stem, {})[key_str] = translation
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(
-            json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+def _upsert_db(repo, mods_dir: Path, mod_name: str,
+               esp_name: str, key_str: str, translation: str,
+               quality_score: int = None, status: str = None) -> tuple:
+    """SQLite is the single source of truth for ESP string translations.
 
+    If no rows exist yet for this mod/esp, bootstraps SQLite by parsing the
+    ESP binary (preserving original English text for all strings).
+    Then upserts the specific key with its translation.
+    Returns (computed_quality_score, computed_status).
+    """
+    if repo is None:
+        log.warning("_upsert_db called without repo for %s / %s", mod_name, esp_name)
+        return (None, None)
 
-def _upsert_trans_json(mods_dir: Path, mod_name: str,
-                       esp_name: str, key_str: str, translation: str,
-                       quality_score: int = None, status: str = None,
-                       repo=None) -> None:
-    """.trans.json is the single source of truth for all translations.
-    If the file doesn't exist yet (mod never batch-translated), create it
-    by extracting strings from the ESP first, then insert the translation."""
-    esp_stem   = Path(esp_name).stem
-    trans_json = mods_dir / mod_name / f"{esp_stem}.trans.json"
-    if not trans_json.exists():
-        hits = list((mods_dir / mod_name).rglob(f"{esp_stem}.trans.json"))
-        trans_json = hits[0] if hits else None
-
-    with _CACHE_LOCK:
-        try:
-            if trans_json and trans_json.exists():
-                strings = json.loads(trans_json.read_text(encoding="utf-8"))
-            else:
-                # No .trans.json yet — bootstrap it from the ESP binary
-                esp_candidates = list((mods_dir / mod_name).rglob(f"{esp_stem}.esp"))
-                esp_candidates += list((mods_dir / mod_name).rglob(f"{esp_stem}.esm"))
-                if not esp_candidates:
-                    log.warning("_upsert_trans_json: ESP not found for %s", esp_name)
-                    return
+    try:
+        # Bootstrap: parse ESP into SQLite if this esp has no rows yet
+        if not repo.esp_exists(mod_name, esp_name):
+            esp_stem = Path(esp_name).stem
+            mod_dir  = mods_dir / mod_name
+            candidates = (list(mod_dir.rglob(f"{esp_stem}.esp")) +
+                          list(mod_dir.rglob(f"{esp_stem}.esm")) +
+                          list(mod_dir.rglob(f"{esp_stem}.esl")))
+            if candidates:
                 from scripts.esp_engine import extract_all_strings
-                strings, _ = extract_all_strings(esp_candidates[0])
-                trans_json  = esp_candidates[0].with_suffix(".trans.json")
-                log.info("_upsert_trans_json: created %s (%d strings)", trans_json.name, len(strings))
+                with _CACHE_LOCK:
+                    strings, _ = extract_all_strings(candidates[0])
+                repo.bulk_insert_strings(mod_name, esp_name, strings)
+                log.info("_upsert_db: bootstrapped %s / %s (%d strings)",
+                         mod_name, esp_name, len(strings))
+            else:
+                log.warning("_upsert_db: ESP not found for %s / %s", mod_name, esp_name)
 
-            orig_text = ""
-            _computed_status = status
-            for s in strings:
-                k = str((s.get("form_id"), s.get("rec_type"),
-                          s.get("field_type"), s.get("field_index")))
-                if k == key_str:
-                    orig_text = s.get("text", "")
-                    s["translation"] = translation
-                    if quality_score is not None:
-                        s["quality_score"] = quality_score
-                        if status is not None:
-                            s["status"] = status
-                            _computed_status = status
-                    else:
-                        # Manual edit or missing score — recompute from actual strings
-                        from scripts.esp_engine import quality_score as _qs, validate_tokens as _vt
-                        orig = s.get("text", "")
-                        if orig and translation:
-                            qs = _qs(orig, translation)
-                            tok_ok, _ = _vt(orig, translation)
-                            s["quality_score"] = qs
-                            _computed_status = "translated" if (tok_ok and qs > 70) else "needs_review"
-                            s["status"] = _computed_status
-                        elif not translation:
-                            _computed_status = "pending"
-                            s["status"] = _computed_status
-                            s["quality_score"] = None
-                    break
+        # Fetch current original text for this key (needed for score computation)
+        orig_text = ""
+        rows = repo.db.execute(
+            "SELECT original FROM strings WHERE mod_name=? AND esp_name=? AND key=?",
+            (mod_name, esp_name, key_str),
+        ).fetchone()
+        if rows:
+            orig_text = rows["original"] or ""
 
-            trans_json.write_text(
-                json.dumps(strings, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+        # Compute quality score / status
+        _computed_qs     = quality_score
+        _computed_status = status
+        if quality_score is not None and status is not None:
+            pass  # caller provided both — use as-is
+        elif not translation:
+            _computed_status = "pending"
+            _computed_qs     = None
+        else:
+            from scripts.esp_engine import quality_score as _qs, validate_tokens as _vt
+            if orig_text:
+                qs = _qs(orig_text, translation)
+                tok_ok, _ = _vt(orig_text, translation)
+                _computed_qs     = qs
+                _computed_status = "translated" if (tok_ok and qs > 70) else "needs_review"
+            else:
+                _computed_status = status or "translated"
 
-            # Also write to SQLite if a repo is available
-            if repo is not None:
-                try:
-                    repo.upsert(
-                        mod_name=mod_name,
-                        esp_name=esp_name,
-                        key=key_str,
-                        original=orig_text,
-                        translation=translation,
-                        status=_computed_status or "pending",
-                        quality_score=quality_score,
-                    )
-                except Exception as e:
-                    log.warning("DB upsert failed: %s", e)
+        repo.upsert(
+            mod_name=mod_name,
+            esp_name=esp_name,
+            key=key_str,
+            original=orig_text,
+            translation=translation,
+            status=_computed_status or "pending",
+            quality_score=_computed_qs,
+        )
+        return (_computed_qs, _computed_status)
 
-        except Exception:
-            log.exception("_upsert_trans_json failed for %s / %s", mod_name, esp_name)
+    except Exception:
+        log.exception("_upsert_db failed for %s / %s", mod_name, esp_name)
+        return (None, None)
 
 
-def _save_mcm_translation(mods_dir: Path, mod_name: str,
-                           key_str: str, translation: str,
+def _save_mcm_translation(mod_name: str, key_str: str, translation: str,
                            repo=None) -> None:
     """
-    Write a single MCM string translation back to the *_russian.txt file.
+    Save a single MCM string translation to SQLite (single source of truth).
+    The *_russian.txt file is generated from SQLite at apply time.
 
     key_str format: "mcm:{rel_txt_path}:{line_idx}:{mcm_key}"
     e.g. "mcm:interface/translations/SkyUI_english.txt:3:sSomeKey"
     """
+    if repo is None:
+        log.warning("_save_mcm_translation: no repo, skipping %s", key_str)
+        return
     try:
-        # Parse the key
-        parts     = key_str.split(":", 3)   # ["mcm", rel_txt, line_idx, mcm_key]
-        rel_txt   = parts[1]
-        line_idx  = int(parts[2])
-        mcm_key   = parts[3] if len(parts) > 3 else ""
-
-        mod_folder = mods_dir / mod_name
-        en_path    = mod_folder / rel_txt
-        if not en_path.exists():
-            log.warning("MCM save: english file not found: %s", en_path)
-            return
-
-        stem    = en_path.stem.replace("_english", "")
-        ru_path = en_path.parent / f"{stem}_russian.txt"
-
-        from scripts.translate_mcm import read_trans_file
-        en_pairs, bom = read_trans_file(en_path)
-
-        # Load or seed the Russian file from the English one
-        if ru_path.exists():
-            try:
-                ru_pairs, bom = read_trans_file(ru_path)
-            except Exception:
-                ru_pairs = list(en_pairs)
-        else:
-            ru_pairs = list(en_pairs)
-
-        # Update by line index (most reliable) — also fall back to key match
-        with _CACHE_LOCK:
-            result = list(ru_pairs)
-            if line_idx < len(result):
-                key_in_file = result[line_idx][0]
-                result[line_idx] = (key_in_file, translation)
-            elif mcm_key:
-                # Fall back: find by key string
-                for i, (k, _) in enumerate(result):
-                    if k == mcm_key:
-                        result[i] = (k, translation)
-                        break
-
-            ru_path.parent.mkdir(parents=True, exist_ok=True)
-            # Write without calling backup_if_exists (per-string saves don't need
-            # individual backups — the whole file is backed up by cmd_translate_mcm)
-            lines   = [f"{k}\t{v}" if v else k for k, v in result]
-            content = '\r\n'.join(lines) + '\r\n'
-            ru_path.write_bytes(bom + content.encode('utf-16-le'))
-
-        # Also write to SQLite if a repo is available
-        if repo is not None:
-            try:
-                esp_name = key_str.split(":", 2)[1] if ":" in key_str else "mcm"
-                repo.upsert(mod_name=mod_name, esp_name=esp_name,
-                            key=key_str, original="", translation=translation,
-                            status="translated")
-            except Exception as e:
-                log.warning("DB upsert failed for MCM: %s", e)
+        parts    = key_str.split(":", 3)
+        rel_txt  = parts[1] if len(parts) > 1 else "mcm"
+        repo.upsert(mod_name=mod_name, esp_name=rel_txt,
+                    key=key_str, original="", translation=translation,
+                    status="translated" if translation else "pending")
     except Exception as exc:
         log.warning("_save_mcm_translation failed for %s: %s", key_str, exc)
 
 
-def _save_bsa_mcm_translation(cfg, mod_name: str, key_str: str, translation: str,
+def _save_bsa_mcm_translation(mod_name: str, key_str: str, translation: str,
                                repo=None) -> None:
     """
-    Write a single BSA-embedded MCM translation to the BsaStringCache.
+    Save a single BSA-embedded MCM translation to SQLite (single source of truth).
+    Cache *_russian.txt files are generated from SQLite at apply time (translate_bsa_worker).
 
     key_str format: "bsa-mcm:{bsa_name}:{rel_en_in_cache}:{line_idx}:{mcm_key}"
-    The cache dir already holds extracted *_english.txt; we write *_russian.txt there.
     """
+    if repo is None:
+        log.warning("_save_bsa_mcm_translation: no repo, skipping %s", key_str)
+        return
     try:
-        parts       = key_str.split(":", 4)
-        bsa_name    = parts[1]
-        rel_en      = parts[2]
-        line_idx    = int(parts[3])
-        mcm_key     = parts[4] if len(parts) > 4 else ""
-
-        from translator.web.asset_cache import BsaStringCache
-        bsa_cache = BsaStringCache(
-            cache_root = cfg.paths.temp_dir,
-            bsarch_exe = str(cfg.paths.bsarch_exe) if cfg.paths.bsarch_exe else None,
-        )
-        cache_dir = bsa_cache._cache_dir(mod_name, bsa_name)
-        en_path   = cache_dir / rel_en
-        if not en_path.exists():
-            log.warning("BSA MCM save: english file not in cache: %s", en_path)
-            return
-
-        stem    = en_path.stem.replace("_english", "")
-        ru_path = en_path.parent / f"{stem}_russian.txt"
-
-        from scripts.translate_mcm import read_trans_file
-        en_pairs, bom = read_trans_file(en_path)
-
-        if ru_path.exists():
-            try:
-                ru_pairs, bom = read_trans_file(ru_path)
-            except Exception:
-                ru_pairs = list(en_pairs)
-        else:
-            ru_pairs = list(en_pairs)
-
-        with _CACHE_LOCK:
-            result = list(ru_pairs)
-            if line_idx < len(result):
-                result[line_idx] = (result[line_idx][0], translation)
-            elif mcm_key:
-                for i, (k, _) in enumerate(result):
-                    if k == mcm_key:
-                        result[i] = (k, translation)
-                        break
-
-            ru_path.parent.mkdir(parents=True, exist_ok=True)
-            lines   = [f"{k}\t{v}" if v else k for k, v in result]
-            content = '\r\n'.join(lines) + '\r\n'
-            ru_path.write_bytes(bom + content.encode('utf-16-le'))
-
-        # Also write to SQLite if a repo is available
-        if repo is not None:
-            try:
-                repo.upsert(mod_name=mod_name, esp_name=bsa_name,
-                            key=key_str, original="", translation=translation,
-                            status="translated")
-            except Exception as e:
-                log.warning("DB upsert failed for BSA MCM: %s", e)
-
+        parts    = key_str.split(":", 4)
+        bsa_name = parts[1] if len(parts) > 1 else "bsa"
+        repo.upsert(mod_name=mod_name, esp_name=bsa_name,
+                    key=key_str, original="", translation=translation,
+                    status="translated" if translation else "pending")
     except Exception as exc:
         log.warning("_save_bsa_mcm_translation failed for %s: %s", key_str, exc)
 
 
-def _save_swf_translation(cfg, mod_name: str, key_str: str, translation: str,
+def _save_swf_translation(mod_name: str, key_str: str, translation: str,
                            repo=None) -> None:
     """
-    Write a translated string to the SWF text cache as {chid}_ru.txt.
+    Save a single SWF string translation to SQLite (single source of truth).
+    Cache _ru.txt files are generated from SQLite at apply time (translate_bsa_worker).
 
     key_str format: "swf:{swf_rel}:{chid}"
     """
+    if repo is None:
+        log.warning("_save_swf_translation: no repo, skipping %s", key_str)
+        return
     try:
         parts   = key_str.split(":", 2)
-        swf_rel = parts[1]
-        chid    = parts[2]
-
-        from translator.web.asset_cache import SwfStringCache
-        swf_cache = SwfStringCache(
-            cache_root = cfg.paths.temp_dir,
-            ffdec_jar  = str(cfg.paths.ffdec_jar) if cfg.paths.ffdec_jar else None,
-        )
-        cache_dir = swf_cache._cache_dir(mod_name, swf_rel)
-        if not cache_dir.exists():
-            log.warning("SWF save: cache dir not found for %s / %s", mod_name, swf_rel)
-            return
-
-        ru_path = cache_dir / f"{chid}_ru.txt"
-        with _CACHE_LOCK:
-            ru_path.write_text(translation, encoding="utf-8")
-
-        # Also write to SQLite if a repo is available
-        if repo is not None:
-            try:
-                repo.upsert(mod_name=mod_name, esp_name=swf_rel,
-                            key=key_str, original="", translation=translation,
-                            status="translated")
-            except Exception as e:
-                log.warning("DB upsert failed for SWF: %s", e)
-
+        swf_rel = parts[1] if len(parts) > 1 else "swf"
+        repo.upsert(mod_name=mod_name, esp_name=swf_rel,
+                    key=key_str, original="", translation=translation,
+                    status="translated" if translation else "pending")
     except Exception as exc:
         log.warning("_save_swf_translation failed for %s: %s", key_str, exc)
 
@@ -291,23 +157,22 @@ def _save_swf_translation(cfg, mod_name: str, key_str: str, translation: str,
 def save_translation(mods_dir: Path, mod_name: str, cache_path: Path,
                      esp_name: str, key_str: str, translation: str,
                      cfg=None, quality_score: int = None, status: str = None,
-                     repo=None) -> None:
-    """Unified dispatcher: routes save to the correct backend by key prefix."""
+                     repo=None) -> tuple:
+    """Unified dispatcher: routes save to SQLite by key prefix.
+    SQLite is the single source of truth — no file I/O.
+    Returns (quality_score, status) tuple with the computed values."""
     if key_str.startswith("mcm:"):
-        _save_mcm_translation(mods_dir, mod_name, key_str, translation, repo=repo)
+        _save_mcm_translation(mod_name, key_str, translation, repo=repo)
+        return (None, None)
     elif key_str.startswith("bsa-mcm:"):
-        if cfg:
-            _save_bsa_mcm_translation(cfg, mod_name, key_str, translation, repo=repo)
-        else:
-            log.warning("save_translation: cfg required for bsa-mcm key")
+        _save_bsa_mcm_translation(mod_name, key_str, translation, repo=repo)
+        return (None, None)
     elif key_str.startswith("swf:"):
-        if cfg:
-            _save_swf_translation(cfg, mod_name, key_str, translation, repo=repo)
-        else:
-            log.warning("save_translation: cfg required for swf key")
+        _save_swf_translation(mod_name, key_str, translation, repo=repo)
+        return (None, None)
     else:
-        _upsert_trans_json(mods_dir, mod_name, esp_name, key_str, translation,
-                           quality_score=quality_score, status=status, repo=repo)
+        return _upsert_db(repo, mods_dir, mod_name, esp_name, key_str, translation,
+                          quality_score=quality_score, status=status)
 
 
 def translate_mod_worker(job, cfg, mod_name: str,
@@ -476,8 +341,8 @@ def translate_esp_worker(job, cfg, esp_path: str, dry_run: bool = False):
     job.add_log("Done")
 
 
-def apply_mod_worker(job, cfg, mod_name: str, dry_run: bool = False):
-    """Apply .trans.json translations to ESP binaries — no AI translation."""
+def apply_mod_worker(job, cfg, mod_name: str, dry_run: bool = False, repo=None):
+    """Apply translations from SQLite to ESP binaries and MCM txt files."""
     from translator.web.job_manager import JobManager
     jm = JobManager.get()
 
@@ -488,7 +353,7 @@ def apply_mod_worker(job, cfg, mod_name: str, dry_run: bool = False):
 
     ROOT = Path(__file__).parent.parent.parent
     sys.path.insert(0, str(ROOT))
-    from scripts.esp_engine import cmd_apply_from_trans
+    from scripts.esp_engine import cmd_apply_from_strings
 
     esp_files = list(mod_dir.rglob("*.esp")) + list(mod_dir.rglob("*.esm"))
     if not esp_files:
@@ -500,17 +365,29 @@ def apply_mod_worker(job, cfg, mod_name: str, dry_run: bool = False):
     for i, esp_path in enumerate(esp_files):
         if job.status.value == "cancelled":
             return
-        json_path = esp_path.with_suffix('.trans.json')
-        if not json_path.exists():
-            job.add_log(f"[{i+1}/{total}] SKIP {esp_path.name} — no .trans.json (run translate step first)")
-            jm.update_progress(job, i + 1, total, f"Skipped: {esp_path.name}")
-            continue
 
         job.add_log(f"[{i+1}/{total}] Applying: {esp_path.name}")
         jm.update_progress(job, i, total, f"Applying: {esp_path.name}")
         try:
             if not dry_run:
-                n = cmd_apply_from_trans(esp_path, esp_path, mod_dir)
+                if repo:
+                    rows = repo.get_all_strings(mod_name, esp_path.name)
+                    if not rows:
+                        job.add_log(f"  SKIP {esp_path.name} — no strings in DB (run translate step first)")
+                        jm.update_progress(job, i + 1, total, f"Skipped: {esp_path.name}")
+                        continue
+                    # Map SQLite field 'original' → 'text' expected by _build_trans_map
+                    for r in rows:
+                        r.setdefault("text", r.get("original", ""))
+                    n = cmd_apply_from_strings(esp_path, esp_path, rows, mod_dir)
+                else:
+                    # Fallback: legacy .trans.json path (no repo)
+                    from scripts.esp_engine import cmd_apply_from_trans
+                    json_path = esp_path.with_suffix('.trans.json')
+                    if not json_path.exists():
+                        job.add_log(f"  SKIP {esp_path.name} — no DB or .trans.json")
+                        continue
+                    n = cmd_apply_from_trans(esp_path, esp_path, mod_dir)
                 applied += (1 if n else 0)
                 job.add_log(f"  OK: {esp_path.name} ({n} strings applied)")
             else:
@@ -518,16 +395,192 @@ def apply_mod_worker(job, cfg, mod_name: str, dry_run: bool = False):
         except Exception as exc:
             job.add_log(f"  ERROR {esp_path.name}: {exc}")
 
+    # Apply MCM / BSA-MCM translations (generate *_russian.txt from SQLite)
+    if repo and not dry_run:
+        try:
+            _apply_mcm_from_db(repo, mod_name, mod_dir, job)
+        except Exception as exc:
+            job.add_log(f"MCM apply error: {exc}")
+            log.exception("_apply_mcm_from_db failed for %s", mod_name)
+
     jm.update_progress(job, total, total, f"Done — {applied} files written")
     job.result = f"Applied: {mod_name} ({applied} files)"
 
 
-def translate_bsa_worker(job, cfg, mod_name: str, dry_run: bool = False):
+def _apply_mcm_from_db(repo, mod_name: str, mod_dir: Path, job=None) -> int:
     """
-    Translate BSA archives for a mod:
-    1. MCM interface translation files (*_english.txt inside BSA)
-    2. SWF text strings (if FFDec configured)
-    The existing cmd_translate_mcm already handles BSA unpack/translate/repack.
+    Generate *_russian.txt files for loose MCM strings from SQLite.
+    Reads all mcm: rows for this mod and writes them to the appropriate files.
+    Returns number of files written.
+    """
+    try:
+        from scripts.translate_mcm import read_trans_file
+    except Exception:
+        return 0
+
+    rows = repo.get_all_strings(mod_name)
+    mcm_rows = [r for r in rows if r["key"].startswith("mcm:") and r.get("translation")]
+    if not mcm_rows:
+        return 0
+
+    # Group by rel_txt path (parts[1] of "mcm:{rel_txt}:{line_idx}:{mcm_key}")
+    by_file: dict[str, list[tuple[int, str, str]]] = {}
+    for r in mcm_rows:
+        parts = r["key"].split(":", 3)
+        if len(parts) < 4:
+            continue
+        rel_txt  = parts[1]
+        line_idx = int(parts[2])
+        mcm_key  = parts[3]
+        by_file.setdefault(rel_txt, []).append((line_idx, mcm_key, r["translation"]))
+
+    written = 0
+    for rel_txt, entries in by_file.items():
+        en_path = mod_dir / rel_txt
+        if not en_path.exists():
+            continue
+        stem    = en_path.stem.replace("_english", "")
+        ru_path = en_path.parent / f"{stem}_russian.txt"
+        try:
+            en_pairs, bom = read_trans_file(en_path)
+            if ru_path.exists():
+                try:
+                    ru_pairs, bom = read_trans_file(ru_path)
+                except Exception:
+                    ru_pairs = list(en_pairs)
+            else:
+                ru_pairs = list(en_pairs)
+
+            result = list(ru_pairs)
+            for line_idx, mcm_key, translation in entries:
+                if line_idx < len(result):
+                    result[line_idx] = (result[line_idx][0], translation)
+                elif mcm_key:
+                    for i, (k, _) in enumerate(result):
+                        if k == mcm_key:
+                            result[i] = (k, translation)
+                            break
+
+            ru_path.parent.mkdir(parents=True, exist_ok=True)
+            lines   = [f"{k}\t{v}" if v else k for k, v in result]
+            content = '\r\n'.join(lines) + '\r\n'
+            ru_path.write_bytes(bom + content.encode('utf-16-le'))
+            written += 1
+        except Exception as exc:
+            log.warning("_apply_mcm_from_db: failed for %s: %s", rel_txt, exc)
+
+    if job and written:
+        job.add_log(f"MCM: wrote {written} *_russian.txt file(s) from DB")
+    return written
+
+
+def _apply_bsa_mcm_from_db(repo, mod_name: str, bsa_cache, job=None) -> int:
+    """
+    Generate *_russian.txt files for BSA-embedded MCM strings from SQLite.
+    Returns number of files written.
+    """
+    try:
+        from scripts.translate_mcm import read_trans_file
+    except Exception:
+        return 0
+
+    rows = repo.get_all_strings(mod_name)
+    bsa_rows = [r for r in rows if r["key"].startswith("bsa-mcm:") and r.get("translation")]
+    if not bsa_rows:
+        return 0
+
+    # Group by (bsa_name, rel_en_in_cache)
+    by_file: dict[tuple, list[tuple[int, str, str]]] = {}
+    for r in bsa_rows:
+        parts    = r["key"].split(":", 4)
+        if len(parts) < 5:
+            continue
+        bsa_name = parts[1]
+        rel_en   = parts[2]
+        line_idx = int(parts[3])
+        mcm_key  = parts[4]
+        by_file.setdefault((bsa_name, rel_en), []).append((line_idx, mcm_key, r["translation"]))
+
+    written = 0
+    for (bsa_name, rel_en), entries in by_file.items():
+        cache_dir = bsa_cache._cache_dir(mod_name, bsa_name)
+        en_path   = cache_dir / rel_en
+        if not en_path.exists():
+            continue
+        stem    = en_path.stem.replace("_english", "")
+        ru_path = en_path.parent / f"{stem}_russian.txt"
+        try:
+            en_pairs, bom = read_trans_file(en_path)
+            if ru_path.exists():
+                try:
+                    ru_pairs, bom = read_trans_file(ru_path)
+                except Exception:
+                    ru_pairs = list(en_pairs)
+            else:
+                ru_pairs = list(en_pairs)
+
+            result = list(ru_pairs)
+            for line_idx, mcm_key, translation in entries:
+                if line_idx < len(result):
+                    result[line_idx] = (result[line_idx][0], translation)
+                elif mcm_key:
+                    for i, (k, _) in enumerate(result):
+                        if k == mcm_key:
+                            result[i] = (k, translation)
+                            break
+
+            ru_path.parent.mkdir(parents=True, exist_ok=True)
+            lines   = [f"{k}\t{v}" if v else k for k, v in result]
+            content = '\r\n'.join(lines) + '\r\n'
+            ru_path.write_bytes(bom + content.encode('utf-16-le'))
+            written += 1
+        except Exception as exc:
+            log.warning("_apply_bsa_mcm_from_db: failed for %s/%s: %s", bsa_name, rel_en, exc)
+
+    if job and written:
+        job.add_log(f"BSA-MCM: wrote {written} *_russian.txt file(s) from DB")
+    return written
+
+
+def _apply_swf_from_db(repo, mod_name: str, swf_cache, job=None) -> int:
+    """
+    Generate {chid}_ru.txt files in the SWF cache from SQLite.
+    Returns number of files written.
+    """
+    rows = repo.get_all_strings(mod_name)
+    swf_rows = [r for r in rows if r["key"].startswith("swf:") and r.get("translation")]
+    if not swf_rows:
+        return 0
+
+    written = 0
+    for r in swf_rows:
+        parts   = r["key"].split(":", 2)
+        if len(parts) < 3:
+            continue
+        swf_rel = parts[1]
+        chid    = parts[2]
+        cache_dir = swf_cache._cache_dir(mod_name, swf_rel)
+        if not cache_dir.exists():
+            continue
+        try:
+            ru_path = cache_dir / f"{chid}_ru.txt"
+            ru_path.write_text(r["translation"], encoding="utf-8")
+            written += 1
+        except Exception as exc:
+            log.warning("_apply_swf_from_db: failed for %s: %s", r["key"], exc)
+
+    if job and written:
+        job.add_log(f"SWF: wrote {written} _ru.txt file(s) from DB")
+    return written
+
+
+def translate_bsa_worker(job, cfg, mod_name: str, dry_run: bool = False, repo=None):
+    """
+    Apply BSA/MCM/SWF translations for a mod:
+    1. Export MCM + BSA-MCM translations from SQLite → *_russian.txt files
+    2. Export SWF translations from SQLite → _ru.txt files
+    3. Pack/repack BSA with BSArch
+    4. Reimport SWF texts with FFDec
     """
     from translator.web.job_manager import JobManager
     jm = JobManager.get()
@@ -550,7 +603,27 @@ def translate_bsa_worker(job, cfg, mod_name: str, dry_run: bool = False):
         return
 
     job.add_log(f"Found {len(bsa_files)} BSA archive(s), {len(loose_mcm)} loose MCM file(s)")
-    jm.update_progress(job, 0, 1, "Translating MCM / BSA content...")
+    jm.update_progress(job, 0, 1, "Applying MCM / BSA translations from DB...")
+
+    # Export MCM translations from SQLite → *_russian.txt before packing
+    if repo and not dry_run:
+        try:
+            from translator.web.asset_cache import BsaStringCache, SwfStringCache
+            _cache_root = cfg.paths.temp_dir if cfg.paths.temp_dir else ROOT / "temp"
+            bsa_cache = BsaStringCache(
+                cache_root=_cache_root,
+                bsarch_exe=str(cfg.paths.bsarch_exe) if cfg.paths.bsarch_exe else None,
+            )
+            swf_cache = SwfStringCache(
+                cache_root=_cache_root,
+                ffdec_jar=str(cfg.paths.ffdec_jar) if cfg.paths.ffdec_jar else None,
+            )
+            _apply_mcm_from_db(repo, mod_name, mod_dir, job)
+            _apply_bsa_mcm_from_db(repo, mod_name, bsa_cache, job)
+            _apply_swf_from_db(repo, mod_name, swf_cache, job)
+        except Exception as exc:
+            job.add_log(f"DB export warning: {exc}")
+            log.exception("DB export failed for %s", mod_name)
 
     try:
         cmd_translate_mcm(mod_dir, dry_run=dry_run)
@@ -570,7 +643,7 @@ def translate_bsa_worker(job, cfg, mod_name: str, dry_run: bool = False):
         swf_files += list(mod_dir.rglob("*.swf"))
 
         if swf_files:
-            job.add_log(f"Found {len(swf_files)} SWF file(s) — translating with FFDec...")
+            job.add_log(f"Found {len(swf_files)} SWF file(s) — reimporting with FFDec...")
             for swf in swf_files:
                 try:
                     _translate_swf_texts(job, swf, ffdec, cfg, dry_run=dry_run)
@@ -876,66 +949,80 @@ def validate_translations_worker(job, cfg, mod_name: str):
         log.warning("Could not save validation results: %s", exc)
 
 
-def recompute_scores_worker(job, cfg, mod_name: str = None):
+def recompute_scores_worker(job, cfg, mod_name: str = None, repo=None):
     """
-    Recompute quality_score and status for every string in every .trans.json.
+    Recompute quality_score and status for every translated ESP string in SQLite.
     If mod_name is given, only that mod is processed; otherwise all mods.
-    Updates trans.json files in-place — does NOT re-translate anything.
+    Does NOT re-translate anything.
     """
-    import json as _json
     from scripts.esp_engine import quality_score as _qs, validate_tokens as _vt
     from translator.web.job_manager import JobManager
     jm = JobManager.get()
 
+    if not repo:
+        job.add_log("ERROR: no repo — cannot recompute scores without SQLite")
+        return
+
     mods_dir = cfg.paths.mods_dir
+
+    # Collect mod names to process
     if mod_name:
-        search_roots = [mods_dir / mod_name]
+        mod_names = [mod_name]
     else:
-        search_roots = [p for p in mods_dir.iterdir() if p.is_dir()]
+        mod_names = [p.name for p in mods_dir.iterdir() if p.is_dir()]
 
-    trans_files = []
-    for root in search_roots:
-        if root.is_dir():
-            trans_files.extend(root.rglob("*.trans.json"))
-
-    total   = len(trans_files)
+    total   = len(mod_names)
     updated = 0
     skipped = 0
 
-    job.add_log(f"Scanning {total} .trans.json file(s)...")
+    job.add_log(f"Recomputing scores for {total} mod(s) from SQLite...")
     jm.update_progress(job, 0, total, "Starting...")
 
-    for i, path in enumerate(trans_files):
-        jm.update_progress(job, i, total, path.name)
+    for i, _mod in enumerate(mod_names):
+        jm.update_progress(job, i, total, _mod)
         try:
-            with _CACHE_LOCK:
-                strings = _json.loads(path.read_text(encoding="utf-8"))
-                changed = False
-                for s in strings:
-                    orig  = s.get("text", "")
-                    trans = s.get("translation", "")
-                    if not trans:
-                        continue
-                    new_qs = _qs(orig, trans)
-                    tok_ok, _ = _vt(orig, trans)
-                    new_status = "translated" if (tok_ok and new_qs > 70) else "needs_review"
-                    if s.get("quality_score") != new_qs or s.get("status") != new_status:
-                        s["quality_score"] = new_qs
-                        s["status"]        = new_status
-                        changed = True
-                if changed:
-                    path.write_text(
-                        _json.dumps(strings, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
+            rows = repo.get_all_strings(_mod)
+            # Only ESP strings have meaningful orig/trans for quality scoring
+            esp_rows = [r for r in rows
+                        if not any(r["key"].startswith(p) for p in ("mcm:", "bsa-mcm:", "swf:"))]
+            n_changed = 0
+            n_review  = 0
+            for r in esp_rows:
+                orig  = r.get("original", "") or ""
+                trans = r.get("translation", "") or ""
+                if not trans:
+                    continue
+                new_qs = _qs(orig, trans)
+                tok_ok, _ = _vt(orig, trans)
+                new_status = "translated" if (tok_ok and new_qs > 70) else "needs_review"
+                if new_status == "needs_review":
+                    n_review += 1
+                if r.get("quality_score") != new_qs or r.get("status") != new_status:
+                    repo.upsert(
+                        mod_name=_mod,
+                        esp_name=r["esp_name"],
+                        key=r["key"],
+                        original=orig,
+                        translation=trans,
+                        status=new_status,
+                        quality_score=new_qs,
+                        form_id=r.get("form_id") or "",
+                        rec_type=r.get("rec_type") or "",
+                        field_type=r.get("field_type") or "",
+                        field_index=r.get("field_index"),
+                        vmad_str_idx=r.get("vmad_str_idx") or 0,
                     )
-                    updated += 1
-                else:
-                    skipped += 1
+                    n_changed += 1
+            if n_changed:
+                updated += 1
+                job.add_log(f"Updated {_mod}: {n_changed} strings recomputed, {n_review} needs_review")
+            else:
+                skipped += 1
         except Exception as exc:
-            job.add_log(f"ERROR {path.name}: {exc}")
+            job.add_log(f"ERROR {_mod}: {exc}")
 
     jm.update_progress(job, total, total, "Done")
-    job.result = f"Recomputed scores: {updated} file(s) updated, {skipped} unchanged"
+    job.result = f"Recomputed scores: {updated} mod(s) updated, {skipped} unchanged"
     job.add_log(job.result)
 
 
@@ -943,7 +1030,7 @@ def translate_strings_worker(job, cfg, mod_name: str,
                              keys: list | None = None,
                              scope: str = "all",
                              params=None, force: bool = False,
-                             backends=None):
+                             backends=None, repo=None):
     """
     Translate strings for a mod with real-time per-string SSE updates.
     Processes strings in chunks of 10 for efficient batching.
@@ -985,7 +1072,54 @@ def translate_strings_worker(job, cfg, mod_name: str,
         ffdec_jar  = str(cfg.paths.ffdec_jar) if cfg.paths.ffdec_jar else None,
     )
 
-    strings = scanner.get_mod_strings(mod_name, bsa_cache=bsa_cache, swf_cache=swf_cache)
+    # Prefer SQLite as the string source — it always has the original English text
+    # even after apply_mod has overwritten the ESP binary with Russian translations.
+    # Fall back to scanner (ESP parse) only when SQLite has no data for this mod yet
+    # (first-ever run), then bootstrap SQLite from what the scanner found.
+    if repo and repo.mod_has_data(mod_name):
+        db_rows = repo.get_all_strings(mod_name)
+        # Map SQLite field names to the format expected by translate_strings_worker
+        strings = []
+        for r in db_rows:
+            strings.append({
+                "esp":           r["esp_name"],
+                "key":           r["key"],
+                "original":      r.get("original") or "",
+                "translation":   r.get("translation") or "",
+                "status":        r.get("status") or "pending",
+                "quality_score": r.get("quality_score"),
+                "form_id":       r.get("form_id") or "",
+                "rec_type":      r.get("rec_type") or "",
+                "field":         r.get("field_type") or "",
+                "idx":           r.get("field_index"),
+                "dict_match":    "",
+            })
+        job.add_log(f"Loaded {len(strings)} strings from SQLite for {mod_name}")
+    else:
+        # Bootstrap: parse ESPs + read MCM/BSA/SWF from files
+        strings = scanner.get_mod_strings(mod_name, bsa_cache=bsa_cache, swf_cache=swf_cache)
+        job.add_log(f"Bootstrap: loaded {len(strings)} strings from filesystem for {mod_name}")
+        # Seed SQLite so future runs read from it (group by ESP name for efficiency)
+        if repo and strings:
+            from collections import defaultdict
+            by_esp: dict = defaultdict(list)
+            for s in strings:
+                if any(s["key"].startswith(p) for p in ("mcm:", "bsa-mcm:", "swf:")):
+                    continue
+                by_esp[s["esp"]].append({
+                    "form_id":       s.get("form_id"),
+                    "rec_type":      s.get("rec_type"),
+                    "field_type":    s.get("field"),
+                    "field_index":   s.get("idx"),
+                    "vmad_str_idx":  0,
+                    "text":          s.get("original", ""),
+                    "translation":   s.get("translation", ""),
+                    "status":        s.get("status", "pending"),
+                    "quality_score": s.get("quality_score"),
+                })
+            for esp_name, esp_rows in by_esp.items():
+                repo.bulk_insert_strings(mod_name, esp_name, esp_rows)
+            job.add_log(f"Bootstrapped SQLite: {sum(len(v) for v in by_esp.values())} strings")
 
     if keys:
         key_set = set(keys)
@@ -1038,7 +1172,7 @@ def translate_strings_worker(job, cfg, mod_name: str,
             if existing:
                 save_translation(cfg.paths.mods_dir, mod_name,
                                  cfg.paths.translation_cache,
-                                 s["esp"], s["key"], existing, cfg=cfg)
+                                 s["esp"], s["key"], existing, cfg=cfg, repo=repo)
                 jm.add_string_update(job, s["key"], s["esp"],
                                      existing, "translated", None)
                 tm_pairs[s["original"]] = existing
@@ -1065,14 +1199,15 @@ def translate_strings_worker(job, cfg, mod_name: str,
         translation = r["translation"]
         if r.get("token_issues"):
             job.add_log(f"Token mismatch [{s['key']}]: {'; '.join(r['token_issues'])}")
-        save_translation(cfg.paths.mods_dir, mod_name,
-                         cfg.paths.translation_cache,
-                         s["esp"], s["key"], translation, cfg=cfg,
-                         quality_score=r.get("quality_score"),
-                         status=r.get("status"))
+        saved_qs, saved_status = save_translation(
+            cfg.paths.mods_dir, mod_name,
+            cfg.paths.translation_cache,
+            s["esp"], s["key"], translation, cfg=cfg,
+            quality_score=r.get("quality_score"),
+            status=r.get("status"), repo=repo)
         jm.add_string_update(job, s["key"], s["esp"],
-                             translation, r.get("status", "translated"),
-                             r.get("quality_score"))
+                             translation, saved_status or "translated",
+                             saved_qs)
         tm_pairs[s["original"]] = translation
         if gd:
             gd.add(s["original"], translation)
@@ -1104,14 +1239,15 @@ def translate_strings_worker(job, cfg, mod_name: str,
             translation = r["translation"]
             if r.get("token_issues"):
                 job.add_log(f"Token mismatch [{s['key']}]: {'; '.join(r['token_issues'])}")
-            save_translation(cfg.paths.mods_dir, mod_name,
-                             cfg.paths.translation_cache,
-                             s["esp"], s["key"], translation, cfg=cfg,
-                             quality_score=r.get("quality_score"),
-                             status=r.get("status"))
+            saved_qs, saved_status = save_translation(
+                cfg.paths.mods_dir, mod_name,
+                cfg.paths.translation_cache,
+                s["esp"], s["key"], translation, cfg=cfg,
+                quality_score=r.get("quality_score"),
+                status=r.get("status"), repo=repo)
             jm.add_string_update(job, s["key"], s["esp"],
-                                 translation, r.get("status", "translated"),
-                                 r.get("quality_score"))
+                                 translation, saved_status or "translated",
+                                 saved_qs)
             with _tm_lock:
                 tm_pairs[s["original"]] = translation
             if gd:
@@ -1119,6 +1255,13 @@ def translate_strings_worker(job, cfg, mod_name: str,
                 gd_dirty = True
 
         pool = WorkerPool(backends, chunk_size=10)
+        # Snapshot pull stats before run to compute per-job delta
+        try:
+            from translator.web.pull_backend import get_pull_stats as _gps
+            _stats_before = _gps()
+        except Exception:
+            _stats_before = None
+
         pool.run(
             strings          = strings,
             context          = context,
@@ -1131,6 +1274,19 @@ def translate_strings_worker(job, cfg, mod_name: str,
             should_stop      = lambda: job.status.value == "cancelled",
             context_builder  = _build_chunk_context,
         )
+
+        # Accumulate per-job token stats from pull backend
+        try:
+            from translator.web.pull_backend import get_pull_stats as _gps
+            _stats_after = _gps()
+            if _stats_before is not None:
+                delta_tokens = _stats_after["completion_tokens"] - _stats_before["completion_tokens"]
+                job.tokens_generated = max(0, delta_tokens)
+            else:
+                job.tokens_generated = _stats_after["completion_tokens"]
+            job.tps_avg = _stats_after["tps_avg"]
+        except Exception:
+            pass
     else:
         # ── No backends configured ───────────────────────────────────────────
         job.add_log("ERROR: No inference workers registered. Start a worker server and connect it to this host.")

@@ -88,4 +88,9 @@ export const modsApi = {
     apiPost<{ ok: boolean; mod_id?: number; name?: string; description?: string; error?: string }>(
       `/api/mods/${encodeURIComponent(name)}/nexus/fetch`,
     ),
+
+  fixUntranslatable: (name: string) =>
+    apiPost<{ ok: boolean; fixed: number }>(
+      `/api/mods/${encodeURIComponent(name)}/fix-untranslatable`,
+    ),
 }

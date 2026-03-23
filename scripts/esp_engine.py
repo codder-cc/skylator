@@ -678,6 +678,9 @@ def quality_score(original: str, translation: str) -> int:
     """
     if not translation or not translation.strip():
         return 0
+    # Untranslatable strings (code identifiers, version strings, etc.) should equal original
+    if not needs_translation(original) and translation.strip() == original.strip():
+        return 100
     score = 100
     # Length ratio — strip format tags and inline tokens first so HTML wrappers
     # don't mask truncated content (e.g. <font>...</font> around short translation)
@@ -960,6 +963,29 @@ def cmd_apply_from_trans(esp_path: Path, out_path: Path = None, mod_folder: Path
 
     strings = json.loads(json_path.read_text('utf-8'))
     trans_map = _build_trans_map(strings)
+    log.info("Applying %d translations to %s ...", len(trans_map), esp_path.name)
+    _backup_esp(esp_path, out_path)
+    rewrite_esp(esp_path, trans_map, out_path)
+    done = sum(1 for s in strings if s.get('translation'))
+    log.info("Applied %d/%d translations to %s", done, len(strings), esp_path.name)
+    _update_caches(esp_path, strings, mod_folder)
+    return done
+
+
+def cmd_apply_from_strings(esp_path: Path, out_path: Path,
+                            strings: list, mod_folder: Path = None) -> int:
+    """
+    Apply translations from a list of string dicts — no .trans.json file needed.
+    strings: list of dicts with keys: form_id, rec_type, field_type, field_index,
+             vmad_str_idx (optional), translation, text/original.
+    Used by apply_mod_worker when SQLite is the source of truth.
+    """
+    if out_path is None:
+        out_path = esp_path
+    trans_map = _build_trans_map(strings)
+    if not trans_map:
+        log.warning("cmd_apply_from_strings: no translations for %s", esp_path.name)
+        return 0
     log.info("Applying %d translations to %s ...", len(trans_map), esp_path.name)
     _backup_esp(esp_path, out_path)
     rewrite_esp(esp_path, trans_map, out_path)

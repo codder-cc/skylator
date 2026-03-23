@@ -17,9 +17,14 @@ bp = Blueprint("jobs", __name__, url_prefix="/jobs")
 def job_list():
     if not request.headers.get("Accept", "").startswith("application/json"):
         return redirect("/app/jobs")
-    jm   = current_app.config["JOB_MANAGER"]
-    jobs = jm.list_jobs(limit=200)
-    return jsonify([j.to_dict() for j in jobs])
+    jm     = current_app.config["JOB_MANAGER"]
+    result = []
+    for j in jm.list_jobs(limit=200):
+        try:
+            result.append(j.to_dict())
+        except Exception as exc:
+            log.warning("Failed to serialize job %s: %s", j.id, exc)
+    return jsonify(result)
 
 
 @bp.route("/<job_id>")
@@ -119,9 +124,20 @@ def create_job():
     elif job_type == "translate_esp":
         esp_path = data.get("esp_path", "")
         job = _create_translate_esp_job(jm, cfg, esp_path, options)
-    elif job_type == "scan_mods":
+    elif job_type in ("scan", "scan_mods"):
         scan_mod = mod_names[0] if mod_names else None
-        job = _create_scan_job(jm, current_app.config["SCANNER"], mod_name=scan_mod)
+        job = _create_scan_job(
+            jm, current_app.config["SCANNER"],
+            mod_name  = scan_mod,
+            bsa_cache = current_app.config.get("BSA_CACHE"),
+            swf_cache = current_app.config.get("SWF_CACHE"),
+            repo      = current_app.config.get("STRING_REPO"),
+            cfg       = cfg,
+        )
+    elif job_type == "validate" and mod_names:
+        job = _create_validate_job(jm, cfg, mod_names[0])
+    elif job_type == "fetch_nexus" and mod_names:
+        job = _create_fetch_nexus_job(jm, cfg, mod_names[0])
     elif job_type == "apply_mod" and mod_names:
         job = _create_apply_mod_job(jm, cfg, mod_names[0], options)
     elif job_type == "translate_bsa" and mod_names:
@@ -135,7 +151,8 @@ def create_job():
                                                   inf_params, force=force, machines=machines)
     elif job_type == "recompute_scores":
         mod_name = mod_names[0] if mod_names else None
-        job      = _create_recompute_scores_job(jm, cfg, mod_name)
+        repo     = current_app.config.get("STRING_REPO")
+        job      = _create_recompute_scores_job(jm, cfg, mod_name, repo=repo)
     else:
         return jsonify({"error": "Unknown job type"}), 400
 
@@ -339,7 +356,7 @@ def _create_apply_mod_job(jm, cfg, mod_name: str, options: dict):
             except Exception as e:
                 log.warning("Auto-checkpoint failed: %s", e)
         from translator.web.workers import apply_mod_worker
-        apply_mod_worker(job, cfg, mod_name, dry_run=dry_run)
+        apply_mod_worker(job, cfg, mod_name, dry_run=dry_run, repo=repo)
 
     return jm.create(
         name     = f"Apply ESP: {mod_name}",
@@ -351,10 +368,11 @@ def _create_apply_mod_job(jm, cfg, mod_name: str, options: dict):
 
 def _create_translate_bsa_job(jm, cfg, mod_name: str, options: dict):
     dry_run = options.get("dry_run", False)
+    repo    = current_app.config.get("STRING_REPO")
 
     def run(job):
         from translator.web.workers import translate_bsa_worker
-        translate_bsa_worker(job, cfg, mod_name, dry_run=dry_run)
+        translate_bsa_worker(job, cfg, mod_name, dry_run=dry_run, repo=repo)
 
     return jm.create(
         name     = f"BSA/SWF: {mod_name}",
@@ -384,7 +402,8 @@ def _create_translate_strings_job(jm, cfg, mod_name: str,
                 log.warning("Auto-checkpoint failed: %s", e)
         from translator.web.workers import translate_strings_worker
         translate_strings_worker(job, cfg, mod_name, keys=keys, scope=scope,
-                                 params=params, force=force, backends=backends)
+                                 params=params, force=force, backends=backends,
+                                 repo=repo)
 
     if keys:
         n = len(keys)
@@ -402,20 +421,67 @@ def _create_translate_strings_job(jm, cfg, mod_name: str,
     )
 
 
-def _create_scan_job(jm, scanner, mod_name: str | None = None):
+def _create_scan_job(jm, scanner, mod_name: str | None = None,
+                     bsa_cache=None, swf_cache=None, repo=None, cfg=None):
     def run(job):
         if mod_name:
             job.add_log(f"Scanning strings for mod: {mod_name}...")
         else:
-            job.add_log("Scanning mod directory and counting ESP strings...")
+            job.add_log("Scanning mod directory and counting all strings (ESP + BSA/MCM + SWF)...")
 
         def progress(done, total, name):
             jm.update_progress(job, done, total, f"Scanning: {name}")
 
-        result = scanner.scan_string_counts(progress_cb=progress, mod_name=mod_name)
+        result = scanner.scan_string_counts(
+            progress_cb=progress,
+            mod_name=mod_name,
+            bsa_cache=bsa_cache,
+            swf_cache=swf_cache,
+        )
+
+        # Bootstrap ESP strings into SQLite so all strings (including
+        # untranslatable ones) appear in the strings page.
+        if repo and cfg:
+            from scripts.esp_engine import extract_all_strings, needs_translation, quality_score as _qs
+            mods_dir = cfg.paths.mods_dir
+            target_folders = [mods_dir / mod_name] if mod_name else [
+                f for f in sorted(mods_dir.iterdir()) if f.is_dir()
+            ]
+            n_bootstrapped = 0
+            for folder in target_folders:
+                fname = folder.name
+                for ext in ("*.esp", "*.esm", "*.esl"):
+                    for esp_path in folder.glob(ext):
+                        esp_name = esp_path.name
+                        if repo.esp_exists(fname, esp_name):
+                            continue  # already seeded
+                        try:
+                            strings, _ = extract_all_strings(esp_path)
+                            # Mark untranslatable strings as translated=original
+                            for s in strings:
+                                orig = s.get("text", "")
+                                if not needs_translation(orig):
+                                    s["translation"]   = orig
+                                    s["status"]        = "translated"
+                                    s["quality_score"] = 100
+                                else:
+                                    s["translation"]   = ""
+                                    s["status"]        = "pending"
+                                    s["quality_score"] = None
+                            repo.bulk_insert_strings(fname, esp_name, strings)
+                            n_bootstrapped += len(strings)
+                            job.add_log(f"Bootstrapped {esp_name}: {len(strings)} strings")
+                        except Exception as exc:
+                            job.add_log(f"Bootstrap failed for {esp_name}: {exc}")
+            if n_bootstrapped:
+                job.add_log(f"Total bootstrapped into SQLite: {n_bootstrapped} strings")
+                scanner.invalidate(mod_name)
+
         msg = (f"Done: {result['scanned']} mods, "
                f"{result['esp_files']} ESP files, "
-               f"{result['total_strings']} strings")
+               f"{result.get('bsa_strings', 0)} BSA/MCM strings, "
+               f"{result.get('swf_strings', 0)} SWF strings, "
+               f"{result['total_strings']} total strings")
         job.add_log(msg)
         jm.update_progress(job, result["scanned"], result["scanned"], msg)
         job.result = msg
@@ -429,16 +495,50 @@ def _create_scan_job(jm, scanner, mod_name: str | None = None):
     )
 
 
-def _create_recompute_scores_job(jm, cfg, mod_name: str = None):
+def _create_recompute_scores_job(jm, cfg, mod_name: str = None, repo=None):
     from translator.web.workers import recompute_scores_worker
 
     def run(job):
-        recompute_scores_worker(job, cfg, mod_name=mod_name)
+        recompute_scores_worker(job, cfg, mod_name=mod_name, repo=repo)
 
     name = f"Recompute Scores: {mod_name}" if mod_name else "Recompute Scores (all mods)"
     return jm.create(
         name     = name,
         job_type = "recompute_scores",
         params   = {"mod_name": mod_name} if mod_name else {},
+        fn       = run,
+    )
+
+
+def _create_validate_job(jm, cfg, mod_name: str):
+    def run(job):
+        from translator.web.workers import validate_translations_worker
+        validate_translations_worker(job, cfg, mod_name)
+
+    return jm.create(
+        name     = f"Validate: {mod_name}",
+        job_type = "validate",
+        params   = {"mod_name": mod_name},
+        fn       = run,
+    )
+
+
+def _create_fetch_nexus_job(jm, cfg, mod_name: str):
+    def run(job):
+        job.add_log(f"Fetching Nexus context for {mod_name}...")
+        try:
+            from translator.context.builder import ContextBuilder
+            mod_dir = cfg.paths.mods_dir / mod_name
+            ctx = ContextBuilder().get_mod_context(mod_dir, force=True)
+            job.add_log(f"Context: {ctx[:120]}..." if len(ctx) > 120 else f"Context: {ctx}")
+            job.result = ctx
+        except Exception as exc:
+            job.add_log(f"ERROR: {exc}")
+            raise
+
+    return jm.create(
+        name     = f"Fetch Nexus: {mod_name}",
+        job_type = "fetch_nexus",
+        params   = {"mod_name": mod_name},
         fn       = run,
     )

@@ -38,23 +38,6 @@ def create_app(config_path: Path | None = None) -> Flask:
 
     app.config["TRANSLATOR_CFG"] = cfg
 
-    # ── Init mod scanner ────────────────────────────────────────────────────
-    if cfg:
-        from translator.web.mod_scanner import ModScanner
-        scanner = ModScanner(
-            mods_dir          = cfg.paths.mods_dir,
-            translation_cache = cfg.paths.translation_cache,
-            nexus_cache       = cfg.paths.nexus_cache,
-        )
-    else:
-        from translator.web.mod_scanner import ModScanner
-        scanner = ModScanner(
-            mods_dir          = Path("mods"),
-            translation_cache = ROOT / "cache/translation_cache.json",
-            nexus_cache       = ROOT / "cache/nexus_cache.json",
-        )
-    app.config["SCANNER"] = scanner
-
     # ── Init SQLite translation DB ─────────────────────────────────────────
     from translator.db.database import TranslationDB
     from translator.db.repo import StringRepo
@@ -65,11 +48,24 @@ def create_app(config_path: Path | None = None) -> Flask:
     app.config["TRANSLATION_DB"] = _db
     app.config["STRING_REPO"] = _repo
 
-    # Background import from .trans.json if DB is empty
-    if _db.is_empty() and cfg:
-        from translator.db.importer import start_background_import
-        log.info("SQLite DB is empty — starting background import from .trans.json files...")
-        start_background_import(_repo, cfg.paths.mods_dir)
+    # ── Init mod scanner ────────────────────────────────────────────────────
+    # Pass repo so scanner reads translated_strings stats from SQLite (single source)
+    from translator.web.mod_scanner import ModScanner
+    if cfg:
+        scanner = ModScanner(
+            mods_dir          = cfg.paths.mods_dir,
+            translation_cache = cfg.paths.translation_cache,
+            nexus_cache       = cfg.paths.nexus_cache,
+            repo              = _repo,
+        )
+    else:
+        scanner = ModScanner(
+            mods_dir          = Path("mods"),
+            translation_cache = ROOT / "cache/translation_cache.json",
+            nexus_cache       = ROOT / "cache/nexus_cache.json",
+            repo              = _repo,
+        )
+    app.config["SCANNER"] = scanner
 
     # ── Init BSA / SWF string caches ────────────────────────────────────────
     from translator.web.asset_cache import BsaStringCache, SwfStringCache

@@ -45,6 +45,8 @@ export interface Job {
   error: string | null
   params: Record<string, unknown>
   mod_name: string
+  tokens_generated?: number
+  tps_avg?: number
 }
 
 export interface ModFileInfo {
@@ -66,6 +68,8 @@ export interface ModInfo {
   status: ModStatus
   esp_files: ModFileInfo[]
   bsa_files: ModFileInfo[]
+  mcm_loose: ModFileInfo[]
+  untranslatable_strings: number
   has_meta_ini: boolean
   nexus_mod_id: number | null
   cached_at: number | null

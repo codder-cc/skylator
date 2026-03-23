@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS strings (
     rec_type          TEXT,
     field_type        TEXT,
     field_index       INTEGER,
+    vmad_str_idx      INTEGER  DEFAULT 0,
     updated_at        REAL     DEFAULT (unixepoch('now', 'subsec')),
     UNIQUE(mod_name, esp_name, key)
 );
@@ -79,8 +80,16 @@ class TranslationDB:
         """Create tables and indexes if they don't exist."""
         conn = self._connect()
         conn.executescript(SCHEMA_SQL)
+        self._migrate(conn)
         conn.commit()
         log.info("TranslationDB initialized at %s", self.db_path)
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        """Apply incremental schema migrations for existing databases."""
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(strings)").fetchall()}
+        if "vmad_str_idx" not in existing:
+            conn.execute("ALTER TABLE strings ADD COLUMN vmad_str_idx INTEGER DEFAULT 0")
+            log.info("Migration: added vmad_str_idx column to strings table")
 
     def execute(self, sql: str, params=()) -> sqlite3.Cursor:
         return self._connect().execute(sql, params)

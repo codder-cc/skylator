@@ -42,11 +42,59 @@ def mod_info(mod_name: str):
     return jsonify(mod.to_dict())
 
 
+@bp.route("/mods/<path:mod_name>/fix-untranslatable", methods=["POST"])
+def fix_untranslatable(mod_name: str):
+    """Set translation=original, score=100, status=translated for all untranslatable strings."""
+    repo = current_app.config.get("STRING_REPO")
+    if not repo:
+        return jsonify({"error": "DB not available"}), 503
+
+    from scripts.esp_engine import needs_translation as _needs_trans
+    rows = repo.get_all_strings(mod_name)
+    fixed = 0
+    for row in rows:
+        orig = row.get("original", "")
+        if _needs_trans(orig):
+            continue  # translatable — skip
+        trans = row.get("translation", "")
+        if trans == orig and row.get("quality_score") == 100 and row.get("status") == "translated":
+            continue  # already correct — skip
+        repo.upsert(
+            mod_name      = mod_name,
+            esp_name      = row["esp_name"],
+            key           = row["key"],
+            original      = orig,
+            translation   = orig,
+            quality_score = 100,
+            status        = "translated",
+            form_id       = row.get("form_id", ""),
+            rec_type      = row.get("rec_type", ""),
+            field_type    = row.get("field_type", ""),
+            field_index   = row.get("field_index"),
+            vmad_str_idx  = row.get("vmad_str_idx", 0),
+        )
+        fixed += 1
+
+    if fixed:
+        scanner = current_app.config.get("SCANNER")
+        if scanner:
+            scanner.invalidate(mod_name)
+
+    log.info("fix-untranslatable %s: fixed %d strings", mod_name, fixed)
+    return jsonify({"ok": True, "fixed": fixed})
+
+
 @bp.route("/jobs")
 def jobs():
     jm   = current_app.config["JOB_MANAGER"]
-    jobs = jm.list_jobs(limit=100)
-    return jsonify([j.to_dict() for j in jobs])
+    result = []
+    for j in jm.list_jobs(limit=100):
+        try:
+            result.append(j.to_dict())
+        except Exception as exc:
+            import logging as _logging
+            _logging.getLogger(__name__).warning("Failed to serialize job %s: %s", j.id, exc)
+    return jsonify(result)
 
 
 @bp.route("/jobs/<job_id>")
@@ -317,6 +365,11 @@ def token_reset():
             reset_remote_token_stats()
         except Exception:
             pass
+        try:
+            from translator.web.pull_backend import reset_pull_stats
+            reset_pull_stats()
+        except Exception:
+            pass
         return jsonify({"ok": True})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -509,12 +562,49 @@ def remote_stats():
 
 @bp.route("/tokens/perf")
 def tokens_perf():
-    """Return performance stats from the local backend."""
+    """Return merged performance stats from all inference sources."""
     try:
         from translator.models.llamacpp_backend import get_performance_stats
-        return jsonify({"ok": True, **get_performance_stats()})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)})
+        local = get_performance_stats()
+    except Exception:
+        local = {}
+
+    try:
+        from translator.web.pull_backend import get_pull_stats
+        pull = get_pull_stats()
+    except Exception:
+        pull = {}
+
+    # Live tok/s from active workers' heartbeat stats (most reliable source)
+    registry = current_app.config.get("WORKER_REGISTRY")
+    reg_tps_last = 0.0
+    reg_tps_avg  = 0.0
+    if registry:
+        active = registry.get_active()
+        if active:
+            best = max(active, key=lambda w: (w.stats or {}).get("tps_last", 0.0))
+            reg_tps_last = float((best.stats or {}).get("tps_last", 0.0))
+            reg_tps_avg  = float((best.stats or {}).get("tps_avg",  0.0))
+
+    calls              = local.get("calls", 0) + pull.get("calls", 0)
+    completion_tokens  = local.get("completion_tokens", 0) + pull.get("completion_tokens", 0)
+    total_tokens       = local.get("total_tokens", 0)      + pull.get("completion_tokens", 0)
+    last_tokens        = pull.get("last_completion_tokens") or local.get("last_completion_tokens", 0)
+    last_elapsed       = pull.get("last_elapsed_sec")       or local.get("last_elapsed_sec", 0)
+    # Prefer registry (real inference tok/s) > pull accumulated > local
+    tps_last = reg_tps_last or pull.get("tps_last", 0) or local.get("tps_last", 0)
+    tps_avg  = reg_tps_avg  or pull.get("tps_avg",  0) or local.get("tps_avg",  0)
+
+    return jsonify({
+        "ok":                   True,
+        "calls":                calls,
+        "completion_tokens":    completion_tokens,
+        "total_tokens":         total_tokens,
+        "last_completion_tokens": last_tokens,
+        "tps_last":             round(tps_last, 2),
+        "tps_avg":              round(tps_avg,  2),
+        "last_elapsed_sec":     round(last_elapsed, 3),
+    })
 
 
 @bp.route("/mods/<path:mod_name>/strings/translate-one", methods=["POST"])
@@ -564,9 +654,24 @@ def translate_one_string(mod_name: str):
                 xlogs.append(f"source: global dict hit")
                 log.info("[translate-one] %s | global dict hit → %s", key_str, existing[:80])
                 from translator.web.workers import save_translation
+                _repo = current_app.config.get("STRING_REPO")
                 save_translation(cfg.paths.mods_dir, mod_name,
                                  cfg.paths.translation_cache,
-                                 esp_name, key_str, existing, cfg=cfg)
+                                 esp_name, key_str, existing, cfg=cfg, repo=_repo)
+                try:
+                    jm = current_app.config["JOB_MANAGER"]
+                    jm.record_completed_job(
+                        name           = f"Translate: {original[:60]}",
+                        job_type       = "translate_one",
+                        params         = {"mod_name": mod_name, "esp": esp_name, "key": key_str},
+                        result         = existing,
+                        log_lines      = xlogs,
+                        string_updates = [{"key": key_str, "esp": esp_name,
+                                           "translation": existing,
+                                           "status": "translated", "quality_score": None}],
+                    )
+                except Exception:
+                    pass
                 return jsonify({"ok": True, "translation": existing,
                                 "quality_score": None, "from_dict": True,
                                 "logs": xlogs})
@@ -638,7 +743,9 @@ def translate_one_string(mod_name: str):
 
         # ── Core translation ───────────────────────────────────────────────────
         ai_texts, ai_meta = prepare_for_ai([original])
+        _t_translate = _time.monotonic()
         raw = pull_backend.translate(ai_texts, context=context, params=params)
+        _elapsed_translate = _time.monotonic() - _t_translate
         trans_list = restore_from_ai(raw, ai_meta)
         trans = trans_list[0] if trans_list else ""
         tok_ok, tok_issues_r = validate_tokens(original, trans)
@@ -674,15 +781,40 @@ def translate_one_string(mod_name: str):
         xlogs.append(f"status={status} qs={qs}")
         log.info("[translate-one] %s | done — status=%s qs=%s", key_str, status, qs)
 
+        repo = current_app.config.get("STRING_REPO")
         save_translation(cfg.paths.mods_dir, mod_name,
                          cfg.paths.translation_cache,
                          esp_name, key_str, translated, cfg=cfg,
-                         quality_score=qs, status=status)
+                         quality_score=qs, status=status, repo=repo)
         # Add to global dict so future identical strings skip AI
         gd = current_app.config.get("GLOBAL_DICT")
         if gd:
             gd.add(original, translated)
             gd.save()
+
+        # Record completed job for history / stats
+        _tps = round(getattr(pull_backend, "_last_tps", 0.0), 2)
+        _tokens = max(1, round(_elapsed_translate * _tps)) if _tps > 0 else 0
+        _backend_label = getattr(pull_backend, "_label", "")
+        try:
+            jm = current_app.config["JOB_MANAGER"]
+            jm.record_completed_job(
+                name             = f"Translate: {original[:60]}",
+                job_type         = "translate_one",
+                params           = {"mod_name": mod_name, "esp": esp_name, "key": key_str},
+                result           = translated,
+                log_lines        = xlogs,
+                string_updates   = [{"key": key_str, "esp": esp_name,
+                                     "translation": translated,
+                                     "status": status, "quality_score": qs}],
+                tokens_generated = _tokens,
+                tps_avg          = _tps,
+                worker_label     = _backend_label,
+                elapsed_sec      = _elapsed_translate,
+            )
+        except Exception:
+            pass  # job history is non-critical
+
         return jsonify({"ok": True, "translation": translated, "quality_score": qs,
                         "status": status, "token_issues": tok_issues,
                         "from_dict": False, "logs": xlogs})

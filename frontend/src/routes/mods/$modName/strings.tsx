@@ -55,7 +55,7 @@ function ScoreBadge({ score }: { score: number | null }) {
 interface TranslationCellProps {
   entry: StringEntry
   modName: string
-  onSaved: (key: string, esp: string, translation: string) => void
+  onSaved: (key: string, esp: string, translation: string, quality_score: number | null, status: string | null) => void
 }
 
 function TranslationCell({ entry, modName, onSaved }: TranslationCellProps) {
@@ -66,8 +66,11 @@ function TranslationCell({ entry, modName, onSaved }: TranslationCellProps) {
   const saveMutation = useMutation({
     mutationFn: (translation: string) =>
       modsApi.updateString(modName, { key: entry.key, esp: entry.esp, translation }),
-    onSuccess: (_data, translation) => {
-      onSaved(entry.key, entry.esp, translation)
+    onSuccess: (data, translation) => {
+      const d = data as Record<string, unknown>
+      const qs = d['quality_score'] as number | null ?? null
+      const st = d['status'] as string | null ?? null
+      onSaved(entry.key, entry.esp, translation, qs, st)
       setEditing(false)
     },
   })
@@ -98,13 +101,13 @@ function TranslationCell({ entry, modName, onSaved }: TranslationCellProps) {
       <div className="relative">
         <textarea
           ref={textareaRef}
-          className="w-full min-h-[3rem] bg-bg-card2 border border-accent/40 rounded px-2 py-1.5 text-xs text-text-main resize-none focus:outline-none focus:border-accent transition-colors leading-relaxed"
+          className="w-full min-h-[3rem] max-h-48 overflow-y-auto bg-bg-card2 border border-accent/40 rounded px-2 py-1.5 text-xs text-text-main resize-none focus:outline-none focus:border-accent transition-colors leading-relaxed"
           value={draft}
           onChange={(e) => {
             setDraft(e.target.value)
-            // auto-expand
+            // auto-expand up to max-h
             e.target.style.height = 'auto'
-            e.target.style.height = `${e.target.scrollHeight}px`
+            e.target.style.height = `${Math.min(e.target.scrollHeight, 192)}px`
           }}
           onBlur={handleBlur}
           onKeyDown={(e) => {
@@ -133,7 +136,7 @@ function TranslationCell({ entry, modName, onSaved }: TranslationCellProps) {
     <div
       onClick={handleFocus}
       className={cn(
-        'min-h-[2rem] px-2 py-1.5 rounded cursor-text text-xs leading-relaxed hover:bg-bg-card2 transition-colors',
+        'min-h-[2rem] max-h-40 overflow-y-auto px-2 py-1.5 rounded cursor-text text-xs leading-relaxed whitespace-pre-wrap hover:bg-bg-card2 transition-colors',
         entry.translation ? 'text-text-main' : 'text-text-muted/40 italic',
       )}
     >
@@ -150,7 +153,7 @@ interface StringRowProps {
   modName: string
   isTranslating: boolean
   onTranslateOne: (entry: StringEntry) => void
-  onSaved: (key: string, esp: string, translation: string) => void
+  onSaved: (key: string, esp: string, translation: string, quality_score: number | null, status: string | null) => void
   error?: string
   flashed?: boolean
 }
@@ -193,7 +196,7 @@ function StringRow({
         </td>
         {/* Original */}
         <td className="px-2 py-2 align-top max-w-[260px]">
-          <div className="text-xs text-text-muted line-clamp-2 leading-relaxed">
+          <div className="text-xs text-text-muted max-h-40 overflow-y-auto leading-relaxed whitespace-pre-wrap">
             {entry.original || <span className="italic opacity-40">empty</span>}
           </div>
         </td>
@@ -324,6 +327,19 @@ interface StringsPage {
   scope_counts?: Record<string, number>
 }
 
+/** Adjust the review bucket when a single string changes status. */
+function patchReviewCount(
+  counts: Record<string, number> | undefined,
+  oldStatus: string | undefined,
+  newStatus: string,
+): Record<string, number> | undefined {
+  if (!counts) return counts
+  const wasReview = oldStatus === 'needs_review'
+  const isReview  = newStatus === 'needs_review'
+  if (wasReview === isReview) return counts
+  return { ...counts, review: Math.max(0, (counts.review ?? 0) + (isReview ? 1 : -1)) }
+}
+
 // ── Main page ────────────────────────────────────────────────────────────────
 
 function ModStringsPage() {
@@ -385,17 +401,14 @@ function ModStringsPage() {
       (old) => {
         if (!old) return old
         const updateMap = new Map(newUpdates.map((u) => [u.key, u]))
-        const strings = old.strings.map((s) =>
-          updateMap.has(s.key)
-            ? {
-                ...s,
-                translation: updateMap.get(s.key)!.translation,
-                status: updateMap.get(s.key)!.status,
-                quality_score: updateMap.get(s.key)!.quality_score,
-              }
-            : s,
-        )
-        return { ...old, strings }
+        let scope_counts = old.scope_counts
+        const strings = old.strings.map((s) => {
+          const u = updateMap.get(s.key)
+          if (!u) return s
+          scope_counts = patchReviewCount(scope_counts, s.status, u.status)
+          return { ...s, translation: u.translation, status: u.status, quality_score: u.quality_score }
+        })
+        return { ...old, strings, scope_counts }
       },
     )
 
@@ -435,20 +448,27 @@ function ModStringsPage() {
           machines,
         })
 
-        const translated = (result as Record<string, unknown>)['translation'] as string | undefined
+        const r = result as Record<string, unknown>
+        const translated = r['translation'] as string | undefined
+        const serverStatus = r['status'] as string | undefined
+        const serverScore = r['quality_score'] as number | null | undefined
 
         if (translated !== undefined) {
-          // Optimistic update in query cache
           queryClient.setQueryData<StringsPage>(queryKey, (old) => {
             if (!old) return old
-            return {
-              ...old,
-              strings: old.strings.map((s) =>
-                s.key === entry.key && s.esp === entry.esp
-                  ? { ...s, translation: translated, status: 'translated' }
-                  : s,
-              ),
-            }
+            let scope_counts = old.scope_counts
+            const strings = old.strings.map((s) => {
+              if (s.key !== entry.key || s.esp !== entry.esp) return s
+              const newStatus = serverStatus ?? 'translated'
+              scope_counts = patchReviewCount(scope_counts, s.status, newStatus)
+              return {
+                ...s,
+                translation: translated,
+                status: newStatus,
+                quality_score: serverScore !== undefined ? serverScore : s.quality_score,
+              }
+            })
+            return { ...old, strings, scope_counts }
           })
         }
       } catch (err) {
@@ -468,17 +488,22 @@ function ModStringsPage() {
   // ── Update string (on blur) ────────────────────────────────────────────────
 
   const handleStringSaved = useCallback(
-    (key: string, esp: string, translation: string) => {
+    (key: string, esp: string, translation: string, quality_score: number | null, status: string | null) => {
       queryClient.setQueryData<StringsPage>(queryKey, (old) => {
         if (!old) return old
-        return {
-          ...old,
-          strings: old.strings.map((s) =>
-            s.key === key && s.esp === esp
-              ? { ...s, translation, status: translation ? 'translated' : s.status }
-              : s,
-          ),
-        }
+        let scope_counts = old.scope_counts
+        const strings = old.strings.map((s) => {
+          if (s.key !== key || s.esp !== esp) return s
+          const newStatus = status ?? (translation ? 'translated' : s.status)
+          scope_counts = patchReviewCount(scope_counts, s.status, newStatus)
+          return {
+            ...s,
+            translation,
+            status: newStatus,
+            quality_score: quality_score !== null ? quality_score : s.quality_score,
+          }
+        })
+        return { ...old, strings, scope_counts }
       })
     },
     [queryClient, queryKey],

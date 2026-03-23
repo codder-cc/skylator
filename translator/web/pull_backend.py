@@ -11,9 +11,44 @@ No port forwarding needed on the remote side.
 """
 from __future__ import annotations
 import logging
+import time as _time
+import threading as _threading
 import uuid
 
 log = logging.getLogger(__name__)
+
+# ── Module-level stats for pull-mode inference (global session counters) ──────
+_pull_stats: dict = {
+    "calls":                  0,
+    "completion_tokens":      0,
+    "last_completion_tokens": 0,
+    "last_tps":               0.0,
+    "tps_sum":                0.0,
+    "tps_count":              0,
+    "last_elapsed_sec":       0.0,
+}
+_pull_lock = _threading.Lock()
+
+
+def get_pull_stats() -> dict:
+    """Return a snapshot of session-level pull-mode inference stats."""
+    with _pull_lock:
+        count = max(_pull_stats["tps_count"], 1)
+        return {
+            "calls":                  _pull_stats["calls"],
+            "completion_tokens":      _pull_stats["completion_tokens"],
+            "last_completion_tokens": _pull_stats["last_completion_tokens"],
+            "tps_last":               round(_pull_stats["last_tps"], 2),
+            "tps_avg":                round(_pull_stats["tps_sum"] / count, 2),
+            "last_elapsed_sec":       round(_pull_stats["last_elapsed_sec"], 3),
+        }
+
+
+def reset_pull_stats() -> None:
+    """Reset all session-level pull-mode stats."""
+    with _pull_lock:
+        for k in list(_pull_stats):
+            _pull_stats[k] = 0 if isinstance(_pull_stats[k], int) else 0.0
 
 
 class RegistryPullBackend:
@@ -70,6 +105,7 @@ class RegistryPullBackend:
 
         results: list[str] = []
         num_batches = (len(texts) + batch_size - 1) // batch_size
+        self._last_tps: float = 0.0  # most recent chunk tok/s (for WorkerPool)
 
         for i in range(0, len(texts), batch_size):
             batch    = texts[i: i + batch_size]
@@ -94,6 +130,7 @@ class RegistryPullBackend:
             )
 
             # Enqueue work for the remote to pick up
+            t_chunk = _time.monotonic()
             self._registry.enqueue_chunk(self._label, {
                 "chunk_id": chunk_id,
                 "prompt":   prompt,
@@ -116,11 +153,30 @@ class RegistryPullBackend:
                     f"[{self._label}] chunk {chunk_id[:8]} timed out after {self._timeout:.0f}s"
                 )
 
+            elapsed = max(_time.monotonic() - t_chunk, 0.001)
+
             parsed = parse_numbered_output(raw, len(batch))
             results.extend(parsed)
             log.debug("PullBackend [%s]: chunk %s done — batch %d/%d",
                       self._label, chunk_id[:8],
                       i // batch_size + 1, num_batches)
+
+            # ── Update session-level stats ────────────────────────────────────
+            worker = self._registry.get(self._label)
+            worker_tps = float((worker.stats or {}).get("tps_last", 0)) if worker else 0.0
+            # Approximate completion tokens: elapsed × worker tok/s (from heartbeat)
+            approx_tokens = int(elapsed * worker_tps) if worker_tps > 0 else 0
+            self._last_tps = worker_tps
+            with _pull_lock:
+                _pull_stats["calls"]                  += 1
+                _pull_stats["completion_tokens"]      += approx_tokens
+                _pull_stats["last_completion_tokens"]  = approx_tokens
+                _pull_stats["last_elapsed_sec"]        = round(elapsed, 3)
+                if worker_tps > 0:
+                    _pull_stats["last_tps"]   = worker_tps
+                    _pull_stats["tps_sum"]   += worker_tps
+                    _pull_stats["tps_count"] += 1
+            # ─────────────────────────────────────────────────────────────────
 
             if progress_cb:
                 progress_cb(min(i + batch_size, len(texts)), len(texts))

@@ -20,6 +20,8 @@ import {
   Download,
   Wand2,
   ExternalLink,
+  BarChart2,
+  Wrench,
 } from 'lucide-react'
 import { useState } from 'react'
 import { modsApi } from '@/api/mods'
@@ -471,13 +473,22 @@ function ModDetailPage() {
     })
   }
 
-  const scanMut          = makeJobMutation('scan')
-  const translateAllMut  = makeJobMutation('translate_mod')
-  const translateEspMut  = makeJobMutation('translate_mod', { scope: 'esp' })
-  const translateBsaMut  = makeJobMutation('translate_mod', { scope: 'bsa' })
-  const validateMut      = makeJobMutation('validate')
-  const applyMut         = makeJobMutation('apply_mod')
-  const fetchNexusMut    = makeJobMutation('fetch_nexus')
+  const scanMut           = makeJobMutation('scan')
+  const translateAllMut   = makeJobMutation('translate_mod')
+  const translateEspMut   = makeJobMutation('translate_mod', { scope: 'esp' })
+  const translateBsaMut   = makeJobMutation('translate_mod', { scope: 'bsa' })
+  const validateMut       = makeJobMutation('validate')
+  const applyMut          = makeJobMutation('apply_mod')
+  const fetchNexusMut     = makeJobMutation('fetch_nexus')
+  const recomputeScoresMut = makeJobMutation('recompute_scores')
+
+  const fixUntranslatableMut = useMutation({
+    mutationFn: () => modsApi.fixUntranslatable(decodedName),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: QK.mod(decodedName) })
+      queryClient.invalidateQueries({ queryKey: ['mods', decodedName, 'strings'] })
+    },
+  })
 
   // ── Pipeline steps ─────────────────────────────────────────────────────────
 
@@ -592,6 +603,9 @@ function ModDetailPage() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard label="Total Strings" value={mod.total_strings} />
         <StatCard label="Translated" value={mod.translated_strings} colorClass="text-success" />
+        {(mod.untranslatable_strings ?? 0) > 0 && (
+          <StatCard label="Untranslatable" value={mod.untranslatable_strings} colorClass="text-text-muted" />
+        )}
         <Link
           to="/mods/$modName/strings"
           params={{ modName }}
@@ -639,6 +653,13 @@ function ModDetailPage() {
                 <div key={f.name} className="flex items-center gap-2 text-sm text-text-muted py-1">
                   <Archive size={13} className="shrink-0 text-warning/60" />
                   <span className="truncate font-mono text-xs" title={f.path}>{f.name}</span>
+                </div>
+              ))}
+              {(mod.mcm_loose ?? []).map((f) => (
+                <div key={f.path} className="flex items-center gap-2 text-sm text-text-muted py-1">
+                  <FileText size={13} className="shrink-0 text-success/60" />
+                  <span className="truncate font-mono text-xs" title={f.path}>{f.name}</span>
+                  <span className="text-[10px] text-success/60 shrink-0">MCM</span>
                 </div>
               ))}
             </div>
@@ -692,6 +713,22 @@ function ModDetailPage() {
               isPending={applyMut.isPending}
               icon={<Cpu size={14} />}
               label="Apply to ESP"
+            />
+            <ActionButton
+              onClick={() => recomputeScoresMut.mutate()}
+              isPending={recomputeScoresMut.isPending}
+              icon={<BarChart2 size={14} />}
+              label="Recompute Scores"
+            />
+            <ActionButton
+              onClick={() => fixUntranslatableMut.mutate()}
+              isPending={fixUntranslatableMut.isPending}
+              icon={<Wrench size={14} />}
+              label={
+                fixUntranslatableMut.isSuccess && fixUntranslatableMut.data
+                  ? `Fix Untranslatable (${fixUntranslatableMut.data.fixed} fixed)`
+                  : 'Fix Untranslatable'
+              }
             />
             <Link
               to="/mods/$modName/strings"

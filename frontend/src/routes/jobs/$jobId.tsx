@@ -103,8 +103,11 @@ function TimingCard({ job }: { job: ReturnType<typeof useQuery<Awaited<ReturnTyp
 
   const workers = job.worker_updates ?? []
   const totalDone  = workers.reduce((s, w) => s + (w.done ?? 0), 0)
-  const tpsTotal   = workers.reduce((s, w) => s + (w.tps  ?? 0), 0)
   const isRunning  = job.status === 'running'
+
+  // Live tok/s while running (sum across workers); settled avg after completion
+  const liveTps    = workers.reduce((s, w) => s + (w.tps ?? 0), 0)
+  const tpsDisplay = isRunning ? liveTps : (job.tps_avg ?? 0)
 
   const progressCurrent = job.progress?.current ?? totalDone
   const progressTotal   = job.progress?.total   ?? 0
@@ -146,31 +149,37 @@ function TimingCard({ job }: { job: ReturnType<typeof useQuery<Awaited<ReturnTyp
         </div>
       </div>
 
-      {/* Live TPS (sum across all workers) */}
+      {/* tok/s — live during run, avg after completion */}
       <div className="flex items-start gap-2">
-        <Zap size={14} className={cn('shrink-0 mt-0.5', tpsTotal > 0 ? 'text-accent' : 'text-text-muted')} />
+        <Zap size={14} className={cn('shrink-0 mt-0.5', tpsDisplay > 0 ? 'text-accent' : 'text-text-muted')} />
         <div>
-          <div className="text-xs text-text-muted uppercase tracking-wide mb-0.5">tok/s</div>
-          <div className={cn('font-mono text-sm tabular-nums font-semibold', tpsTotal > 0 ? 'text-accent' : 'text-text-muted')}>
-            {tpsTotal > 0 ? tpsTotal.toFixed(1) : '—'}
+          <div className="text-xs text-text-muted uppercase tracking-wide mb-0.5">
+            {isRunning ? 'tok/s' : 'tok/s avg'}
+          </div>
+          <div className={cn('font-mono text-sm tabular-nums font-semibold', tpsDisplay > 0 ? 'text-accent' : 'text-text-muted')}>
+            {tpsDisplay > 0 ? tpsDisplay.toFixed(1) : '—'}
           </div>
         </div>
       </div>
 
-      {/* Throughput prediction: if tps > 0 and eta known, show strings/min */}
-      {isRunning && tpsTotal > 0 && progressTotal > progressCurrent && (
-        <div className="flex items-start gap-2">
-          <Activity size={14} className="text-text-muted shrink-0 mt-0.5" />
-          <div>
-            <div className="text-xs text-text-muted uppercase tracking-wide mb-0.5">Rate</div>
-            <div className="font-mono text-sm text-text-muted tabular-nums">
-              {job.eta_seconds && job.eta_seconds > 0
-                ? `${Math.round((progressTotal - progressCurrent) / (job.eta_seconds / 60))}/min`
-                : '—'}
-            </div>
+      {/* Tokens generated (shown when available) */}
+      <div className="flex items-start gap-2">
+        <Activity size={14} className="text-text-muted shrink-0 mt-0.5" />
+        <div>
+          <div className="text-xs text-text-muted uppercase tracking-wide mb-0.5">
+            {isRunning ? 'Rate' : 'Tokens'}
+          </div>
+          <div className="font-mono text-sm text-text-muted tabular-nums">
+            {isRunning
+              ? (liveTps > 0 && job.eta_seconds && job.eta_seconds > 0 && progressTotal > progressCurrent
+                  ? `${Math.round((progressTotal - progressCurrent) / (job.eta_seconds / 60))}/min`
+                  : '—')
+              : ((job.tokens_generated ?? 0) > 0
+                  ? `${((job.tokens_generated ?? 0) / 1000).toFixed(1)}k`
+                  : '—')}
           </div>
         </div>
-      )}
+      </div>
 
       {/* % complete */}
       <div className="flex items-start gap-2">

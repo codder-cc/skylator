@@ -40,6 +40,7 @@ class ModInfo:
     translated_strings:   int = 0
     pending_strings:      int = 0
     needs_review_strings: int = 0
+    untranslatable_strings: int = 0
 
     # Cache info
     cached_at:    Optional[float] = None
@@ -63,10 +64,11 @@ class ModScanner:
     """Scans mods_dir and builds a list of ModInfo objects."""
 
     def __init__(self, mods_dir: Path, translation_cache: Path,
-                 nexus_cache: Path):
+                 nexus_cache: Path, repo=None):
         self.mods_dir          = mods_dir
         self.translation_cache = translation_cache
         self.nexus_cache       = nexus_cache
+        self._repo             = repo  # StringRepo — reads stats from SQLite when set
         # Persistent cache for real ESP string counts (invalidated by mtime)
         self._counts_cache_path = translation_cache.parent / "_string_counts.json"
         self._cache: dict[str, ModInfo] = {}
@@ -81,7 +83,10 @@ class ModScanner:
         """
         now = time.time()
         if self._cache and (now - self._scanned_at) < self._SCAN_TTL:
-            return sorted(self._cache.values(), key=lambda m: m.folder_name)
+            mods = sorted(self._cache.values(), key=lambda m: m.folder_name)
+            if self._repo:
+                self._patch_stats_from_db(mods)
+            return mods
 
         if not self.mods_dir.is_dir():
             return []
@@ -114,7 +119,10 @@ class ModScanner:
 
     def get_mod(self, folder_name: str) -> Optional[ModInfo]:
         if folder_name in self._cache:
-            return self._cache[folder_name]
+            info = self._cache[folder_name]
+            if self._repo:
+                self._patch_mod_stats_from_db(info)
+            return info
         folder = self.mods_dir / folder_name
         if folder.is_dir():
             trans_cache  = self._load_translation_cache()
@@ -441,52 +449,74 @@ class ModScanner:
             ))
 
         # Translation stats:
-        #   total_strings   — from counts cache (populated by explicit Rescan job)
-        #   translated_strings — non-empty entries in translation cache
-        n_total  = 0
-        n_trans  = 0
-        n_review = 0
+        #   total_strings      — from counts cache (populated by explicit Rescan job)
+        #   translated_strings — from SQLite when available, else .trans.json fallback
+        n_total       = 0
+        n_untrans     = 0
+        n_trans       = 0
+        n_review      = 0
         if counts_cache is None:
             counts_cache = self._load_counts_cache()
 
         for esp_f in info.esp_files:
-            esp_name = Path(esp_f.name).stem
-            esp_key  = f"{folder.name}/{esp_f.name}"
-
+            esp_key = f"{folder.name}/{esp_f.name}"
             # Only use pre-cached counts — never parse ESPs here
             cached_ct = counts_cache.get(esp_key)
             if cached_ct and cached_ct.get("size") == esp_f.size_bytes:
-                n_total += cached_ct["count"]
+                n_total   += cached_ct["count"]
+                n_untrans += cached_ct.get("untranslatable", 0)
 
-            # Prefer .trans.json (authoritative, written by translate step)
-            # Falls back to translation_cache.json for legacy/non-ESP sources
-            trans_json_path = Path(esp_f.path).with_suffix(".trans.json")
-            if trans_json_path.exists():
-                try:
-                    saved = json.loads(trans_json_path.read_text(encoding="utf-8"))
-                    n_trans  += sum(1 for s in saved if s.get("translation"))
-                    n_review += sum(1 for s in saved if s.get("status") == "needs_review")
-                    info.cache_file = str(trans_json_path)
-                    info.cached_at  = os.path.getmtime(trans_json_path)
-                except Exception:
-                    tc = trans_cache.get(esp_name, {})
+        # Prefer SQLite for translated/pending/needs_review counts (always up-to-date)
+        n_pending = None  # None = use arithmetic fallback
+        if self._repo:
+            try:
+                stats    = self._repo.mod_stats(folder.name)
+                n_trans  = stats.get("translated", 0)
+                n_review = stats.get("needs_review", 0)
+                n_pending = stats.get("pending", 0)
+                if n_trans > 0 or n_review > 0 or n_pending > 0:
+                    info.cache_file = "sqlite"
+                    info.cached_at  = None
+            except Exception:
+                pass  # fall through to .trans.json below
+
+        # Fallback: read .trans.json when SQLite has no data for this mod
+        if n_trans == 0 and n_review == 0:
+            for esp_f in info.esp_files:
+                esp_name_stem   = Path(esp_f.name).stem
+                trans_json_path = Path(esp_f.path).with_suffix(".trans.json")
+                if trans_json_path.exists():
+                    try:
+                        saved = json.loads(trans_json_path.read_text(encoding="utf-8"))
+                        n_trans  += sum(1 for s in saved if s.get("translation"))
+                        n_review += sum(1 for s in saved if s.get("status") == "needs_review")
+                        info.cache_file = str(trans_json_path)
+                        info.cached_at  = os.path.getmtime(trans_json_path)
+                    except Exception:
+                        tc = trans_cache.get(esp_name_stem, {})
+                        n_trans += sum(1 for v in tc.values() if v)
+                        if tc:
+                            info.cache_file = str(self.translation_cache)
+                            info.cached_at  = (os.path.getmtime(self.translation_cache)
+                                               if self.translation_cache.exists() else None)
+                else:
+                    tc = trans_cache.get(esp_name_stem, {})
                     n_trans += sum(1 for v in tc.values() if v)
                     if tc:
                         info.cache_file = str(self.translation_cache)
-                        info.cached_at  = os.path.getmtime(self.translation_cache) \
-                                           if self.translation_cache.exists() else None
-            else:
-                tc = trans_cache.get(esp_name, {})
-                n_trans += sum(1 for v in tc.values() if v)
-                if tc:
-                    info.cache_file = str(self.translation_cache)
-                    info.cached_at  = os.path.getmtime(self.translation_cache) \
-                                       if self.translation_cache.exists() else None
+                        info.cached_at  = (os.path.getmtime(self.translation_cache)
+                                           if self.translation_cache.exists() else None)
 
         info.total_strings        = n_total
         info.translated_strings   = n_trans
-        info.pending_strings      = max(0, n_total - n_trans)
         info.needs_review_strings = n_review
+        if n_pending is not None:
+            info.pending_strings        = n_pending
+            # untranslatable = strings in ESP scan count not accounted for in SQLite
+            info.untranslatable_strings = max(0, n_total - n_trans - n_pending - n_review)
+        else:
+            info.pending_strings        = max(0, n_total - n_trans)
+            info.untranslatable_strings = n_untrans
 
         # Status
         has_esp = bool(info.esp_files)
@@ -504,15 +534,63 @@ class ModScanner:
 
         return info
 
-    def scan_string_counts(self, progress_cb=None, mod_name: str | None = None) -> dict:
+    def _patch_stats_from_db(self, mods: list[ModInfo]) -> None:
+        """Bulk-patch translation stats on cached ModInfo objects from SQLite."""
+        try:
+            all_stats = self._repo.all_mod_stats()
+        except Exception:
+            return
+        for info in mods:
+            s = all_stats.get(info.folder_name)
+            if s:
+                self._apply_stats(info, s)
+
+    def _patch_mod_stats_from_db(self, info: ModInfo) -> None:
+        """Patch translation stats on a single cached ModInfo from SQLite."""
+        try:
+            s = self._repo.mod_stats(info.folder_name)
+        except Exception:
+            return
+        self._apply_stats(info, s)
+
+    @staticmethod
+    def _apply_stats(info: ModInfo, s: dict) -> None:
+        n_trans  = s.get("translated", 0)
+        n_review = s.get("needs_review", 0)
+        # Only override if SQLite has data; keep .trans.json fallback values otherwise
+        n_pending = s.get("pending", 0)
+        if n_trans > 0 or n_review > 0 or n_pending > 0:
+            info.translated_strings     = n_trans
+            info.needs_review_strings   = n_review
+            info.pending_strings        = n_pending
+            info.untranslatable_strings = max(0, info.total_strings - n_trans - n_pending - n_review)
+            info.cache_file             = "sqlite"
+            info.cached_at            = None
+            # Recompute status
+            has_esp = bool(info.esp_files)
+            if not has_esp:
+                info.status = "no_strings"
+            elif info.total_strings == 0:
+                info.status = "partial" if n_trans > 0 else "unknown"
+            elif n_trans == 0:
+                info.status = "pending"
+            elif n_trans < info.total_strings:
+                info.status = "partial"
+            else:
+                info.status = "done"
+
+    def scan_string_counts(self, progress_cb=None, mod_name: str | None = None,
+                           bsa_cache=None, swf_cache=None) -> dict:
         """
-        Explicit (user-triggered) deep scan: parse every ESP and cache string counts.
+        Explicit (user-triggered) deep scan: parse ESP + BSA/MCM + SWF files and
+        cache string counts.
         progress_cb(done, total, mod_name) is called for each mod if provided.
         mod_name: if given, scan only that specific mod folder.
         Returns a summary dict.
         """
         if not self.mods_dir.is_dir():
-            return {"scanned": 0, "esp_files": 0, "total_strings": 0}
+            return {"scanned": 0, "esp_files": 0, "total_strings": 0,
+                    "bsa_strings": 0, "swf_strings": 0}
 
         if mod_name:
             folder = self.mods_dir / mod_name
@@ -522,11 +600,24 @@ class ModScanner:
         counts_cache = self._load_counts_cache()
         counts_dirty = False
         n_esp = 0
-        n_strings = 0
+        n_esp_strings = 0
+        n_bsa_strings = 0
+        n_swf_strings = 0
+
+        read_trans_file = None
+        needs_trans_fn  = None
+        if bsa_cache:
+            try:
+                from scripts.translate_mcm import read_trans_file, needs_translation as needs_trans_fn
+            except ImportError:
+                pass
 
         for idx, folder in enumerate(folders):
             if progress_cb:
                 progress_cb(idx, len(folders), folder.name)
+            folder_name = folder.name
+
+            # ── ESP / ESM / ESL ──────────────────────────────────────────────
             for ext in ("*.esp", "*.esm", "*.esl"):
                 for p in folder.glob(ext):
                     if not p.stem:
@@ -535,17 +626,62 @@ class ModScanner:
                         size = p.stat().st_size
                     except OSError:
                         continue
-                    esp_key   = f"{folder.name}/{p.name}"
+                    esp_key   = f"{folder_name}/{p.name}"
                     cached_ct = counts_cache.get(esp_key)
                     if cached_ct and cached_ct.get("size") == size:
-                        n_strings += cached_ct["count"]
+                        n_esp_strings += cached_ct["count"]
                         n_esp += 1
-                        continue  # already fresh
-                    count = self._count_esp_strings(p)
-                    counts_cache[esp_key] = {"size": size, "count": count}
+                        continue
+                    count, untrans = self._count_esp_strings(p)
+                    counts_cache[esp_key] = {"size": size, "count": count, "untranslatable": untrans}
                     counts_dirty = True
-                    n_strings += count
+                    n_esp_strings += count
                     n_esp += 1
+
+            # ── Loose MCM (*_english.txt) ────────────────────────────────────
+            if read_trans_file:
+                for en_txt in folder.rglob("*_english.txt"):
+                    try:
+                        pairs = read_trans_file(en_txt)
+                        count = (sum(1 for _, t in pairs if needs_trans_fn(t))
+                                 if needs_trans_fn else len(pairs))
+                        n_bsa_strings += count
+                    except Exception:
+                        pass
+
+            # ── BSA-embedded MCM ─────────────────────────────────────────────
+            if bsa_cache and read_trans_file:
+                for bsa_path in folder.glob("*.bsa"):
+                    try:
+                        bsa_cache.ensure_extracted(bsa_path, folder_name)
+                        bsa_rel = bsa_path.name
+                        for en_txt in bsa_cache.get_english_files(folder_name, bsa_rel):
+                            try:
+                                pairs = read_trans_file(en_txt)
+                                count = (sum(1 for _, t in pairs if needs_trans_fn(t))
+                                         if needs_trans_fn else len(pairs))
+                                n_bsa_strings += count
+                            except Exception:
+                                pass
+                    except Exception as exc:
+                        log.warning("scan BSA MCM %s: %s", bsa_path.name, exc)
+
+            # ── SWF ──────────────────────────────────────────────────────────
+            if swf_cache:
+                for swf_path in folder.rglob("*.swf"):
+                    try:
+                        swf_rel = str(swf_path.relative_to(folder)).replace("\\", "/")
+                        swf_cache.ensure_extracted(swf_path, folder_name, swf_rel)
+                        for en_file in swf_cache.get_english_files(folder_name, swf_rel):
+                            try:
+                                lines = [l for l in
+                                         en_file.read_text(encoding="utf-8", errors="replace")
+                                         .splitlines() if l.strip()]
+                                n_swf_strings += len(lines)
+                            except Exception:
+                                pass
+                    except Exception as exc:
+                        log.warning("scan SWF %s: %s", swf_path.name, exc)
 
         if counts_dirty:
             self._save_counts_cache(counts_cache)
@@ -556,7 +692,14 @@ class ModScanner:
         else:
             self._cache.clear()
 
-        return {"scanned": len(folders), "esp_files": n_esp, "total_strings": n_strings}
+        total = n_esp_strings + n_bsa_strings + n_swf_strings
+        return {
+            "scanned":       len(folders),
+            "esp_files":     n_esp,
+            "total_strings": total,
+            "bsa_strings":   n_bsa_strings,
+            "swf_strings":   n_swf_strings,
+        }
 
     def _load_translation_cache(self) -> dict:
         if not self.translation_cache.exists():
@@ -582,15 +725,17 @@ class ModScanner:
         except Exception as exc:
             log.warning(f"Could not save string counts cache: {exc}")
 
-    def _count_esp_strings(self, esp_path: Path) -> int:
-        """Parse ESP and return the number of translatable strings."""
+    def _count_esp_strings(self, esp_path: Path) -> tuple[int, int]:
+        """Parse ESP and return (total, untranslatable) string counts."""
         try:
-            from scripts.esp_engine import extract_all_strings
+            from scripts.esp_engine import extract_all_strings, needs_translation
             entries, _ = extract_all_strings(esp_path)
-            return len(entries)
+            total = len(entries)
+            untranslatable = sum(1 for e in entries if not needs_translation(e.get("text", "")))
+            return total, untranslatable
         except Exception as exc:
             log.warning(f"Could not count strings in {esp_path.name}: {exc}")
-            return 0
+            return 0, 0
 
     def file_hash(self, path: Path) -> str:
         if not path.exists():

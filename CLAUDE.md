@@ -153,17 +153,22 @@ frontend/src/
 
 ### Translation strings (server side)
 ```
-ESP binary
-  ↓ extract_all_strings()
-.trans.json  ←→  SQLite DB (translator/db/)   ← PRIMARY for reads
-  ↑                 ↑
-  _upsert_trans_json() / save_translation() — dual-writes both
+AI / manual edit → SQLite DB (translator/db/)   ← ONLY write target
+                         │
+          ┌──────────────┼──────────────┐
+          ▼              ▼              ▼
+    apply_esp       apply_mcm      apply_swf
+  (rewrite_esp)  (gen _russian.txt  (gen _ru.txt
+                  → pack BSA)        → FFDec)
 ```
 
-- `.trans.json` files are the **durable backup** — always written first
-- **SQLite DB** (`cache/translations.db`) is the **fast read source** for the `/strings` API
-- On startup, `importer.py` seeds the DB from all `.trans.json` files in background
-- `StringRepo.upsert()` is called after every write (batch translate, manual edit, translate-one)
+- **SQLite DB** (`cache/translations.db`) is the **single source of truth**
+- All writes go through `save_translation()` → `_upsert_db()` (ESP) or SQLite upsert (MCM/BSA/SWF)
+- Bootstrap: on first access for a mod/esp, `_upsert_db()` parses the ESP and seeds SQLite
+- `.trans.json` files are **not written** by any translation path; they remain on disk as legacy artifacts
+- `importer.py` exists for manual re-seeding only; it is NOT called at startup
+- `apply_mod_worker` reads from SQLite and calls `cmd_apply_from_strings` (no file I/O)
+- `translate_bsa_worker` exports MCM/BSA/SWF from SQLite → files → packs BSA / runs FFDec
 
 ### Real-time UI (client side)
 ```
@@ -191,8 +196,9 @@ strings (
   id, mod_name, esp_name, key,          -- key = str((form_id, rec_type, field_type, field_index))
   original, translation, status,        -- status: pending / translated / needs_review
   quality_score, form_id, rec_type,
-  field_type, field_index, updated_at
-  UNIQUE(mod_name, esp_name, key)
+  field_type, field_index, vmad_str_idx, -- vmad_str_idx for Papyrus VMAD sub-strings
+  updated_at
+  UNIQUE(mod_name, esp_name, key)        -- key = str((form_id, rec_type, field_type, field_index, vmad_str_idx))
 )
 
 string_checkpoints (
@@ -384,7 +390,7 @@ queryClient.invalidateQueries({ queryKey: ['mods', modName, 'strings'] })
 
 ## Important invariants — do not break
 
-- **Dual-write**: every string save must go to both `.trans.json` (via `_upsert_trans_json`) and SQLite (via `repo.upsert`). The `save_translation()` function in `workers.py` handles this — always call it with `repo=current_app.config.get("STRING_REPO")`.
+- **SQLite is the only write target** — `save_translation()` → `_upsert_db()` (ESP) or SQLite upsert (MCM/BSA/SWF). Never write to `.trans.json` files. Always pass `repo=current_app.config.get("STRING_REPO")`.
 - **`_update_caches()` after `rewrite_esp()`** — the ESP file size changes on write; scanner validates the cache by matching file size. Call after, not before.
 - **SSE `new_string_updates`** — the `_notify()` method in `job_manager.py` sends only deltas (since `_string_update_cursor`). Do not reset `string_updates` mid-job.
 - **Thread safety** — `StringRepo` uses a module-level `_write_lock` for all writes. `ModScanner` has its own in-memory cache with a 60s TTL. `JobManager` is a singleton with `threading.Lock`.

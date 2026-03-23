@@ -198,14 +198,25 @@ def clear_finished():
 # ── Job factory functions ─────────────────────────────────────────────────────
 
 def _create_translate_mod_job(jm, cfg, mod_name: str, options: dict):
-    dry_run        = options.get("dry_run", False)
     only_mcm       = options.get("only_mcm", False)
     only_esp       = options.get("only_esp", False)
-    translate_only = options.get("translate_only", False)
     force          = options.get("force", False)
+    machines       = options.get("machines")
     repo           = current_app.config.get("STRING_REPO")
 
+    # Map only_mcm / only_esp → scope for translate_strings_worker
+    if only_mcm:
+        scope = "mcm"
+    elif only_esp:
+        scope = "esp"
+    else:
+        scope = "all"
+
+    backends, skipped = _resolve_backends(cfg, machines)
+
     def run(job):
+        if skipped:
+            job.add_log(f"WARNING: machines not found in registry (skipped): {', '.join(skipped)}")
         # Auto-checkpoint before translation starts
         if repo is not None:
             try:
@@ -213,27 +224,29 @@ def _create_translate_mod_job(jm, cfg, mod_name: str, options: dict):
                 job.add_log(f"Checkpoint {cp_id[:8]}… created before translation")
             except Exception as e:
                 log.warning("Auto-checkpoint failed: %s", e)
-        from translator.web.workers import translate_mod_worker
-        translate_mod_worker(job, cfg, mod_name, dry_run=dry_run,
-                             only_mcm=only_mcm, only_esp=only_esp,
-                             translate_only=translate_only, force=force)
+        from translator.web.workers import translate_strings_worker
+        translate_strings_worker(job, cfg, mod_name, scope=scope,
+                                 force=force, backends=backends, repo=repo)
 
-    name = f"Translate (AI only): {mod_name}" if translate_only else f"Translate: {mod_name}"
     return jm.create(
-        name     = name,
+        name     = f"Translate: {mod_name}",
         job_type = "translate_mod",
-        params   = {"mod_name": mod_name, "dry_run": dry_run,
-                    "translate_only": translate_only},
+        params   = {"mod_name": mod_name, "scope": scope},
         fn       = run,
     )
 
 
 def _create_batch_job(jm, cfg, mod_names: list, options: dict):
-    dry_run = options.get("dry_run", False)
-    repo    = current_app.config.get("STRING_REPO")
+    force    = options.get("force", False)
+    machines = options.get("machines")
+    repo     = current_app.config.get("STRING_REPO")
+
+    backends, skipped = _resolve_backends(cfg, machines)
 
     def run(job):
-        from translator.web.workers import translate_mod_worker
+        if skipped:
+            job.add_log(f"WARNING: machines not found in registry (skipped): {', '.join(skipped)}")
+        from translator.web.workers import translate_strings_worker
         total = len(mod_names)
         for i, mod_name in enumerate(mod_names):
             if job.status.value == "cancelled":
@@ -246,14 +259,14 @@ def _create_batch_job(jm, cfg, mod_names: list, options: dict):
                     job.add_log(f"Checkpoint {cp_id[:8]}… created before translation of {mod_name}")
                 except Exception as e:
                     log.warning("Auto-checkpoint failed for %s: %s", mod_name, e)
-            translate_mod_worker(job, cfg, mod_name, dry_run=dry_run,
-                                 only_mcm=False, only_esp=False)
+            translate_strings_worker(job, cfg, mod_name, scope="all",
+                                     force=force, backends=backends, repo=repo)
         jm.update_progress(job, total, total, "Done")
 
     return jm.create(
         name     = f"Batch translate: {len(mod_names)} mods",
         job_type = "batch_translate",
-        params   = {"mods": mod_names, "dry_run": dry_run},
+        params   = {"mods": mod_names},
         fn       = run,
     )
 

@@ -148,6 +148,14 @@ class StringRepo:
         ).fetchone()
         return row is not None
 
+    def esp_string_count(self, mod_name: str, esp_name: str) -> int:
+        """Return the number of rows stored for this mod/esp combination."""
+        row = self.db.execute(
+            "SELECT COUNT(*) FROM strings WHERE mod_name=? AND esp_name=?",
+            (mod_name, esp_name),
+        ).fetchone()
+        return row[0] if row else 0
+
     def mod_has_data(self, mod_name: str) -> bool:
         """Return True if SQLite has any rows for this mod."""
         row = self.db.execute(

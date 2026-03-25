@@ -65,14 +65,15 @@ def _upsert_db(repo, mods_dir: Path, mod_name: str,
             _computed_status = "pending"
             _computed_qs     = None
         else:
-            from scripts.esp_engine import quality_score as _qs, validate_tokens as _vt
-            if orig_text:
-                qs = _qs(orig_text, translation)
-                tok_ok, _ = _vt(orig_text, translation)
-                _computed_qs     = qs
-                _computed_status = "translated" if (tok_ok and qs > 70) else "needs_review"
+            from scripts.esp_engine import compute_string_status as _css
+            if orig_text and translation:
+                _computed_qs, _, _, _computed_status = _css(orig_text, translation)
+            elif not translation:
+                _computed_status = "pending"
+                _computed_qs     = None
             else:
                 _computed_status = status or "translated"
+                _computed_qs     = None
 
         repo.upsert(
             mod_name=mod_name,
@@ -175,75 +176,9 @@ def save_translation(mods_dir: Path, mod_name: str, cache_path: Path,
                           quality_score=quality_score, status=status)
 
 
-def translate_mod_worker(job, cfg, mod_name: str,
-                         dry_run: bool = False,
-                         only_mcm: bool = False,
-                         only_esp: bool = False,
-                         translate_only: bool = False,
-                         force: bool = False):
-    """Translate a single mod (MCM + ESP).
-    translate_only=True: run AI translation, save .trans.json, do NOT write ESP binary.
-    """
-    from translator.web.job_manager import JobManager
-    jm      = JobManager.get()
-    mod_dir = cfg.paths.mods_dir / mod_name
-
-    if not mod_dir.is_dir():
-        job.add_log(f"ERROR: Mod folder not found: {mod_dir}")
-        raise FileNotFoundError(str(mod_dir))
-
-    # ── MCM ──────────────────────────────────────────────────────────────
-    if not only_esp:
-        try:
-            job.add_log(f"MCM: scanning {mod_name}...")
-            jm.update_progress(job, 0, 100, "MCM translation", "scanning")
-            ROOT = Path(__file__).parent.parent.parent
-            sys.path.insert(0, str(ROOT))
-            from scripts.translate_mcm import cmd_translate_mcm
-            cmd_translate_mcm(mod_dir, dry_run=dry_run)
-            job.add_log(f"MCM: done")
-        except Exception as exc:
-            job.add_log(f"MCM warning: {exc}")
-
-    # ── ESP ───────────────────────────────────────────────────────────────
-    if not only_mcm:
-        esp_files = list(mod_dir.rglob("*.esp")) + list(mod_dir.rglob("*.esm"))
-        if esp_files:
-            ROOT = Path(__file__).parent.parent.parent
-            sys.path.insert(0, str(ROOT))
-            from scripts.esp_engine import cmd_translate
-            total = len(esp_files)
-            for i, esp_path in enumerate(esp_files):
-                if job.status.value == "cancelled":
-                    return
-                job.add_log(f"ESP [{i+1}/{total}]: {esp_path.name}")
-                jm.update_progress(job, 0, 1,
-                                   f"ESP: {esp_path.name}", "translating")
-
-                def _make_progress(esp_idx, esp_count, name):
-                    def _cb(done_str, total_str):
-                        msg = (f"ESP {esp_idx+1}/{esp_count}: {name} "
-                               f"({done_str}/{total_str} strings)")
-                        jm.update_progress(job, done_str, max(total_str, 1), msg)
-                    return _cb
-
-                try:
-                    cmd_translate(esp_path, esp_path, mod_dir, dry_run=dry_run,
-                                  progress_cb=_make_progress(i, total, esp_path.name),
-                                  apply_esp=not translate_only, force=force)
-                    job.add_log(f"  OK: {esp_path.name}")
-                except Exception as exc:
-                    job.add_log(f"  ERROR {esp_path.name}: {exc}")
-            jm.update_progress(job, 1, 1, "ESP done")
-        else:
-            job.add_log("No ESP/ESM files found")
-
-    job.result = f"Done: {mod_name}"
-
-
 def translate_all_worker(job, cfg, dry_run: bool = False, resume: bool = True,
                          scope: str = "all", status_filter: str = "all",
-                         force: bool = False, backends=None):
+                         force: bool = False, backends=None, repo=None):
     """Translate all mods in mods_dir.
 
     scope:         "all" | "esp" | "mcm" | "bsa" | "swf" | "review"
@@ -267,8 +202,6 @@ def translate_all_worker(job, cfg, dry_run: bool = False, resume: bool = True,
     total = len(mod_folders)
     job.add_log(f"Found {total} mod folders")
 
-    use_filtered = (scope != "all" or status_filter != "all" or force or backends)
-
     for i, folder in enumerate(mod_folders):
         if job.status.value == "cancelled":
             return
@@ -280,13 +213,10 @@ def translate_all_worker(job, cfg, dry_run: bool = False, resume: bool = True,
         job.add_log(f"\n=== [{i+1}/{total}] {folder.name} ===")
 
         try:
-            if use_filtered:
-                _translate_mod_filtered(job, cfg, folder.name,
-                                        scope=scope, status_filter=status_filter,
-                                        force=force, dry_run=dry_run,
-                                        backends=backends)
-            else:
-                translate_mod_worker(job, cfg, folder.name, dry_run=dry_run)
+            _translate_mod_filtered(job, cfg, folder.name,
+                                    scope=scope, status_filter=status_filter,
+                                    force=force, dry_run=dry_run,
+                                    backends=backends, repo=repo)
 
             if not dry_run:
                 with open(done_file, "a", encoding="utf-8") as f:
@@ -301,7 +231,7 @@ def translate_all_worker(job, cfg, dry_run: bool = False, resume: bool = True,
 
 def _translate_mod_filtered(job, cfg, mod_name: str, scope: str = "all",
                              status_filter: str = "all", force: bool = False,
-                             dry_run: bool = False, backends=None):
+                             dry_run: bool = False, backends=None, repo=None):
     """Helper: translate a mod using translate_strings_worker with filter options.
 
     Used by translate_all_worker when scope/status_filter/force/backends are set.
@@ -320,25 +250,7 @@ def _translate_mod_filtered(job, cfg, mod_name: str, scope: str = "all",
     if not dry_run:
         translate_strings_worker(job, cfg, mod_name,
                                  scope=eff_scope, params=None,
-                                 force=eff_force, backends=backends)
-
-
-def translate_esp_worker(job, cfg, esp_path: str, dry_run: bool = False):
-    """Translate a single ESP file."""
-    from translator.web.job_manager import JobManager
-    jm = JobManager.get()
-
-    ROOT = Path(__file__).parent.parent.parent
-    sys.path.insert(0, str(ROOT))
-    from scripts.esp_engine import cmd_translate
-
-    p = Path(esp_path)
-    job.add_log(f"Translating {p.name}...")
-    jm.update_progress(job, 0, 1, f"Translating {p.name}")
-    cmd_translate(p, p, p.parent, dry_run=dry_run)
-    jm.update_progress(job, 1, 1, "Done")
-    job.result = f"Translated: {p.name}"
-    job.add_log("Done")
+                                 force=eff_force, backends=backends, repo=repo)
 
 
 def apply_mod_worker(job, cfg, mod_name: str, dry_run: bool = False, repo=None):
@@ -370,24 +282,19 @@ def apply_mod_worker(job, cfg, mod_name: str, dry_run: bool = False, repo=None):
         jm.update_progress(job, i, total, f"Applying: {esp_path.name}")
         try:
             if not dry_run:
-                if repo:
-                    rows = repo.get_all_strings(mod_name, esp_path.name)
-                    if not rows:
-                        job.add_log(f"  SKIP {esp_path.name} — no strings in DB (run translate step first)")
-                        jm.update_progress(job, i + 1, total, f"Skipped: {esp_path.name}")
-                        continue
-                    # Map SQLite field 'original' → 'text' expected by _build_trans_map
-                    for r in rows:
-                        r.setdefault("text", r.get("original", ""))
-                    n = cmd_apply_from_strings(esp_path, esp_path, rows, mod_dir)
-                else:
-                    # Fallback: legacy .trans.json path (no repo)
-                    from scripts.esp_engine import cmd_apply_from_trans
-                    json_path = esp_path.with_suffix('.trans.json')
-                    if not json_path.exists():
-                        job.add_log(f"  SKIP {esp_path.name} — no DB or .trans.json")
-                        continue
-                    n = cmd_apply_from_trans(esp_path, esp_path, mod_dir)
+                if not repo:
+                    job.add_log(f"  SKIP {esp_path.name} — no database available")
+                    jm.update_progress(job, i + 1, total, f"Skipped: {esp_path.name}")
+                    continue
+                rows = repo.get_all_strings(mod_name, esp_path.name)
+                if not rows:
+                    job.add_log(f"  SKIP {esp_path.name} — no strings in DB (run translate step first)")
+                    jm.update_progress(job, i + 1, total, f"Skipped: {esp_path.name}")
+                    continue
+                # Map SQLite field 'original' → 'text' expected by _build_trans_map
+                for r in rows:
+                    r.setdefault("text", r.get("original", ""))
+                n = cmd_apply_from_strings(esp_path, esp_path, rows, mod_dir)
                 applied += (1 if n else 0)
                 job.add_log(f"  OK: {esp_path.name} ({n} strings applied)")
             else:
@@ -847,77 +754,67 @@ def swf_compile_worker(job, ffdec_jar: str, src_dir: str, swf_path: str):
     job.result = f"Compiled: {swf_path}"
 
 
-def validate_translations_worker(job, cfg, mod_name: str):
-    """
-    Validate translated strings.
+def validate_translations_worker(job, cfg, mod_name: str, repo=None):
+    """Validate translated strings from SQLite.
     Checks: token preservation, encoding artifacts, length limits,
             empty translations, null bytes, Skyrim inline tag preservation.
     """
     from translator.web.job_manager import JobManager
     jm = JobManager.get()
-    import json, re
+    import re
 
-    # Skyrim inline token pattern — must survive translation unchanged
-    _TOKEN_RE = re.compile(
-        r'<[A-Za-z][^>]*>'            # XML-like tags: <Alias=...>, <Global=...>, <br>
-        r'|\[PageBreak\]'              # book page break
-        r'|\\n'                        # literal \n escape
-        r'|%[dis%]'                    # printf-style: %d %i %s %%
-    , re.IGNORECASE)
+    from scripts.esp_engine import validate_tokens as _vt, quality_score as _qs
 
-    # Per-field length limits (soft max before flagging)
     _LENGTH = {"FULL": 64, "SHRT": 32, "NNAM": 128, "DESC": 8000,
                "NAM1": 400, "ITXT": 60, "MNAM": 50, "FNAM": 50}
 
     job.add_log(f"Validating translations for {mod_name}...")
-    cache_path = cfg.paths.translation_cache
-    if not cache_path.exists():
-        job.add_log("No translation cache found")
+
+    if repo is None:
+        job.add_log("No database available")
         return
 
-    cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    rows = repo.get_all_strings(mod_name)
+    esp_rows = [r for r in rows if not any(
+        r["key"].startswith(p) for p in ("mcm:", "bsa-mcm:", "swf:"))]
+
     issues: list[str] = []
     checked = 0
 
-    def _slug(s):
-        import re as _re
-        return _re.sub(r"[^a-z0-9]", "", s.lower())
+    for r in esp_rows:
+        orig  = r.get("original", "") or ""
+        trans = r.get("translation", "") or ""
+        key   = r.get("key", "")
+        field = r.get("field_type", "") or ""
 
-    for esp_stem, strings in cache.items():
-        if mod_name and _slug(mod_name) not in _slug(esp_stem):
+        if not trans:
             continue
-        for key, translation in strings.items():
-            checked += 1
-            if not translation:
-                continue
+        checked += 1
 
-            key_str   = str(key)
-            # Extract field type from key tuple string like "('...', 'NPC_', 'FULL', 2)"
-            parts     = key_str.strip("()").split(",")
-            field     = parts[2].strip().strip("'") if len(parts) > 2 else ""
+        # Null bytes / control chars
+        if "\x00" in trans:
+            issues.append(f"NULL_BYTE: {key[:60]}")
+        if re.search(r'[\x01-\x08\x0b\x0c\x0e-\x1f]', trans):
+            issues.append(f"CTRL_CHAR: {key[:60]}")
 
-            # Null bytes / control chars
-            if "\x00" in translation:
-                issues.append(f"NULL_BYTE: {key_str[:60]}")
-            if re.search(r'[\x01-\x08\x0b\x0c\x0e-\x1f]', translation):
-                issues.append(f"CTRL_CHAR: {key_str[:60]}")
+        # Encoding artifacts
+        if any(art in trans for art in ("â€", "Ã©", "Ã ", "Â ")):
+            issues.append(f"ENCODING_ARTIFACT: {key[:60]}")
 
-            # Encoding artifacts from Windows-1252 double-decode
-            if any(art in translation for art in ("â€", "Ã©", "Ã ", "Â ")):
-                issues.append(f"ENCODING_ARTIFACT: {key_str[:60]}")
+        # Token preservation
+        tok_ok, tok_issues = _vt(orig, trans)
+        if not tok_ok:
+            issues.append(f"TOKEN_MISMATCH [{'; '.join(tok_issues)}]: {key[:50]}")
 
-            # Length limits
-            limit = _LENGTH.get(field)
-            if limit and len(translation) > limit:
-                issues.append(f"TOO_LONG [{field}] {len(translation)}>{limit}: {key_str[:50]}")
+        # Quality score
+        qs = _qs(orig, trans)
+        if qs < 50:
+            issues.append(f"LOW_QUALITY [qs={qs}]: {key[:50]}")
 
-            # Token preservation: flag if original had tokens but translation doesn't
-            # (We only have the translation here, not the original — flag missing tags)
-            # Check for half-preserved tags: opening without closing
-            open_tags  = re.findall(r'<\w', translation)
-            close_tags = re.findall(r'/>', translation) + re.findall(r'</\w', translation)
-            if len(open_tags) > len(close_tags) + len(re.findall(r'<br\s*/?>|<p\s*/?>', translation, re.I)):
-                issues.append(f"BROKEN_TAG: {key_str[:60]}")
+        # Length limits
+        limit = _LENGTH.get(field)
+        if limit and len(trans) > limit:
+            issues.append(f"TOO_LONG [{field}] {len(trans)}>{limit}: {key[:50]}")
 
     if issues:
         job.add_log(f"Found {len(issues)} issues in {checked} strings:")
@@ -931,7 +828,6 @@ def validate_translations_worker(job, cfg, mod_name: str):
     jm.update_progress(job, 1, 1, f"{len(issues)} issues in {checked} strings")
     job.result = f"{len(issues)} validation issues"
 
-    # Persist results so mod detail page can show validator state
     try:
         import time as _time
         result_data = {
@@ -955,7 +851,7 @@ def recompute_scores_worker(job, cfg, mod_name: str = None, repo=None):
     If mod_name is given, only that mod is processed; otherwise all mods.
     Does NOT re-translate anything.
     """
-    from scripts.esp_engine import quality_score as _qs, validate_tokens as _vt
+    from scripts.esp_engine import compute_string_status as _css
     from translator.web.job_manager import JobManager
     jm = JobManager.get()
 
@@ -978,6 +874,7 @@ def recompute_scores_worker(job, cfg, mod_name: str = None, repo=None):
     job.add_log(f"Recomputing scores for {total} mod(s) from SQLite...")
     jm.update_progress(job, 0, total, "Starting...")
 
+    from scripts.esp_engine import needs_translation as _needs_trans
     for i, _mod in enumerate(mod_names):
         jm.update_progress(job, i, total, _mod)
         try:
@@ -990,20 +887,25 @@ def recompute_scores_worker(job, cfg, mod_name: str = None, repo=None):
             for r in esp_rows:
                 orig  = r.get("original", "") or ""
                 trans = r.get("translation", "") or ""
-                if not trans:
-                    continue
-                new_qs = _qs(orig, trans)
-                tok_ok, _ = _vt(orig, trans)
-                new_status = "translated" if (tok_ok and new_qs > 70) else "needs_review"
+                # Untranslatable strings: reset translation=original, qs=100, status=translated
+                if not _needs_trans(orig):
+                    new_qs, new_status, new_trans = 100, "translated", orig
+                    if trans == orig and r.get("quality_score") == 100 and r.get("status") == "translated":
+                        continue
+                else:
+                    new_trans = trans
+                    if not trans:
+                        continue
+                    new_qs, _, _, new_status = _css(orig, trans)
                 if new_status == "needs_review":
                     n_review += 1
-                if r.get("quality_score") != new_qs or r.get("status") != new_status:
+                if r.get("quality_score") != new_qs or r.get("status") != new_status or trans != new_trans:
                     repo.upsert(
                         mod_name=_mod,
                         esp_name=r["esp_name"],
                         key=r["key"],
                         original=orig,
-                        translation=trans,
+                        translation=new_trans,
                         status=new_status,
                         quality_score=new_qs,
                         form_id=r.get("form_id") or "",
@@ -1102,20 +1004,35 @@ def translate_strings_worker(job, cfg, mod_name: str,
         # Seed SQLite so future runs read from it (group by ESP name for efficiency)
         if repo and strings:
             from collections import defaultdict
+            from scripts.esp_engine import needs_translation as _nt
             by_esp: dict = defaultdict(list)
             for s in strings:
                 if any(s["key"].startswith(p) for p in ("mcm:", "bsa-mcm:", "swf:")):
                     continue
+                orig = s.get("original", "")
+                if not _nt(orig):
+                    trans, st, qs = orig, "translated", 100
+                else:
+                    trans = s.get("translation", "")
+                    st    = s.get("status", "pending")
+                    qs    = s.get("quality_score")
+                # Extract vmad_str_idx from key tuple if present
+                key = s.get("key", "")
+                try:
+                    parsed = eval(key) if key.startswith("(") else None
+                    vmad_idx = int(parsed[4]) if parsed and len(parsed) > 4 else 0
+                except Exception:
+                    vmad_idx = 0
                 by_esp[s["esp"]].append({
                     "form_id":       s.get("form_id"),
                     "rec_type":      s.get("rec_type"),
                     "field_type":    s.get("field"),
                     "field_index":   s.get("idx"),
-                    "vmad_str_idx":  0,
-                    "text":          s.get("original", ""),
-                    "translation":   s.get("translation", ""),
-                    "status":        s.get("status", "pending"),
-                    "quality_score": s.get("quality_score"),
+                    "vmad_str_idx":  vmad_idx,
+                    "text":          orig,
+                    "translation":   trans,
+                    "status":        st,
+                    "quality_score": qs,
                 })
             for esp_name, esp_rows in by_esp.items():
                 repo.bulk_insert_strings(mod_name, esp_name, esp_rows)
@@ -1143,9 +1060,30 @@ def translate_strings_worker(job, cfg, mod_name: str,
             strings = [s for s in strings if not s["translation"]]
         strings = [s for s in strings if not s["original"].startswith("[LOC:")]
 
+    # Pre-seed untranslatable strings (needs_translation=False) immediately as
+    # translation=original — never send to AI, remove from the queue.
+    # This handles strings reset to pending="" so force-translate works cleanly.
+    _translatable = []
+    _untrans_seeded = 0
+    for s in strings:
+        if not _needs_trans(s["original"]):
+            if not s.get("translation"):
+                save_translation(cfg.paths.mods_dir, mod_name,
+                                 cfg.paths.translation_cache,
+                                 s["esp"], s["key"], s["original"], cfg=cfg, repo=repo)
+                _untrans_seeded += 1
+        else:
+            _translatable.append(s)
+    if _untrans_seeded:
+        job.add_log(f"Seeded {_untrans_seeded} untranslatable strings as translation=original")
+    strings = _translatable
+
     total = len(strings)
     if total == 0:
-        job.result = "No strings to translate"
+        msg = "All strings already translated — nothing to do"
+        job.add_log(msg)
+        jm.update_progress(job, 1, 1, msg)
+        job.result = msg
         return
 
     if force:
@@ -1163,11 +1101,16 @@ def translate_strings_worker(job, cfg, mod_name: str,
         if s.get("translation") and s["translation"] != s["original"]
     }
 
-    # ── Global dict fast-path ────────────────────────────────────────────────
-    if gd:
+    # ── Global dict fast-path (skipped when force=True — caller wants fresh AI) ─
+    from scripts.esp_engine import needs_translation as _needs_trans
+    if gd and not force:
         dict_saved = 0
         remaining  = []
         for s in strings:
+            if not _needs_trans(s["original"]):
+                # Never apply dict to untranslatable strings (code identifiers, $-keys, etc.)
+                remaining.append(s)
+                continue
             existing = gd.get(s["original"])
             if existing:
                 save_translation(cfg.paths.mods_dir, mod_name,

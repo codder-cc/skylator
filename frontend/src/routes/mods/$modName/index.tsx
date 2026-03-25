@@ -22,6 +22,8 @@ import {
   ExternalLink,
   BarChart2,
   Wrench,
+  RotateCcw,
+  Zap,
 } from 'lucide-react'
 import { useState } from 'react'
 import { modsApi } from '@/api/mods'
@@ -155,7 +157,7 @@ function ActionButton({
   disabled?: boolean
   icon: React.ReactNode
   label: string
-  variant?: 'default' | 'primary'
+  variant?: 'default' | 'primary' | 'danger'
 }) {
   return (
     <button
@@ -165,6 +167,8 @@ function ActionButton({
         'flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors w-full',
         variant === 'primary'
           ? 'bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30'
+          : variant === 'danger'
+          ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/30'
           : 'bg-bg-card2 text-text-muted hover:text-text-main hover:bg-bg-card2/80 border border-border-subtle',
         (isPending || disabled) && 'opacity-50 cursor-not-allowed',
       )}
@@ -490,6 +494,25 @@ function ModDetailPage() {
     },
   })
 
+  const translateForceMut = useMutation({ // eslint-disable-line react-hooks/rules-of-hooks
+    mutationFn: () =>
+      jobsApi.create({ type: 'translate_mod', mods: [decodedName], options: { machines, force: true } }),
+    onSuccess: (data) => {
+      if (data.ok && data.job_id) {
+        queryClient.invalidateQueries({ queryKey: QK.jobs() })
+        navigate({ to: '/jobs/$jobId', params: { jobId: data.job_id } })
+      }
+    },
+  })
+
+  const resetTranslationsMut = useMutation({
+    mutationFn: () => modsApi.resetTranslations(decodedName),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: QK.mod(decodedName) })
+      queryClient.invalidateQueries({ queryKey: ['mods', decodedName, 'strings'] })
+    },
+  })
+
   // ── Pipeline steps ─────────────────────────────────────────────────────────
 
   const pipelineSteps: PipelineStep[] = mod
@@ -697,6 +720,12 @@ function ModDetailPage() {
               />
             )}
             <ActionButton
+              onClick={() => translateForceMut.mutate()}
+              isPending={translateForceMut.isPending}
+              icon={<Zap size={14} />}
+              label="Force Translate (AI, no cache)"
+            />
+            <ActionButton
               onClick={() => scanMut.mutate()}
               isPending={scanMut.isPending}
               icon={<ScanSearch size={14} />}
@@ -729,6 +758,20 @@ function ModDetailPage() {
                   ? `Fix Untranslatable (${fixUntranslatableMut.data.fixed} fixed)`
                   : 'Fix Untranslatable'
               }
+            />
+            <ActionButton
+              onClick={() => {
+                if (window.confirm(`Reset all translations for "${decodedName}" to pending? This cannot be undone.`))
+                  resetTranslationsMut.mutate()
+              }}
+              isPending={resetTranslationsMut.isPending}
+              icon={<RotateCcw size={14} />}
+              label={
+                resetTranslationsMut.isSuccess && resetTranslationsMut.data
+                  ? `Reset Translations (${resetTranslationsMut.data.reset} reset)`
+                  : 'Reset Translations'
+              }
+              variant="danger"
             />
             <Link
               to="/mods/$modName/strings"

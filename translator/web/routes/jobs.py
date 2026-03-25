@@ -121,9 +121,6 @@ def create_job():
         else:
             # batch of multiple mods
             job = _create_batch_job(jm, cfg, mod_names, options)
-    elif job_type == "translate_esp":
-        esp_path = data.get("esp_path", "")
-        job = _create_translate_esp_job(jm, cfg, esp_path, options)
     elif job_type in ("scan", "scan_mods"):
         scan_mod = mod_names[0] if mod_names else None
         job = _create_scan_job(
@@ -325,11 +322,10 @@ def _create_translate_all_job(jm, cfg, options: dict):
     def run(job):
         if skipped:
             job.add_log(f"WARNING: machines not found in registry (skipped): {', '.join(skipped)}")
-        # Note: translate_all_worker checkpoints per-mod inside its own loop via translate_mod_worker
         from translator.web.workers import translate_all_worker
         translate_all_worker(job, cfg, dry_run=dry_run, resume=resume,
                              scope=scope, status_filter=status_filter,
-                             force=force, backends=backends)
+                             force=force, backends=backends, repo=repo)
 
     scope_label = f" [{scope.upper()}]" if scope != "all" else ""
     return jm.create(
@@ -337,21 +333,6 @@ def _create_translate_all_job(jm, cfg, options: dict):
         job_type = "translate_all",
         params   = {"dry_run": dry_run, "resume": resume, "scope": scope,
                     "status_filter": status_filter, "force": force},
-        fn       = run,
-    )
-
-
-def _create_translate_esp_job(jm, cfg, esp_path: str, options: dict):
-    dry_run = options.get("dry_run", False)
-
-    def run(job):
-        from translator.web.workers import translate_esp_worker
-        translate_esp_worker(job, cfg, esp_path, dry_run=dry_run)
-
-    return jm.create(
-        name     = f"Translate ESP: {Path(esp_path).name}",
-        job_type = "translate_esp",
-        params   = {"esp_path": esp_path, "dry_run": dry_run},
         fn       = run,
     )
 
@@ -466,10 +447,10 @@ def _create_scan_job(jm, scanner, mod_name: str | None = None,
                 for ext in ("*.esp", "*.esm", "*.esl"):
                     for esp_path in folder.glob(ext):
                         esp_name = esp_path.name
-                        if repo.esp_exists(fname, esp_name):
-                            continue  # already seeded
                         try:
                             strings, _ = extract_all_strings(esp_path)
+                            if repo.esp_string_count(fname, esp_name) >= len(strings):
+                                continue  # fully seeded
                             # Mark untranslatable strings as translated=original
                             for s in strings:
                                 orig = s.get("text", "")
@@ -524,9 +505,11 @@ def _create_recompute_scores_job(jm, cfg, mod_name: str = None, repo=None):
 
 
 def _create_validate_job(jm, cfg, mod_name: str):
+    repo = current_app.config.get("STRING_REPO")
+
     def run(job):
         from translator.web.workers import validate_translations_worker
-        validate_translations_worker(job, cfg, mod_name)
+        validate_translations_worker(job, cfg, mod_name, repo=repo)
 
     return jm.create(
         name     = f"Validate: {mod_name}",

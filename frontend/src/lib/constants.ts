@@ -10,3 +10,6 @@ export const SCOPES = ['all', 'esp', 'mcm', 'bsa', 'swf', 'review'] as const
 
 export type JobTerminalStatus = (typeof JOB_TERMINAL_STATUSES)[number]
 export type Scope = (typeof SCOPES)[number]
+
+export const STRING_STATUSES = ['pending', 'translated', 'needs_review'] as const
+export type StringStatus = (typeof STRING_STATUSES)[number]

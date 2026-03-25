@@ -76,19 +76,7 @@ def esp_apply():
     if not esp_path:
         return jsonify({"error": "No esp_path"}), 400
 
-    jm = current_app.config["JOB_MANAGER"]
-    from translator.web.workers import translate_esp_worker
-
-    def run(job):
-        translate_esp_worker(job, cfg, esp_path, dry_run=dry_run)
-
-    job = jm.create(
-        name     = f"Apply ESP: {Path(esp_path).name}",
-        job_type = "translate_esp",
-        params   = {"esp_path": esp_path},
-        fn       = run,
-    )
-    return jsonify({"job_id": job.id})
+    return jsonify({"error": "translate_esp job type is no longer supported; use translate_mod instead"}), 410
 
 
 # ── BSA Tools ────────────────────────────────────────────────────────────────

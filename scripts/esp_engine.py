@@ -487,7 +487,8 @@ _FORMAT_TAG_RE = re.compile(
 _INLINE_TOKEN_RE = re.compile(
     r'<[^>]+>'                                      # <Alias=...>, <mag>, <Global=...>, <10>
     r'|%[-+0 #]*\d*\.?\d*[diouxXeEfFgGcsSp%]'     # printf: %.0f, %d, %s, %%
-    r'|\[PageBreak\]|\[CRLF\]',                     # bracket tokens
+    r'|\[PageBreak\]|\[CRLF\]'                      # bracket tokens
+    r'|\$\S+',                                      # MCM $-prefix tokens: $AMOT, $sKey, etc.
     re.IGNORECASE,
 )
 
@@ -576,6 +577,18 @@ def validate_tokens(original: str, translation: str) -> tuple:
     return len(issues) == 0, issues
 
 
+def compute_string_status(original: str, translation: str) -> tuple:
+    """Single source of truth: returns (quality_score, tok_ok, token_issues, status).
+    status is 'pending' if no translation, 'translated' if tok_ok and qs>70, else 'needs_review'.
+    """
+    if not translation or not translation.strip():
+        return 0, False, [], "pending"
+    tok_ok, tok_issues = validate_tokens(original, translation)
+    qs = quality_score(original, translation)
+    status = "translated" if (tok_ok and qs > 70) else "needs_review"
+    return qs, tok_ok, tok_issues, status
+
+
 # ── Translation ───────────────────────────────────────────────────────────────
 
 def translate_batch(texts: list, context: str = '', params=None, progress_cb=None,
@@ -627,9 +640,7 @@ def translate_texts(texts: list[str], context: str = '', params=None, force: boo
     translated  = restore_from_ai(raw_results, ai_meta)
 
     for idx, orig, trans in zip(indices, subset, translated):
-        tok_ok, tok_issues = validate_tokens(orig, trans)
-        qs = quality_score(orig, trans)
-        status = "translated" if (tok_ok and qs > 70) else "needs_review"
+        qs, tok_ok, tok_issues, status = compute_string_status(orig, trans)
         results[idx] = {
             "translation":   trans,
             "status":        status,
@@ -649,9 +660,6 @@ def needs_translation(text: str) -> bool:
     if not plain:
         return False  # only markup/tokens — nothing human-readable to translate
     t = plain
-    # MCM $KEY tokens — resolved at runtime from MCM txt files, not AI-translatable
-    if t.startswith('$'):
-        return False
     # Code identifiers: single token with underscore OR internal CamelCase uppercase
     # e.g. "SKI_FavoritesManagerInstance", "ACL_SettingsQuest", "SkyUI", "TES5Edit"
     # NOT: "Whiterun", "Falkreath" (simple capitalized proper nouns)
@@ -698,10 +706,11 @@ def quality_score(original: str, translation: str) -> int:
     elif ratio > 1.8 or ratio < 0.5:
         score -= 10
     # Skyrim inline token preservation
-    token_re = re.compile(r'<[A-Za-z][^>]*>|\[PageBreak\]|\\n|%[dis%]|\[CRLF\]', re.IGNORECASE)
-    orig_tokens = token_re.findall(original)
-    trans_tokens = token_re.findall(translation)
-    missing = max(0, len(orig_tokens) - len(trans_tokens))
+    from collections import Counter
+    orig_tokens  = _INLINE_TOKEN_RE.findall(original)
+    trans_tokens = _INLINE_TOKEN_RE.findall(translation)
+    missing = sum(max(0, cnt - Counter(trans_tokens).get(tok, 0))
+                  for tok, cnt in Counter(orig_tokens).items())
     score -= missing * 25
     # Control characters
     if re.search(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', translation):
@@ -775,15 +784,16 @@ def translate_strings(strings: list, progress_path: Path = None, context: str = 
             strings[i]['status']        = r['status']
         else:
             # From progress cache — recompute
-            tok_ok, _ = validate_tokens(s['text'], t)
-            qs = quality_score(s['text'], t)
+            qs, _, _, status = compute_string_status(s['text'], t)
             strings[i]['quality_score'] = qs
-            strings[i]['status'] = 'translated' if (tok_ok and qs > 70) else 'needs_review'
+            strings[i]['status'] = status
 
-    # Strings that were already translated before this run (not in to_do)
+    # Strings already translated before this run — always recompute score+status
     for s in strings:
-        if s.get('translation') and 'quality_score' not in s:
-            s['quality_score'] = quality_score(s['text'], s['translation'])
+        if s.get('translation'):
+            qs, _, _, status = compute_string_status(s['text'], s['translation'])
+            s['quality_score'] = qs
+            s['status'] = status
 
     if progress_path:
         progress_path.write_text(

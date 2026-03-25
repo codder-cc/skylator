@@ -157,16 +157,7 @@ class ModScanner:
         trans_cache = self._load_translation_cache()
         strings: list[dict] = []
 
-        from scripts.esp_engine import validate_tokens as _validate_tokens, quality_score as _quality_score
-
-        def _str_status(orig: str, trans: str, qs=None) -> str:
-            """Compute translation status: pending / translated / needs_review."""
-            if not trans:
-                return "pending"
-            tok_ok, _ = _validate_tokens(orig, trans)
-            if not tok_ok or (qs is not None and qs <= 70):
-                return "needs_review"
-            return "translated"
+        from scripts.esp_engine import compute_string_status as _compute_status
 
         for ext in ("*.esp", "*.esm", "*.esl"):
             for esp_path in folder.rglob(ext):
@@ -180,15 +171,15 @@ class ModScanner:
                         # translated strings.
                         saved = json.loads(trans_json_path.read_text(encoding="utf-8"))
                         for s in saved:
-                            key     = (s["form_id"], s["rec_type"],
-                                       s["field_type"], s["field_index"])
-                            key_str = str(key)
+                            vmad_idx = s.get("vmad_str_idx", 0) or 0
+                            key_str = str((s["form_id"], s["rec_type"],
+                                           s["field_type"], s["field_index"], vmad_idx))
                             # Prefer .trans.json translation; fall back to cache
                             translation = (s.get("translation") or
                                            mod_cache.get(key_str, ""))
                             orig = s["text"]
                             display_qs = s.get("quality_score")
-                            status = _str_status(orig, translation, display_qs)
+                            _, _, _, status = _compute_status(orig, translation)
                             strings.append({
                                 "esp":           esp_path.name,
                                 "form_id":       s["form_id"],
@@ -209,12 +200,12 @@ class ModScanner:
                         from scripts.esp_engine import extract_all_strings
                         extracted, _ = extract_all_strings(esp_path)
                         for entry in extracted:
-                            key     = (entry["form_id"], entry["rec_type"],
-                                       entry["field_type"], entry["field_index"])
-                            key_str = str(key)
+                            vmad_idx = entry.get("vmad_str_idx", 0) or 0
+                            key_str = str((entry["form_id"], entry["rec_type"],
+                                           entry["field_type"], entry["field_index"], vmad_idx))
                             translated = mod_cache.get(key_str, "")
                             orig = entry["text"]
-                            status = _str_status(orig, translated)
+                            _, _, _, status = _compute_status(orig, translated)
                             strings.append({
                                 "esp":           esp_path.name,
                                 "form_id":       entry["form_id"],
@@ -272,7 +263,7 @@ class ModScanner:
                         "idx":           line_idx,
                         "original":      en_text,
                         "translation":   translation,
-                        "status":        _str_status(en_text, translation),
+                        "status":        _compute_status(en_text, translation)[3],
                         "key":           key_str,
                         "quality_score": None,
                         "dict_match":    (global_dict.get(en_text)
@@ -324,7 +315,7 @@ class ModScanner:
                             "idx":           line_idx,
                             "original":      en_text,
                             "translation":   translation,
-                            "status":        _str_status(en_text, translation),
+                            "status":        _compute_status(en_text, translation)[3],
                             "key":           key_str,
                             "quality_score": None,
                             "dict_match":    (global_dict.get(en_text)
@@ -371,7 +362,7 @@ class ModScanner:
                         "idx":           0,
                         "original":      orig,
                         "translation":   trans,
-                        "status":        _str_status(orig, trans),
+                        "status":        _compute_status(orig, trans)[3],
                         "key":           key_str,
                         "quality_score": None,
                         "dict_match":    (global_dict.get(orig)

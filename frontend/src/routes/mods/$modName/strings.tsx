@@ -17,7 +17,7 @@ import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/utils'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { useMachines } from '@/hooks/useMachines'
-import { SCOPES } from '@/lib/constants'
+import { SCOPES, type StringStatus } from '@/lib/constants'
 import { useModLiveUpdates, useClearModLiveUpdates } from '@/hooks/useModLiveUpdates'
 import type { StringEntry, StringUpdate } from '@/types'
 

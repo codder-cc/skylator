@@ -42,6 +42,43 @@ def mod_info(mod_name: str):
     return jsonify(mod.to_dict())
 
 
+@bp.route("/mods/<path:mod_name>/reset-translations", methods=["POST"])
+def reset_translations(mod_name: str):
+    """Reset all translatable ESP strings to pending (translation=null, status=pending, score=null)."""
+    repo = current_app.config.get("STRING_REPO")
+    if not repo:
+        return jsonify({"error": "DB not available"}), 503
+
+    rows = repo.get_all_strings(mod_name)
+    reset = 0
+    for row in rows:
+        orig = row.get("original", "")
+        if not row.get("translation") and row.get("status") == "pending":
+            continue  # already pending
+        repo.upsert(
+            mod_name      = mod_name,
+            esp_name      = row["esp_name"],
+            key           = row["key"],
+            original      = orig,
+            translation   = "",
+            quality_score = None,
+            status        = "pending",
+            form_id       = row.get("form_id", ""),
+            rec_type      = row.get("rec_type", ""),
+            field_type    = row.get("field_type", ""),
+            field_index   = row.get("field_index"),
+            vmad_str_idx  = row.get("vmad_str_idx", 0),
+        )
+        reset += 1
+
+    scanner = current_app.config.get("SCANNER")
+    if scanner:
+        scanner.invalidate(mod_name)
+
+    log.info("reset-translations %s: reset %d strings", mod_name, reset)
+    return jsonify({"ok": True, "reset": reset})
+
+
 @bp.route("/mods/<path:mod_name>/fix-untranslatable", methods=["POST"])
 def fix_untranslatable(mod_name: str):
     """Set translation=original, score=100, status=translated for all untranslatable strings."""
@@ -632,8 +669,14 @@ def translate_one_string(mod_name: str):
 
     from scripts.esp_engine import needs_translation as _needs_translation
     if not _needs_translation(original):
-        log.info("[translate-one] %s | skipped — identifier/untranslatable: %s", key_str, original[:80])
-        return jsonify({"ok": False, "error": f"String is a code identifier or untranslatable: {original[:60]}"}), 400
+        log.info("[translate-one] %s | untranslatable — setting translation=original", key_str)
+        _repo = current_app.config.get("STRING_REPO")
+        from translator.web.workers import save_translation
+        save_translation(cfg.paths.mods_dir, mod_name, cfg.paths.translation_cache,
+                         esp_name, key_str, original, cfg=cfg, repo=_repo)
+        return jsonify({"ok": True, "translation": original,
+                        "quality_score": 100, "status": "translated",
+                        "source": "untranslatable"})
 
     xlogs: list[str] = []  # step log forwarded to FE
 
@@ -679,7 +722,7 @@ def translate_one_string(mod_name: str):
     try:
         from pathlib import Path
         from scripts.esp_engine import (prepare_for_ai,
-                                        restore_from_ai, validate_tokens, quality_score)
+                                        restore_from_ai, compute_string_status as _css)
         from translator.context.builder import ContextBuilder
         from translator.prompt.builder import build_tm_block, enrich_context
         from translator.web.workers import save_translation
@@ -748,9 +791,7 @@ def translate_one_string(mod_name: str):
         _elapsed_translate = _time.monotonic() - _t_translate
         trans_list = restore_from_ai(raw, ai_meta)
         trans = trans_list[0] if trans_list else ""
-        tok_ok, tok_issues_r = validate_tokens(original, trans)
-        qs_r   = quality_score(original, trans)
-        status_r = "translated" if (tok_ok and qs_r > 70) else "needs_review"
+        qs_r, tok_ok, tok_issues_r, status_r = _css(original, trans)
         r = {"translation": trans, "status": status_r, "quality_score": qs_r,
              "token_issues": tok_issues_r, "skipped": False}
         # ──────────────────────────────────────────────────────────────────────

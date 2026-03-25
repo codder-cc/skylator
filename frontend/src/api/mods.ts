@@ -93,4 +93,9 @@ export const modsApi = {
     apiPost<{ ok: boolean; fixed: number }>(
       `/api/mods/${encodeURIComponent(name)}/fix-untranslatable`,
     ),
+
+  resetTranslations: (name: string) =>
+    apiPost<{ ok: boolean; reset: number }>(
+      `/api/mods/${encodeURIComponent(name)}/reset-translations`,
+    ),
 }

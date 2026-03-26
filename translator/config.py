@@ -29,6 +29,7 @@ class PathsConfig:
     bsarch_exe:         Optional[Path] = None
     temp_dir:           Optional[Path] = None
     ffdec_jar:          Optional[Path] = None
+    font_ttf:           Optional[Path] = None   # TTF with Cyrillic glyphs for SWF font replacement
 
     @property
     def mods_dir(self) -> Optional[Path]:
@@ -195,6 +196,7 @@ def load_config(config_file: Path = _CONFIG_FILE) -> TranslatorConfig:
         bsarch_exe        = Path(p["bsarch_exe"]) if p.get("bsarch_exe") else None,
         temp_dir          = Path(p["temp_dir"])   if p.get("temp_dir")   else None,
         ffdec_jar         = Path(p["ffdec_jar"])  if p.get("ffdec_jar")  else None,
+        font_ttf          = Path(p["font_ttf"])   if p.get("font_ttf")   else None,
         skyrim_terms      = _resolve(root, p["skyrim_terms"]),
         log_file          = _resolve(root, p["log_file"]),
     )

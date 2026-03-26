@@ -16,6 +16,7 @@ import {
   Hash,
   Globe,
   Download,
+  Type,
 } from 'lucide-react'
 
 // ── Shared result display ─────────────────────────────────────────────────────
@@ -616,6 +617,180 @@ function XTranslateExport() {
   )
 }
 
+// ── SWF Font Fix ──────────────────────────────────────────────────────────────
+interface FontEntry {
+  id: string
+  name: string
+  style: string
+}
+
+function SwfFontFixTool() {
+  const [swfPath, setSwfPath]   = useState('')
+  const [ttfPath, setTtfPath]   = useState('')
+  const [outPath, setOutPath]   = useState('')
+  const [fonts, setFonts]       = useState<FontEntry[]>([])
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [listStatus, setListStatus]   = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
+  const [fixStatus,  setFixStatus]    = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
+  const [listError, setListError]   = useState('')
+  const [fixError,  setFixError]    = useState('')
+  const [fixResult, setFixResult]   = useState<{ out_path: string; replaced: string[] } | null>(null)
+
+  const listFonts = async () => {
+    if (!swfPath.trim()) return
+    setListStatus('loading')
+    setFonts([])
+    setSelected(new Set())
+    setListError('')
+    try {
+      const res = await apiPost<{ fonts: FontEntry[] }>('/tools/swf/list-fonts', {
+        swf_path: swfPath.trim(),
+      })
+      setFonts(res.fonts ?? [])
+      // auto-select all fonts by default
+      setSelected(new Set((res.fonts ?? []).map((f) => f.id)))
+      setListStatus('success')
+    } catch (e: unknown) {
+      setListError(e instanceof Error ? e.message : 'Unknown error')
+      setListStatus('error')
+    }
+  }
+
+  const toggleFont = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const fixFonts = async () => {
+    if (!swfPath.trim() || selected.size === 0) return
+    setFixStatus('loading')
+    setFixResult(null)
+    setFixError('')
+    try {
+      const selectedFonts = fonts
+        .filter((f) => selected.has(f.id))
+        .map((f) => ({ id: f.id, name: f.name }))
+      const res = await apiPost<{ ok: boolean; out_path: string; replaced: string[] }>(
+        '/tools/swf/fix-fonts',
+        {
+          swf_path:  swfPath.trim(),
+          ttf_path:  ttfPath.trim() || undefined,
+          out_path:  outPath.trim() || undefined,
+          fonts:     selectedFonts,
+        },
+      )
+      setFixResult({ out_path: res.out_path, replaced: res.replaced })
+      setFixStatus('success')
+    } catch (e: unknown) {
+      setFixError(e instanceof Error ? e.message : 'Unknown error')
+      setFixStatus('error')
+    }
+  }
+
+  return (
+    <ToolCard title="SWF Font Fix (Cyrillic)">
+      <FieldRow label="SWF File Path">
+        <input
+          value={swfPath}
+          onChange={(e) => setSwfPath(e.target.value)}
+          placeholder="/path/to/file.swf"
+          className={inputCls}
+        />
+      </FieldRow>
+
+      <button
+        onClick={listFonts}
+        disabled={listStatus === 'loading' || !swfPath.trim()}
+        className={btnCls}
+      >
+        {listStatus === 'loading' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Type className="w-4 h-4" />}
+        List Fonts
+      </button>
+
+      {listStatus === 'error' && (
+        <div className="flex items-center gap-2 text-sm text-danger">
+          <AlertCircle className="w-4 h-4" />{listError}
+        </div>
+      )}
+
+      {fonts.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs text-text-muted">Select fonts to replace with Cyrillic TTF:</p>
+          <div className="bg-bg-base rounded border border-border-subtle divide-y divide-border-subtle/40 max-h-40 overflow-auto">
+            {fonts.map((f) => (
+              <label
+                key={f.id}
+                className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-bg-card2/50"
+              >
+                <input
+                  type="checkbox"
+                  checked={selected.has(f.id)}
+                  onChange={() => toggleFont(f.id)}
+                  className="accent-accent"
+                />
+                <span className="text-xs font-mono text-text-muted w-8 shrink-0">#{f.id}</span>
+                <span className="text-sm text-text-main">{f.name}</span>
+                {f.style && (
+                  <span className="text-xs text-text-muted ml-auto">{f.style}</span>
+                )}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {fonts.length > 0 && (
+        <div className="space-y-3">
+          <FieldRow label="Replacement TTF Path (leave blank to use config default)">
+            <input
+              value={ttfPath}
+              onChange={(e) => setTtfPath(e.target.value)}
+              placeholder="/path/to/font.ttf"
+              className={inputCls}
+            />
+          </FieldRow>
+          <FieldRow label="Output SWF Path (leave blank for auto _ru suffix)">
+            <input
+              value={outPath}
+              onChange={(e) => setOutPath(e.target.value)}
+              placeholder="/path/to/file_ru.swf"
+              className={inputCls}
+            />
+          </FieldRow>
+          <button
+            onClick={fixFonts}
+            disabled={fixStatus === 'loading' || selected.size === 0}
+            className={btnCls}
+          >
+            {fixStatus === 'loading' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Type className="w-4 h-4" />}
+            Fix Fonts ({selected.size})
+          </button>
+          {fixStatus === 'error' && (
+            <div className="flex items-center gap-2 text-sm text-danger">
+              <AlertCircle className="w-4 h-4" />{fixError}
+            </div>
+          )}
+          {fixStatus === 'success' && fixResult && (
+            <div className="space-y-1 text-sm">
+              <div className="flex items-center gap-2 text-success">
+                <CheckCircle className="w-4 h-4" />
+                Replaced {fixResult.replaced.length} font{fixResult.replaced.length !== 1 ? 's' : ''}
+              </div>
+              <div className="text-xs font-mono text-text-muted bg-bg-base rounded border border-border-subtle p-2 truncate" title={fixResult.out_path}>
+                {fixResult.out_path}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </ToolCard>
+  )
+}
+
 // ── Section header ────────────────────────────────────────────────────────────
 function SectionHeader({ icon, title }: { icon: React.ReactNode; title: string }) {
   return (
@@ -655,7 +830,7 @@ function ToolsPage() {
       {/* SWF Tools */}
       <section>
         <SectionHeader icon={<Film className="w-5 h-5" />} title="SWF Tools" />
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <SwfTool
             title="Decompile SWF"
             jobType="swf_decompile"
@@ -668,6 +843,7 @@ function ToolsPage() {
             pathLabel="Source Path"
             pathPlaceholder="/path/to/source_dir"
           />
+          <SwfFontFixTool />
         </div>
       </section>
 

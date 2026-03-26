@@ -169,6 +169,79 @@ def swf_decompile():
     return jsonify({"job_id": job.id})
 
 
+@bp.route("/swf/list-fonts", methods=["POST"])
+def swf_list_fonts():
+    """List fonts embedded in a SWF file."""
+    data     = request.get_json() or {}
+    swf_path = data.get("swf_path", "")
+    cfg      = current_app.config.get("TRANSLATOR_CFG")
+
+    ffdec = data.get("ffdec_jar") or (str(cfg.paths.ffdec_jar) if cfg and cfg.paths.ffdec_jar else "")
+    if not swf_path or not ffdec:
+        return jsonify({"error": "swf_path and ffdec_jar required"}), 400
+    if not Path(swf_path).exists():
+        return jsonify({"error": "SWF file not found"}), 404
+
+    try:
+        from translator.parsing.swf_handler import list_fonts
+        fonts = list_fonts(ffdec, swf_path)
+        return jsonify({"fonts": fonts})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@bp.route("/swf/fix-fonts", methods=["POST"])
+def swf_fix_fonts():
+    """Replace fonts in a SWF with a Cyrillic-capable TTF."""
+    data     = request.get_json() or {}
+    swf_path = data.get("swf_path", "")
+    out_path = data.get("out_path", "")
+    ttf_path = data.get("ttf_path", "")
+    fonts    = data.get("fonts", [])   # list of {id, name} dicts or just names/ids
+    cfg      = current_app.config.get("TRANSLATOR_CFG")
+
+    ffdec = data.get("ffdec_jar") or (str(cfg.paths.ffdec_jar) if cfg and cfg.paths.ffdec_jar else "")
+    if not ttf_path and cfg and cfg.paths.font_ttf:
+        ttf_path = str(cfg.paths.font_ttf)
+
+    if not swf_path or not ffdec or not ttf_path:
+        return jsonify({"error": "swf_path, ffdec_jar, and ttf_path required"}), 400
+    if not Path(swf_path).exists():
+        return jsonify({"error": "SWF file not found"}), 404
+    if not Path(ttf_path).exists():
+        return jsonify({"error": "TTF file not found"}), 404
+    if not out_path:
+        p = Path(swf_path)
+        out_path = str(p.parent / (p.stem + "_ru" + p.suffix))
+
+    if not fonts:
+        return jsonify({"error": "No fonts specified"}), 400
+
+    try:
+        from translator.parsing.swf_handler import replace_font, replace_font_by_name
+        import shutil
+
+        current_swf = swf_path
+        replaced = []
+        for entry in fonts:
+            tmp_out = out_path + ".tmp_replace"
+            font_id   = entry.get("id")  if isinstance(entry, dict) else None
+            font_name = entry.get("name") if isinstance(entry, dict) else str(entry)
+            if font_id is not None:
+                replace_font(ffdec, current_swf, tmp_out, font_id, ttf_path)
+            else:
+                replace_font_by_name(ffdec, current_swf, tmp_out, font_name, ttf_path)
+            if current_swf != swf_path:
+                Path(current_swf).unlink(missing_ok=True)
+            current_swf = tmp_out
+            replaced.append(font_name or font_id)
+
+        shutil.move(current_swf, out_path)
+        return jsonify({"ok": True, "out_path": out_path, "replaced": replaced})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
 @bp.route("/swf/compile", methods=["POST"])
 def swf_compile():
     data     = request.get_json() or {}

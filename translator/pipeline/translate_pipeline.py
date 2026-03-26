@@ -190,6 +190,8 @@ class TranslatePipeline:
                 jm.add_string_update(
                     job, s["key"], s["esp"],
                     translation, result.status, result.quality_score,
+                    source="ai",
+                    machine_label=backends[0][0] if backends else None,
                 )
                 with _tm_lock:
                     tm_pairs[s.get("original", "")] = translation
@@ -359,7 +361,7 @@ class TranslatePipeline:
                     translation=t, original=s.get("original", ""),
                     source="cache", job_id=job.id,
                 )
-                jm.add_string_update(job, s["key"], s["esp"], t, "translated", None)
+                jm.add_string_update(job, s["key"], s["esp"], t, "translated", None, source="cache")
                 cache_saved += 1
             else:
                 remaining.append(s)
@@ -384,7 +386,7 @@ class TranslatePipeline:
                     translation=t, original=s.get("original", ""),
                     source="dict", job_id=job.id,
                 )
-                jm.add_string_update(job, s["key"], s["esp"], t, "translated", None)
+                jm.add_string_update(job, s["key"], s["esp"], t, "translated", None, source="dict")
                 dict_saved += 1
             else:
                 remaining.append(s)

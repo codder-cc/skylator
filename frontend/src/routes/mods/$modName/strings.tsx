@@ -577,6 +577,13 @@ function ModStringsPage() {
 
   const queryKey = QK.modStrings(decodedName, { scope, status, q, page, per: PER_PAGE, sort_by, sort_dir, rec_type })
 
+  // Invalidate all mod-related queries so every page reflects the new counts
+  const invalidateModData = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: QK.mod(decodedName) })
+    void queryClient.invalidateQueries({ queryKey: QK.mods() })
+    void queryClient.invalidateQueries({ queryKey: QK.stats() })
+  }, [queryClient, decodedName])
+
   const { data, isLoading, isError } = useQuery({
     queryKey,
     queryFn: () =>
@@ -700,6 +707,7 @@ function ModStringsPage() {
             })
             return { ...old, strings, scope_counts }
           })
+          invalidateModData()
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Translation failed'
@@ -735,8 +743,9 @@ function ModStringsPage() {
         })
         return { ...old, strings, scope_counts }
       })
+      invalidateModData()
     },
-    [queryClient, queryKey],
+    [queryClient, queryKey, invalidateModData],
   )
 
   // ── Approve string ────────────────────────────────────────────────────────
@@ -753,10 +762,9 @@ function ModStringsPage() {
         })
         return { ...old, strings, scope_counts }
       })
-      // Sync mod detail stat counts immediately
-      void queryClient.invalidateQueries({ queryKey: QK.mod(decodedName) })
+      invalidateModData()
     },
-    [queryClient, queryKey, decodedName],
+    [queryClient, queryKey, invalidateModData],
   )
 
   // ── Copy from source ─────────────────────────────────────────────────────
@@ -800,7 +808,7 @@ function ModStringsPage() {
         return { ...old, strings: updated, scope_counts }
       })
       setSelectedIds(new Set())
-      void queryClient.invalidateQueries({ queryKey: QK.mod(decodedName) })
+      invalidateModData()
     },
   })
 

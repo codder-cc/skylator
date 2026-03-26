@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as ToolsRouteImport } from './routes/tools'
 import { Route as TerminologyRouteImport } from './routes/terminology'
+import { Route as SingleRouteImport } from './routes/single'
 import { Route as ServersRouteImport } from './routes/servers'
 import { Route as LogsRouteImport } from './routes/logs'
 import { Route as ConfigRouteImport } from './routes/config'
@@ -23,13 +24,7 @@ import { Route as JobsJobIdRouteImport } from './routes/jobs/$jobId'
 import { Route as ModsModNameIndexRouteImport } from './routes/mods/$modName/index'
 import { Route as ModsModNameStringsRouteImport } from './routes/mods/$modName/strings'
 import { Route as ModsModNameContextRouteImport } from './routes/mods/$modName/context'
-import { Route as SingleRouteImport } from './routes/single'
 
-const SingleRoute = SingleRouteImport.update({
-  id: '/single',
-  path: '/single',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const ToolsRoute = ToolsRouteImport.update({
   id: '/tools',
   path: '/tools',
@@ -38,6 +33,11 @@ const ToolsRoute = ToolsRouteImport.update({
 const TerminologyRoute = TerminologyRouteImport.update({
   id: '/terminology',
   path: '/terminology',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SingleRoute = SingleRouteImport.update({
+  id: '/single',
+  path: '/single',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ServersRoute = ServersRouteImport.update({
@@ -241,6 +241,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TerminologyRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/single': {
+      id: '/single'
+      path: '/single'
+      fullPath: '/single'
+      preLoaderRoute: typeof SingleRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/servers': {
       id: '/servers'
       path: '/servers'
@@ -267,13 +274,6 @@ declare module '@tanstack/react-router' {
       path: '/backups'
       fullPath: '/backups'
       preLoaderRoute: typeof BackupsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/single': {
-      id: '/single'
-      path: '/single'
-      fullPath: '/single'
-      preLoaderRoute: typeof SingleRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/$': {

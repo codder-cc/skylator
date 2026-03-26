@@ -202,6 +202,7 @@ def _create_translate_mod_job(jm, cfg, mod_name: str, options: dict):
     machines       = options.get("machines")
     repo           = current_app.config.get("STRING_REPO")
     stats_mgr      = current_app.config.get("STATS_MGR")
+    scanner        = current_app.config.get("SCANNER")
 
     # Map only_mcm / only_esp → scope for translate_strings_worker
     if only_mcm:
@@ -232,6 +233,9 @@ def _create_translate_mod_job(jm, cfg, mod_name: str, options: dict):
                                  stats_mgr=stats_mgr,
                                  reservation_mgr=reservation_mgr,
                                  translation_cache=translation_cache)
+        # Bust scan cache so mods list reflects new translation counts immediately
+        if scanner:
+            scanner.invalidate(mod_name)
 
     return jm.create(
         name     = f"Translate: {mod_name}",
@@ -246,6 +250,7 @@ def _create_batch_job(jm, cfg, mod_names: list, options: dict):
     machines          = options.get("machines")
     repo              = current_app.config.get("STRING_REPO")
     stats_mgr         = current_app.config.get("STATS_MGR")
+    scanner           = current_app.config.get("SCANNER")
     reservation_mgr   = current_app.config.get("RESERVATION_MGR")
     translation_cache = current_app.config.get("TRANSLATION_CACHE")
 
@@ -272,7 +277,9 @@ def _create_batch_job(jm, cfg, mod_names: list, options: dict):
                                      stats_mgr=stats_mgr,
                                      reservation_mgr=reservation_mgr,
                                      translation_cache=translation_cache)
-            # Note: stats recompute is handled inside TranslatePipeline.run() finally block
+            # Bust scan cache per-mod so the mods list reflects updated counts
+            if scanner:
+                scanner.invalidate(mod_name)
         jm.update_progress(job, total, total, "Done")
 
     return jm.create(
@@ -334,6 +341,7 @@ def _create_translate_all_job(jm, cfg, options: dict):
     backends, skipped = _resolve_backends(cfg, machines)
     repo              = current_app.config.get("STRING_REPO")
     stats_mgr         = current_app.config.get("STATS_MGR")
+    scanner           = current_app.config.get("SCANNER")
     reservation_mgr   = current_app.config.get("RESERVATION_MGR")
     translation_cache = current_app.config.get("TRANSLATION_CACHE")
 
@@ -347,6 +355,9 @@ def _create_translate_all_job(jm, cfg, options: dict):
                              stats_mgr=stats_mgr,
                              reservation_mgr=reservation_mgr,
                              translation_cache=translation_cache)
+        # Clear entire scan cache so all updated mods show correct counts
+        if scanner:
+            scanner.invalidate()
 
     scope_label = f" [{scope.upper()}]" if scope != "all" else ""
     return jm.create(
@@ -419,6 +430,7 @@ def _create_translate_strings_job(jm, cfg, mod_name: str,
     backends, skipped         = _resolve_backends(cfg, machines)
     repo                      = current_app.config.get("STRING_REPO")
     stats_mgr                 = current_app.config.get("STATS_MGR")
+    scanner                   = current_app.config.get("SCANNER")
     reservation_mgr           = current_app.config.get("RESERVATION_MGR")
     translation_cache         = current_app.config.get("TRANSLATION_CACHE")
 
@@ -438,6 +450,8 @@ def _create_translate_strings_job(jm, cfg, mod_name: str,
                                  repo=repo, stats_mgr=stats_mgr,
                                  reservation_mgr=reservation_mgr,
                                  translation_cache=translation_cache)
+        if scanner:
+            scanner.invalidate(mod_name)
 
     if keys:
         n = len(keys)

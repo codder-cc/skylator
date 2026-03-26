@@ -140,10 +140,26 @@ class JobManager:
         with self._lock:
             self._jobs[job.id] = job
 
-        # Wrap fn so we can call _notify + _persist after it completes
+        # Wrap fn so we can call _notify + _persist after it completes.
+        # We set the terminal status HERE (before _notify) so the SSE event
+        # carries the correct "done"/"failed" status.  JobCenter._run() also
+        # tries to set DONE/FAILED, but its check is idempotent for the cases
+        # we handle below.
         def _wrapped(j: Job):
-            fn(j)
-            # Note: status transitions are handled by JobCenter._run()
+            try:
+                fn(j)
+            except Exception as exc:
+                if j.status == JobStatus.RUNNING:
+                    j.status      = JobStatus.FAILED
+                    j.error       = str(exc)
+                    j.finished_at = j.finished_at or time.time()
+                    j.add_log(f"ERROR: {exc}")
+                log.exception("Job FAILED: %s — %s", j.name, exc)
+                # Don't re-raise — _notify/_persist must still run
+            else:
+                if j.status == JobStatus.RUNNING:
+                    j.status      = JobStatus.DONE
+                    j.finished_at = j.finished_at or time.time()
             self._notify(j)
             self._persist()
 
@@ -270,7 +286,9 @@ class JobManager:
 
     def add_string_update(self, job: Job, key: str, esp: str,
                           translation: str, status: str,
-                          quality_score: int | None = None):
+                          quality_score: int | None = None,
+                          source: str | None = None,
+                          machine_label: str | None = None):
         """Append a per-string translation result and broadcast via SSE."""
         job.string_updates.append({
             "key":           key,
@@ -278,6 +296,8 @@ class JobManager:
             "translation":   translation,
             "status":        status,
             "quality_score": quality_score,
+            "source":        source,
+            "machine_label": machine_label,
         })
         if len(job.string_updates) > 10000:
             job.string_updates = job.string_updates[-10000:]

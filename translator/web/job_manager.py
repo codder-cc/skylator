@@ -160,8 +160,8 @@ class JobManager:
                 if j.status == JobStatus.RUNNING:
                     j.status      = JobStatus.DONE
                     j.finished_at = j.finished_at or time.time()
-            self._notify(j)
-            self._persist()
+            self._persist()   # save terminal status to disk before notifying
+            self._notify(j)   # SSE broadcast — clients see correct done/failed
 
         self._center.submit(job, _wrapped)
         self._notify(job)

@@ -1546,9 +1546,8 @@ def resolve_conflict(mod_name: str):
     if not original or not translation:
         return jsonify({"error": "original and translation are required"}), 400
 
-    from scripts.esp_engine import quality_score as _qs, compute_string_status as _cs
-    score  = _qs(original, translation)
-    status = _cs(original, translation)
+    from scripts.esp_engine import compute_string_status as _cs
+    score, _, _, status = _cs(original, translation)
 
     cur = repo.db.execute(
         """UPDATE strings

@@ -131,6 +131,12 @@ export const modsApi = {
       `/api/mods/${encodeURIComponent(modName)}/strings/conflicts`,
     ),
 
+  resolveConflict: (modName: string, original: string, translation: string) =>
+    apiPost<{ ok: boolean; updated: number }>(
+      `/api/mods/${encodeURIComponent(modName)}/strings/resolve-conflict`,
+      { original, translation },
+    ),
+
   getRecTypes: (name: string) =>
     apiFetch<{ rec_types: string[] }>(
       `/mods/${encodeURIComponent(name)}/rec_types`,

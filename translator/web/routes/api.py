@@ -1534,6 +1534,45 @@ def get_string_conflicts(mod_name: str):
     return jsonify([dict(r) for r in rows])
 
 
+@bp.route("/mods/<path:mod_name>/strings/resolve-conflict", methods=["POST"])
+def resolve_conflict(mod_name: str):
+    """Set all strings with a given original to a single chosen translation."""
+    repo = current_app.config.get("STRING_REPO")
+    if not repo:
+        return jsonify({"error": "DB not available"}), 503
+    data        = request.get_json() or {}
+    original    = data.get("original", "")
+    translation = data.get("translation", "")
+    if not original or not translation:
+        return jsonify({"error": "original and translation are required"}), 400
+
+    from scripts.esp_engine import quality_score as _qs, compute_string_status as _cs
+    score  = _qs(original, translation)
+    status = _cs(original, translation)
+
+    cur = repo.db.execute(
+        """UPDATE strings
+           SET translation=?, status=?, quality_score=?, updated_at=unixepoch('now','subsec')
+           WHERE mod_name=? AND original=?
+             AND status IN ('translated','needs_review')""",
+        (translation, status, score, mod_name, original),
+    )
+    repo.db.commit()
+    updated = cur.rowcount
+
+    stats_mgr = current_app.config.get("STATS_MGR")
+    if stats_mgr:
+        try:
+            stats_mgr.recompute(mod_name)
+        except Exception:
+            pass
+    scanner = current_app.config.get("SCANNER")
+    if scanner:
+        scanner.invalidate(mod_name)
+
+    return jsonify({"ok": True, "updated": updated})
+
+
 @bp.route("/stats/mods")
 def get_all_mod_stats():
     """Return materialized stats for all mods from mod_stats_cache."""

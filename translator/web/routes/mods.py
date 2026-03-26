@@ -4,6 +4,7 @@ import json
 import sys
 from pathlib import Path
 from flask import (Blueprint, abort, current_app, jsonify, redirect, request)
+from translator.web.routes.utils import get_mod_path
 
 bp = Blueprint("mods", __name__, url_prefix="/mods")
 
@@ -91,20 +92,51 @@ def mod_strings(mod_name: str):
     # JSON response for React SPA — prefer SQLite when data is available
     if request.headers.get("Accept", "").startswith("application/json"):
         if repo and repo.db.mod_row_count(mod_name) > 0:
+            sort_by  = request.args.get("sort_by")  or None
+            sort_dir = request.args.get("sort_dir", "asc")
+            rec_type = request.args.get("rec_type") or None
             strings, total = repo.get_strings(
                 mod_name,
                 status=filter_status if filter_status != "all" else None,
                 q=search or None,
                 scope=scope if scope != "all" else None,
+                rec_type=rec_type,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
                 limit=per_page,
                 offset=(page - 1) * per_page,
             )
             scope_counts = repo.scope_counts(mod_name)
+            # Bulk-fetch active reservations for this page's strings
+            string_ids = [s["id"] for s in strings if s.get("id")]
+            reserved_map: dict[int, str] = {}
+            if string_ids:
+                placeholders = ",".join("?" * len(string_ids))
+                res_rows = repo.db.execute(
+                    f"SELECT string_id, machine_label FROM string_reservations "
+                    f"WHERE string_id IN ({placeholders}) AND status='active'",
+                    string_ids,
+                ).fetchall()
+                reserved_map = {r["string_id"]: r["machine_label"] for r in res_rows}
+            # Compute dup_count: how many other strings share the same original
+            page_originals = list({s["original"] for s in strings if s.get("original")})
+            dup_map: dict[str, int] = {}
+            if page_originals:
+                ph = ",".join("?" * len(page_originals))
+                dup_rows = repo.db.execute(
+                    f"SELECT original, COUNT(*) AS cnt FROM strings "
+                    f"WHERE mod_name=? AND original IN ({ph}) GROUP BY original HAVING cnt > 1",
+                    [mod_name] + page_originals,
+                ).fetchall()
+                dup_map = {r["original"]: r["cnt"] - 1 for r in dup_rows}
             # Map DB field names to frontend format
             for s in strings:
                 s["esp"] = s.pop("esp_name", "")
                 s.pop("mod_name", None)
                 s.setdefault("dict_match", "")
+                s["dup_count"] = dup_map.get(s.get("original", ""), 0)
+                if s.get("id") in reserved_map:
+                    s["reserved_by"] = reserved_map[s["id"]]
             total_pages = max(1, (total + per_page - 1) // per_page)
             return jsonify({
                 "strings":      strings,
@@ -161,12 +193,72 @@ def update_string(mod_name: str):
         from translator.web.workers import save_translation
         esp_name = data.get("esp", "")
         repo = current_app.config.get("STRING_REPO")
-        computed_qs, computed_status = save_translation(cfg.paths.mods_dir, mod_name,
-                                                        cfg.paths.translation_cache,
-                                                        esp_name, key_str, new_text, cfg=cfg, repo=repo)
+        _mp = get_mod_path(mod_name)
+        computed_qs, computed_status = save_translation(
+            _mp.parent if _mp else cfg.paths.mods_dir, mod_name,
+            cfg.paths.translation_cache, esp_name, key_str, new_text, cfg=cfg, repo=repo)
+        # Keep StatsManager in sync after manual edit
+        stats_mgr = current_app.config.get("STATS_MGR")
+        if stats_mgr:
+            try:
+                stats_mgr.invalidate(mod_name)
+                stats_mgr.recompute(mod_name)
+            except Exception:
+                pass
+        scanner = current_app.config.get("SCANNER")
+        if scanner:
+            scanner.invalidate(mod_name)
         return jsonify({"ok": True, "quality_score": computed_qs, "status": computed_status})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
+
+
+@bp.route("/<path:mod_name>/rec_types")
+def get_rec_types(mod_name: str):
+    """Return distinct record types for the record-type filter dropdown."""
+    repo = current_app.config.get("STRING_REPO")
+    if not repo:
+        return jsonify({"rec_types": []})
+    return jsonify({"rec_types": repo.get_rec_types(mod_name)})
+
+
+@bp.route("/<path:mod_name>/strings/replace", methods=["POST"])
+def replace_strings(mod_name: str):
+    """Bulk find-and-replace in translation column."""
+    repo = current_app.config.get("STRING_REPO")
+    if not repo:
+        return jsonify({"error": "No DB"}), 500
+    data      = request.get_json() or {}
+    find      = data.get("find", "")
+    replace   = data.get("replace", "")
+    esp_name  = data.get("esp") or None
+    scope     = data.get("scope") or None
+    if not find:
+        return jsonify({"error": "find is required"}), 400
+    count = repo.replace_in_translations(mod_name, find, replace,
+                                          esp_name=esp_name, scope=scope)
+    # Invalidate scanner cache so counts update
+    scanner = current_app.config.get("SCANNER")
+    if scanner:
+        scanner.invalidate(mod_name)
+    return jsonify({"ok": True, "count": count})
+
+
+@bp.route("/<path:mod_name>/strings/sync-duplicates", methods=["POST"])
+def sync_duplicates(mod_name: str):
+    """Apply a translation to all strings with the same original text."""
+    repo = current_app.config.get("STRING_REPO")
+    if not repo:
+        return jsonify({"error": "No DB"}), 500
+    data         = request.get_json() or {}
+    original     = data.get("original", "")
+    translation  = data.get("translation", "")
+    status       = data.get("status", "translated")
+    quality_score = data.get("quality_score")
+    if not original:
+        return jsonify({"error": "original is required"}), 400
+    count = repo.sync_duplicates(mod_name, original, translation, status, quality_score)
+    return jsonify({"ok": True, "count": count})
 
 
 @bp.route("/<path:mod_name>/context")

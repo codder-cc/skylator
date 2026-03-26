@@ -5,7 +5,6 @@ Jobs are stored in memory and persisted to cache/jobs.json.
 from __future__ import annotations
 import json
 import logging
-import queue
 import threading
 import time
 import uuid
@@ -102,7 +101,12 @@ class Job:
 
 
 class JobManager:
-    """Singleton job manager — holds job state and runs workers in threads."""
+    """Singleton job manager — holds job state, delegates execution to JobCenter.
+
+    JobManager is kept as the public API for backward compatibility.
+    Internally it uses JobCenter (parallel thread pools) and NotificationHub
+    (SSE with 5000-item queues instead of the original 500).
+    """
 
     _instance: Optional["JobManager"] = None
 
@@ -115,14 +119,12 @@ class JobManager:
     def __init__(self):
         self._jobs:    dict[str, Job] = {}
         self._lock     = threading.Lock()
-        self._queue:   queue.Queue    = queue.Queue()
         self._persist_path: Optional[Path] = None
-        # SSE subscribers: job_id → list of queue.Queue
-        self._sse: dict[str, list[queue.Queue]] = {}
-        self._sse_lock = threading.Lock()
-        # Start worker thread
-        t = threading.Thread(target=self._worker, daemon=True)
-        t.start()
+
+        # Lazy-import to avoid circular dependency at module load time
+        from translator.jobs.job_center import JobCenter
+        self._center = JobCenter.get()
+
         # Load persisted jobs
         self._load_persisted()
 
@@ -137,7 +139,15 @@ class JobManager:
         job = Job(id=str(uuid.uuid4()), name=name, job_type=job_type, params=params)
         with self._lock:
             self._jobs[job.id] = job
-        self._queue.put((job.id, fn))
+
+        # Wrap fn so we can call _notify + _persist after it completes
+        def _wrapped(j: Job):
+            fn(j)
+            # Note: status transitions are handled by JobCenter._run()
+            self._notify(j)
+            self._persist()
+
+        self._center.submit(job, _wrapped)
         self._notify(job)
         return job
 
@@ -222,27 +232,21 @@ class JobManager:
     # ── SSE support ─────────────────────────────────────────────────────────
 
     def subscribe(self, job_id: str) -> queue.Queue:
-        q: queue.Queue = queue.Queue(maxsize=500)
-        with self._sse_lock:
-            self._sse.setdefault(job_id, []).append(q)
-        return q
+        return self._center.hub.subscribe(job_id)
 
     def unsubscribe(self, job_id: str, q: queue.Queue):
-        with self._sse_lock:
-            subs = self._sse.get(job_id, [])
-            if q in subs:
-                subs.remove(q)
+        self._center.hub.unsubscribe(job_id, q)
 
     def subscribe_all(self) -> queue.Queue:
-        return self.subscribe("__all__")
+        return self._center.hub.subscribe_all()
 
     def unsubscribe_all(self, q: queue.Queue):
-        self.unsubscribe("__all__", q)
+        self._center.hub.unsubscribe_all(q)
 
     # ── Internals ────────────────────────────────────────────────────────────
 
     def _notify(self, job: Job, include_logs: bool = False):
-        """Publish job state to SSE subscribers.
+        """Publish job state to SSE subscribers via NotificationHub.
         Progress events omit log_lines (reduces SSE payload from ~50 KB to ~1 KB).
         Terminal events (done/failed/cancelled) always include full logs.
         new_string_updates contains only entries added since the last broadcast.
@@ -251,58 +255,18 @@ class JobManager:
             terminal = job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED)
             d = job.to_dict()
             if not terminal and not include_logs:
-                d["log_lines"] = []   # strip logs from in-flight progress events
-            # Send only new string updates since last broadcast (avoids re-sending full list)
+                d["log_lines"] = []
+            # Send only new string updates since last broadcast
             cursor = job._string_update_cursor
             d["new_string_updates"] = job.string_updates[cursor:]
             job._string_update_cursor = len(job.string_updates)
-            # Per-machine worker status for parallel jobs (empty list for single-backend jobs)
             d["worker_updates"] = list(job._worker_statuses.values())
-            data = json.dumps(d)
         except Exception:
-            log.exception("_notify: failed to serialize job %s", job.id)
+            log.exception("_notify: failed to build payload for job %s", job.id)
             return
-        with self._sse_lock:
-            for q in list(self._sse.get(job.id, [])):
-                try:
-                    q.put_nowait(data)
-                except queue.Full:
-                    pass
-            for q in list(self._sse.get("__all__", [])):
-                try:
-                    q.put_nowait(data)
-                except queue.Full:
-                    pass
+        self._center.hub.publish(job.id, d)
 
-    def _worker(self):
-        while True:
-            job_id, fn = self._queue.get()
-            job = self._jobs.get(job_id)
-            if job is None or job.status == JobStatus.CANCELLED:
-                self._queue.task_done()
-                continue
-
-            job.status     = JobStatus.RUNNING
-            job.started_at = time.time()
-            self._notify(job)
-            log.info("Job STARTED: %s [%s]", job.name, job.id[:8])
-
-            try:
-                fn(job)
-                if job.status not in (JobStatus.FAILED, JobStatus.CANCELLED):
-                    job.status      = JobStatus.DONE
-                    job.finished_at = time.time()
-                    log.info("Job DONE: %s — %.1fs", job.name, job._elapsed())
-            except Exception as exc:
-                log.exception("Job FAILED: %s — %s", job.name, exc)
-                job.status      = JobStatus.FAILED
-                job.error       = str(exc)
-                job.finished_at = time.time()
-                job.add_log(f"ERROR: {exc}")
-
-            self._notify(job)
-            self._persist()
-            self._queue.task_done()
+    # _worker() removed — execution is now handled by JobCenter thread pools.
 
     def add_string_update(self, job: Job, key: str, esp: str,
                           translation: str, status: str,

@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { createFileRoute, useNavigate, Link } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { QK } from '@/lib/queryKeys'
@@ -8,6 +8,7 @@ import { workersApi } from '@/api/workers'
 import { StatCard } from '@/components/shared/StatCard'
 import { GpuWidget } from '@/components/shared/GpuWidget'
 import { pctColor, cn } from '@/lib/utils'
+import type { Job } from '@/types'
 import {
   Layers,
   CheckCircle,
@@ -110,6 +111,96 @@ function TokenPerfWidget() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ── Currently Translating card ────────────────────────────────────────────────
+
+function CurrentlyTranslatingCard() {
+  const { data: jobs = [] } = useQuery<Job[]>({
+    queryKey: QK.jobs(),
+    queryFn: jobsApi.list,
+    refetchInterval: 4_000,
+    staleTime: 3_000,
+  })
+
+  const running = jobs.filter((j) => j.status === 'running')
+  if (running.length === 0) return null
+
+  return (
+    <div className="card p-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <span className="w-2 h-2 rounded-full bg-success animate-pulse shrink-0" />
+        <span className="text-sm font-semibold text-text-main">Currently Translating</span>
+        <span className="text-xs text-text-muted ml-1">{running.length} active</span>
+      </div>
+
+      <div className="space-y-3">
+        {running.map((job) => {
+          const workers = job.worker_updates ?? []
+          const activeWorkers = workers.filter((w) => w.alive && w.tps > 0)
+          const totalTps = workers.reduce((s, w) => s + (w.tps ?? 0), 0)
+
+          return (
+            <div key={job.id} className="border border-border-subtle/50 rounded-lg p-3 space-y-2">
+              {/* Job header */}
+              <div className="flex items-center gap-2 min-w-0">
+                <Link
+                  to="/jobs/$jobId"
+                  params={{ jobId: job.id }}
+                  className="text-sm font-medium text-accent hover:underline truncate flex-1 min-w-0"
+                >
+                  {job.name}
+                </Link>
+                <span className="text-xs font-mono tabular-nums text-text-muted shrink-0">
+                  {job.pct.toFixed(1)}%
+                </span>
+                {totalTps > 0 && (
+                  <span className="flex items-center gap-0.5 text-xs font-mono tabular-nums font-semibold text-accent shrink-0">
+                    <Zap size={10} />
+                    {totalTps.toFixed(1)}
+                  </span>
+                )}
+              </div>
+
+              {/* Progress bar */}
+              {job.pct > 0 && (
+                <div className="h-1 bg-bg-card2 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-accent rounded-full transition-all duration-500"
+                    style={{ width: `${job.pct}%` }}
+                  />
+                </div>
+              )}
+
+              {/* Worker rows */}
+              {workers.length > 0 && (
+                <div className="space-y-1">
+                  {workers.map((w) => (
+                    <div key={w.label} className={cn('flex items-center gap-2 text-xs', !w.alive && 'opacity-40')}>
+                      <span className={cn(
+                        'w-1.5 h-1.5 rounded-full shrink-0',
+                        w.alive ? 'bg-success' : 'bg-text-muted',
+                      )} />
+                      <span className="font-mono text-text-muted/70 shrink-0 w-24 truncate">{w.label}</span>
+                      <span className={cn(
+                        'font-mono tabular-nums shrink-0',
+                        w.tps > 0 ? 'text-accent' : 'text-text-muted/40',
+                      )}>
+                        {w.tps > 0 ? `${w.tps.toFixed(1)} t/s` : '—'}
+                      </span>
+                      {w.current_text && (
+                        <span className="text-text-muted/60 truncate min-w-0">{w.current_text}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
@@ -391,6 +482,8 @@ function DashboardPage() {
       )}
 
       <TokenPerfWidget />
+
+      <CurrentlyTranslatingCard />
 
       {!stats && (
         <div className="card p-8 text-center text-text-muted">

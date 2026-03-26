@@ -6,6 +6,7 @@ import { useSSE } from '@/hooks/useSSE'
 import { useQueryClient } from '@tanstack/react-query'
 import { useJobsStore } from '@/stores/jobsStore'
 import { QK } from '@/lib/queryKeys'
+import { JOB_TERMINAL_STATUSES } from '@/lib/constants'
 import type { Job, StringUpdate } from '@/types'
 
 interface RouterContext {
@@ -45,6 +46,17 @@ function AppShell() {
           return next.length > 5000 ? next.slice(next.length - 5000) : next
         },
       )
+    }
+
+    // On terminal status: invalidate mod list, mod detail, stats, and mod strings
+    if (JOB_TERMINAL_STATUSES.includes(job.status as (typeof JOB_TERMINAL_STATUSES)[number])) {
+      void queryClient.invalidateQueries({ queryKey: QK.stats() })
+      void queryClient.invalidateQueries({ queryKey: QK.mods() })
+      if (modName) {
+        void queryClient.invalidateQueries({ queryKey: QK.mod(modName) })
+        void queryClient.invalidateQueries({ queryKey: ['mods', modName, 'strings'] })
+        void queryClient.invalidateQueries({ queryKey: QK.modReservations(modName) })
+      }
     }
   })
 

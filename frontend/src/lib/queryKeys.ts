@@ -19,4 +19,6 @@ export const QK = {
   modNexus:        (name: string) => ['mods', name, 'nexus'] as const,
   modValidation:   (name: string) => ['mods', name, 'validation'] as const,
   checkpoints:     () => ['checkpoints'] as const,
+  modReservations: (name: string) => ['mods', name, 'reservations'] as const,
+  stringHistory:   (id: number) => ['strings', id, 'history'] as const,
 } as const

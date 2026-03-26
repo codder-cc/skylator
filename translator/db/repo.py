@@ -77,24 +77,33 @@ class StringRepo:
                quality_score: Optional[int] = None,
                form_id: str = "", rec_type: str = "",
                field_type: str = "", field_index: Optional[int] = None,
-               vmad_str_idx: int = 0) -> None:
+               vmad_str_idx: int = 0,
+               source: Optional[str] = None,
+               translated_by: Optional[str] = None,
+               translated_at: Optional[float] = None,
+               string_hash: Optional[str] = None) -> None:
         sql = """
         INSERT INTO strings
             (mod_name, esp_name, key, original, translation, status,
              quality_score, form_id, rec_type, field_type, field_index,
-             vmad_str_idx, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+             vmad_str_idx, updated_at, source, translated_by, translated_at, string_hash)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(mod_name, esp_name, key) DO UPDATE SET
             translation   = excluded.translation,
             status        = excluded.status,
             quality_score = excluded.quality_score,
-            updated_at    = excluded.updated_at
+            updated_at    = excluded.updated_at,
+            source        = COALESCE(excluded.source, source),
+            translated_by = COALESCE(excluded.translated_by, translated_by),
+            translated_at = COALESCE(excluded.translated_at, translated_at),
+            string_hash   = COALESCE(excluded.string_hash, string_hash)
         """
         with _write_lock:
             self.db.execute(sql, (
                 mod_name, esp_name, key, original, translation, status,
                 quality_score, form_id, rec_type, field_type,
                 field_index, vmad_str_idx, time.time(),
+                source, translated_by, translated_at, string_hash,
             ))
             self.db.commit()
 
@@ -216,7 +225,7 @@ class StringRepo:
         """
         if esp_name:
             rows = self.db.execute("""
-                SELECT mod_name, esp_name, key, original, translation, status,
+                SELECT id, mod_name, esp_name, key, original, translation, status,
                        quality_score, form_id, rec_type, field_type, field_index,
                        vmad_str_idx
                 FROM strings WHERE mod_name=? AND esp_name=?
@@ -224,7 +233,7 @@ class StringRepo:
             """, (mod_name, esp_name)).fetchall()
         else:
             rows = self.db.execute("""
-                SELECT mod_name, esp_name, key, original, translation, status,
+                SELECT id, mod_name, esp_name, key, original, translation, status,
                        quality_score, form_id, rec_type, field_type, field_index,
                        vmad_str_idx
                 FROM strings WHERE mod_name=?
@@ -239,6 +248,9 @@ class StringRepo:
                     status: Optional[str] = None,
                     q: Optional[str] = None,
                     scope: Optional[str] = None,
+                    rec_type: Optional[str] = None,
+                    sort_by: Optional[str] = None,
+                    sort_dir: str = "asc",
                     limit: int = 100,
                     offset: int = 0) -> tuple[list[dict], int]:
         """
@@ -253,6 +265,12 @@ class StringRepo:
         if status and status != "all":
             if status == "needs_review":
                 conditions.append("status='needs_review'")
+            elif status == "untranslatable":
+                conditions.append("source='untranslatable'")
+            elif status == "reserved":
+                conditions.append(
+                    "id IN (SELECT string_id FROM string_reservations WHERE status='active')"
+                )
             else:
                 conditions.append("status=?")
                 params.append(status)
@@ -270,19 +288,36 @@ class StringRepo:
             conditions.append("key LIKE 'swf:%'")
         elif scope == "review":
             conditions.append("status='needs_review'")
+        elif scope == "untranslatable":
+            conditions.append("source='untranslatable'")
+        elif scope == "reserved":
+            conditions.append(
+                "id IN (SELECT string_id FROM string_reservations WHERE status='active')"
+            )
+
+        if rec_type:
+            conditions.append("rec_type=?")
+            params.append(rec_type)
 
         where = " AND ".join(conditions)
+        _ALLOWED_SORT = {"esp_name", "original", "translation", "status", "quality_score", "rec_type"}
+        if sort_by and sort_by in _ALLOWED_SORT:
+            _dir = "ASC" if sort_dir.lower() == "asc" else "DESC"
+            _order = f"ORDER BY {sort_by} {_dir} NULLS LAST"
+        else:
+            _order = "ORDER BY esp_name, field_index, key"
+
         count_row = self.db.execute(
             f"SELECT COUNT(*) FROM strings WHERE {where}", params
         ).fetchone()
         total = count_row[0] if count_row else 0
 
         rows = self.db.execute(
-            f"""SELECT mod_name, esp_name, key, original, translation, status,
+            f"""SELECT id, mod_name, esp_name, key, original, translation, status,
                         quality_score, form_id, rec_type, field_type, field_index,
-                        vmad_str_idx
+                        vmad_str_idx, source, translated_by AS machine_label, translated_at
                 FROM strings WHERE {where}
-                ORDER BY esp_name, field_index, key
+                {_order}
                 LIMIT ? OFFSET ?""",
             params + [limit, offset],
         ).fetchall()
@@ -290,7 +325,7 @@ class StringRepo:
         return [dict(r) for r in rows], total
 
     def scope_counts(self, mod_name: str) -> dict[str, int]:
-        """Return counts per scope for a mod."""
+        """Return counts per scope + status tabs for a mod."""
         rows = self.db.execute("""
             SELECT
                 COUNT(*) AS all_cnt,
@@ -298,19 +333,82 @@ class StringRepo:
                 SUM(CASE WHEN key LIKE 'mcm:%'     THEN 1 ELSE 0 END) AS mcm_cnt,
                 SUM(CASE WHEN key LIKE 'bsa-mcm:%' THEN 1 ELSE 0 END) AS bsa_cnt,
                 SUM(CASE WHEN key LIKE 'swf:%'     THEN 1 ELSE 0 END) AS swf_cnt,
-                SUM(CASE WHEN status='needs_review' THEN 1 ELSE 0 END) AS review_cnt
+                SUM(CASE WHEN status='needs_review'         THEN 1 ELSE 0 END) AS review_cnt,
+                SUM(CASE WHEN source='untranslatable'       THEN 1 ELSE 0 END) AS untranslatable_cnt,
+                SUM(CASE WHEN id IN (
+                    SELECT string_id FROM string_reservations WHERE status='active'
+                ) THEN 1 ELSE 0 END) AS reserved_cnt
             FROM strings WHERE mod_name=?
         """, (mod_name,)).fetchone()
         if not rows:
-            return {"all": 0, "esp": 0, "mcm": 0, "bsa": 0, "swf": 0, "review": 0}
+            return {"all": 0, "esp": 0, "mcm": 0, "bsa": 0, "swf": 0,
+                    "review": 0, "untranslatable": 0, "reserved": 0}
         return {
-            "all":    rows["all_cnt"] or 0,
-            "esp":    rows["esp_cnt"] or 0,
-            "mcm":    rows["mcm_cnt"] or 0,
-            "bsa":    rows["bsa_cnt"] or 0,
-            "swf":    rows["swf_cnt"] or 0,
-            "review": rows["review_cnt"] or 0,
+            "all":           rows["all_cnt"] or 0,
+            "esp":           rows["esp_cnt"] or 0,
+            "mcm":           rows["mcm_cnt"] or 0,
+            "bsa":           rows["bsa_cnt"] or 0,
+            "swf":           rows["swf_cnt"] or 0,
+            "review":        rows["review_cnt"] or 0,
+            "untranslatable": rows["untranslatable_cnt"] or 0,
+            "reserved":      rows["reserved_cnt"] or 0,
         }
+
+    def get_rec_types(self, mod_name: str) -> list[str]:
+        """Return distinct rec_type values for a mod (for the record-type filter)."""
+        rows = self.db.execute(
+            """SELECT DISTINCT rec_type FROM strings
+               WHERE mod_name=? AND rec_type IS NOT NULL AND rec_type != ''
+               ORDER BY rec_type""",
+            (mod_name,),
+        ).fetchall()
+        return [r["rec_type"] for r in rows]
+
+    def replace_in_translations(self, mod_name: str, find: str, replace_with: str,
+                                 esp_name: Optional[str] = None,
+                                 scope: Optional[str] = None) -> int:
+        """Bulk replace text in translation column. Returns count of rows changed."""
+        if not find:
+            return 0
+        conditions = ["mod_name=?", "translation LIKE ?"]
+        params: list = [mod_name, f"%{find}%"]
+        if esp_name:
+            conditions.append("esp_name=?")
+            params.append(esp_name)
+        if scope == "esp":
+            conditions.append("key NOT LIKE 'mcm:%' AND key NOT LIKE 'bsa-mcm:%' AND key NOT LIKE 'swf:%'")
+        elif scope == "mcm":
+            conditions.append("key LIKE 'mcm:%'")
+        elif scope == "bsa":
+            conditions.append("key LIKE 'bsa-mcm:%'")
+        elif scope == "swf":
+            conditions.append("key LIKE 'swf:%'")
+        where = " AND ".join(conditions)
+        with _write_lock:
+            cur = self.db.execute(
+                f"UPDATE strings SET translation=REPLACE(translation,?,?), updated_at=? WHERE {where}",
+                [find, replace_with, time.time()] + params,
+            )
+            self.db.commit()
+        return cur.rowcount
+
+    def sync_duplicates(self, mod_name: str, original: str,
+                        translation: str, status: str,
+                        quality_score: Optional[int]) -> int:
+        """Apply translation to all strings with the same original text. Returns count changed."""
+        if not original:
+            return 0
+        with _write_lock:
+            cur = self.db.execute(
+                """UPDATE strings
+                   SET translation=?, status=?, quality_score=?, updated_at=?
+                   WHERE mod_name=? AND original=?
+                     AND (translation IS NULL OR translation='' OR translation!=?)""",
+                (translation, status, quality_score, time.time(),
+                 mod_name, original, translation),
+            )
+            self.db.commit()
+        return cur.rowcount
 
     # ── Checkpoints (diff-based recovery) ───────────────────────────────────
 
@@ -402,3 +500,41 @@ class StringRepo:
             ORDER BY created_at DESC
         """, params).fetchall()
         return [dict(r) for r in rows]
+
+    # ── History / audit trail ────────────────────────────────────────────────
+
+    def get_string_by_id(self, string_id: int) -> Optional[dict]:
+        row = self.db.execute(
+            "SELECT * FROM strings WHERE id=?", (string_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_history(self, string_id: int) -> list[dict]:
+        rows = self.db.execute("""
+            SELECT id, string_id, translation, status, quality_score,
+                   source, machine_label, job_id, created_at
+            FROM string_history WHERE string_id=?
+            ORDER BY created_at DESC
+        """, (string_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def insert_history(self, string_id: int, translation: str, status: str,
+                       quality_score: Optional[int], source: str,
+                       machine_label: Optional[str], job_id: Optional[str]) -> None:
+        with _write_lock:
+            self.db.execute("""
+                INSERT INTO string_history
+                    (string_id, translation, status, quality_score, source, machine_label, job_id)
+                VALUES (?,?,?,?,?,?,?)
+            """, (string_id, translation, status, quality_score,
+                  source, machine_label or None, job_id or None))
+            self.db.commit()
+
+    def update_job_string_status(self, job_id: str, string_id: int, status: str) -> None:
+        with _write_lock:
+            self.db.execute("""
+                INSERT INTO job_strings (job_id, string_id, status)
+                VALUES (?,?,'done')
+                ON CONFLICT(job_id, string_id) DO UPDATE SET status=excluded.status
+            """, (job_id, string_id))
+            self.db.commit()

@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from flask import (Blueprint, Response, abort, current_app,
                    jsonify, redirect, request, stream_with_context)
+from translator.web.routes.utils import get_mod_path
 
 log = logging.getLogger(__name__)
 
@@ -200,6 +201,7 @@ def _create_translate_mod_job(jm, cfg, mod_name: str, options: dict):
     force          = options.get("force", False)
     machines       = options.get("machines")
     repo           = current_app.config.get("STRING_REPO")
+    stats_mgr      = current_app.config.get("STATS_MGR")
 
     # Map only_mcm / only_esp → scope for translate_strings_worker
     if only_mcm:
@@ -210,6 +212,9 @@ def _create_translate_mod_job(jm, cfg, mod_name: str, options: dict):
         scope = "all"
 
     backends, skipped = _resolve_backends(cfg, machines)
+
+    reservation_mgr   = current_app.config.get("RESERVATION_MGR")
+    translation_cache = current_app.config.get("TRANSLATION_CACHE")
 
     def run(job):
         if skipped:
@@ -223,7 +228,10 @@ def _create_translate_mod_job(jm, cfg, mod_name: str, options: dict):
                 log.warning("Auto-checkpoint failed: %s", e)
         from translator.web.workers import translate_strings_worker
         translate_strings_worker(job, cfg, mod_name, scope=scope,
-                                 force=force, backends=backends, repo=repo)
+                                 force=force, backends=backends, repo=repo,
+                                 stats_mgr=stats_mgr,
+                                 reservation_mgr=reservation_mgr,
+                                 translation_cache=translation_cache)
 
     return jm.create(
         name     = f"Translate: {mod_name}",
@@ -234,9 +242,12 @@ def _create_translate_mod_job(jm, cfg, mod_name: str, options: dict):
 
 
 def _create_batch_job(jm, cfg, mod_names: list, options: dict):
-    force    = options.get("force", False)
-    machines = options.get("machines")
-    repo     = current_app.config.get("STRING_REPO")
+    force             = options.get("force", False)
+    machines          = options.get("machines")
+    repo              = current_app.config.get("STRING_REPO")
+    stats_mgr         = current_app.config.get("STATS_MGR")
+    reservation_mgr   = current_app.config.get("RESERVATION_MGR")
+    translation_cache = current_app.config.get("TRANSLATION_CACHE")
 
     backends, skipped = _resolve_backends(cfg, machines)
 
@@ -257,7 +268,11 @@ def _create_batch_job(jm, cfg, mod_names: list, options: dict):
                 except Exception as e:
                     log.warning("Auto-checkpoint failed for %s: %s", mod_name, e)
             translate_strings_worker(job, cfg, mod_name, scope="all",
-                                     force=force, backends=backends, repo=repo)
+                                     force=force, backends=backends, repo=repo,
+                                     stats_mgr=stats_mgr,
+                                     reservation_mgr=reservation_mgr,
+                                     translation_cache=translation_cache)
+            # Note: stats recompute is handled inside TranslatePipeline.run() finally block
         jm.update_progress(job, total, total, "Done")
 
     return jm.create(
@@ -310,14 +325,17 @@ def _resolve_backends(cfg, machines: list | None):
 
 
 def _create_translate_all_job(jm, cfg, options: dict):
-    dry_run       = options.get("dry_run", False)
-    resume        = options.get("resume", True)
-    scope         = options.get("scope", "all")
-    status_filter = options.get("status_filter", "all")
-    force         = options.get("force", False)
-    machines      = options.get("machines")    # list of labels or None
+    dry_run           = options.get("dry_run", False)
+    resume            = options.get("resume", True)
+    scope             = options.get("scope", "all")
+    status_filter     = options.get("status_filter", "all")
+    force             = options.get("force", False)
+    machines          = options.get("machines")    # list of labels or None
     backends, skipped = _resolve_backends(cfg, machines)
-    repo = current_app.config.get("STRING_REPO")
+    repo              = current_app.config.get("STRING_REPO")
+    stats_mgr         = current_app.config.get("STATS_MGR")
+    reservation_mgr   = current_app.config.get("RESERVATION_MGR")
+    translation_cache = current_app.config.get("TRANSLATION_CACHE")
 
     def run(job):
         if skipped:
@@ -325,7 +343,10 @@ def _create_translate_all_job(jm, cfg, options: dict):
         from translator.web.workers import translate_all_worker
         translate_all_worker(job, cfg, dry_run=dry_run, resume=resume,
                              scope=scope, status_filter=status_filter,
-                             force=force, backends=backends, repo=repo)
+                             force=force, backends=backends, repo=repo,
+                             stats_mgr=stats_mgr,
+                             reservation_mgr=reservation_mgr,
+                             translation_cache=translation_cache)
 
     scope_label = f" [{scope.upper()}]" if scope != "all" else ""
     return jm.create(
@@ -338,8 +359,9 @@ def _create_translate_all_job(jm, cfg, options: dict):
 
 
 def _create_apply_mod_job(jm, cfg, mod_name: str, options: dict):
-    dry_run = options.get("dry_run", False)
-    repo    = current_app.config.get("STRING_REPO")
+    dry_run   = options.get("dry_run", False)
+    repo      = current_app.config.get("STRING_REPO")
+    stats_mgr = current_app.config.get("STATS_MGR")
 
     def run(job):
         # Auto-checkpoint before applying ESP (modifies string state)
@@ -351,6 +373,12 @@ def _create_apply_mod_job(jm, cfg, mod_name: str, options: dict):
                 log.warning("Auto-checkpoint failed: %s", e)
         from translator.web.workers import apply_mod_worker
         apply_mod_worker(job, cfg, mod_name, dry_run=dry_run, repo=repo)
+        if stats_mgr:
+            try:
+                stats_mgr.invalidate(mod_name)
+                stats_mgr.recompute(mod_name)
+            except Exception as exc:
+                log.warning("stats recompute failed for %s: %s", mod_name, exc)
 
     return jm.create(
         name     = f"Apply ESP: {mod_name}",
@@ -361,12 +389,19 @@ def _create_apply_mod_job(jm, cfg, mod_name: str, options: dict):
 
 
 def _create_translate_bsa_job(jm, cfg, mod_name: str, options: dict):
-    dry_run = options.get("dry_run", False)
-    repo    = current_app.config.get("STRING_REPO")
+    dry_run   = options.get("dry_run", False)
+    repo      = current_app.config.get("STRING_REPO")
+    stats_mgr = current_app.config.get("STATS_MGR")
 
     def run(job):
         from translator.web.workers import translate_bsa_worker
         translate_bsa_worker(job, cfg, mod_name, dry_run=dry_run, repo=repo)
+        if stats_mgr:
+            try:
+                stats_mgr.invalidate(mod_name)
+                stats_mgr.recompute(mod_name)
+            except Exception as exc:
+                log.warning("stats recompute failed for %s: %s", mod_name, exc)
 
     return jm.create(
         name     = f"BSA/SWF: {mod_name}",
@@ -381,8 +416,11 @@ def _create_translate_strings_job(jm, cfg, mod_name: str,
                                    scope: str = "all",
                                    params=None, force: bool = False,
                                    machines: list | None = None):
-    backends, skipped = _resolve_backends(cfg, machines)
-    repo = current_app.config.get("STRING_REPO")
+    backends, skipped         = _resolve_backends(cfg, machines)
+    repo                      = current_app.config.get("STRING_REPO")
+    stats_mgr                 = current_app.config.get("STATS_MGR")
+    reservation_mgr           = current_app.config.get("RESERVATION_MGR")
+    translation_cache         = current_app.config.get("TRANSLATION_CACHE")
 
     def run(job):
         if skipped:
@@ -397,7 +435,9 @@ def _create_translate_strings_job(jm, cfg, mod_name: str,
         from translator.web.workers import translate_strings_worker
         translate_strings_worker(job, cfg, mod_name, keys=keys, scope=scope,
                                  params=params, force=force, backends=backends,
-                                 repo=repo)
+                                 repo=repo, stats_mgr=stats_mgr,
+                                 reservation_mgr=reservation_mgr,
+                                 translation_cache=translation_cache)
 
     if keys:
         n = len(keys)
@@ -437,10 +477,14 @@ def _create_scan_job(jm, scanner, mod_name: str | None = None,
         # untranslatable ones) appear in the strings page.
         if repo and cfg:
             from scripts.esp_engine import extract_all_strings, needs_translation, quality_score as _qs
-            mods_dir = cfg.paths.mods_dir
-            target_folders = [mods_dir / mod_name] if mod_name else [
-                f for f in sorted(mods_dir.iterdir()) if f.is_dir()
-            ]
+            scanner = current_app.config.get("SCANNER")
+            if mod_name:
+                _mp = get_mod_path(mod_name)
+                target_folders = [_mp] if _mp and _mp.is_dir() else []
+            else:
+                # Scan all mods across all mods_dirs
+                target_folders = scanner.scan_all() if scanner else []
+                target_folders = [Path(m.folder_path) for m in target_folders]
             n_bootstrapped = 0
             for folder in target_folders:
                 fname = folder.name
@@ -524,8 +568,8 @@ def _create_fetch_nexus_job(jm, cfg, mod_name: str):
         job.add_log(f"Fetching Nexus context for {mod_name}...")
         try:
             from translator.context.builder import ContextBuilder
-            mod_dir = cfg.paths.mods_dir / mod_name
-            ctx = ContextBuilder().get_mod_context(mod_dir, force=True)
+            mod_dir = get_mod_path(mod_name)
+            ctx = ContextBuilder().get_mod_context(mod_dir, force=True) if mod_dir else ""
             job.add_log(f"Context: {ctx[:120]}..." if len(ctx) > 120 else f"Context: {ctx}")
             job.result = ctx
         except Exception as exc:

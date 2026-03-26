@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 from flask import (Blueprint, current_app, jsonify,
                    redirect, request)
+from translator.web.routes.utils import get_mod_path
 
 bp = Blueprint("tools", __name__, url_prefix="/tools")
 
@@ -400,7 +401,7 @@ def nexus_fetch():
         sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
         from translator.context.nexus_fetcher import NexusFetcher
         fetcher  = NexusFetcher()
-        folder   = cfg.paths.mods_dir / mod_name
+        folder   = get_mod_path(mod_name)
         desc     = fetcher.fetch_mod_description(folder)
         # Also return the full cached record so the UI can update without a reload
         mod      = scanner.get_mod(mod_name)

@@ -2,9 +2,7 @@ import { apiFetch } from './client'
 
 export const configApi = {
   getRaw: () =>
-    apiFetch<string>('/config/raw', {
-      headers: { Accept: 'text/plain' },
-    }),
+    apiFetch<{ yaml: string }>('/config/raw').then((r) => r.yaml),
 
   save: (yaml: string) =>
     apiFetch<{ ok: boolean }>('/config/save', {

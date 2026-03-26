@@ -15,6 +15,8 @@ export interface StringUpdate {
   translation: string
   status: string
   quality_score: number | null
+  source?: string
+  machine_label?: string
 }
 
 export interface WorkerStatus {
@@ -76,6 +78,7 @@ export interface ModInfo {
 }
 
 export interface StringEntry {
+  id: number
   key: string
   esp: string
   original: string
@@ -83,6 +86,33 @@ export interface StringEntry {
   status: string
   quality_score: number | null
   dict_match?: boolean
+  source?: string           // 'ai' | 'cache' | 'dict' | 'manual' | 'imported'
+  machine_label?: string    // worker label that produced this translation
+  translated_at?: number    // unix timestamp
+  reserved_by?: string      // job_id that holds the reservation, if any
+  dup_count?: number
+}
+
+export interface ReservationInfo {
+  string_id: number
+  key: string
+  esp: string
+  reserved_by: string       // job_id
+  machine_label: string
+  reserved_at: number
+  expires_at: number
+}
+
+export interface StringHistoryEntry {
+  id: number
+  string_id: number
+  translation: string
+  status: string
+  quality_score: number | null
+  source: string
+  machine_label: string | null
+  job_id: string | null
+  created_at: number
 }
 
 export interface CachedModel {

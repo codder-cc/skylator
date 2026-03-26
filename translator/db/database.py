@@ -8,50 +8,10 @@ import sqlite3
 import threading
 from pathlib import Path
 
+from translator.db.schema import SCHEMA_SQL, NEW_TABLES_SQL
+from translator.db.migrations import MigrationRunner
+
 log = logging.getLogger(__name__)
-
-SCHEMA_SQL = """
-PRAGMA journal_mode=WAL;
-PRAGMA synchronous=NORMAL;
-PRAGMA foreign_keys=ON;
-
-CREATE TABLE IF NOT EXISTS strings (
-    id                INTEGER  PRIMARY KEY AUTOINCREMENT,
-    mod_name          TEXT     NOT NULL,
-    esp_name          TEXT     NOT NULL,
-    key               TEXT     NOT NULL,
-    original          TEXT     NOT NULL DEFAULT '',
-    translation       TEXT     NOT NULL DEFAULT '',
-    status            TEXT     NOT NULL DEFAULT 'pending',
-    quality_score     INTEGER,
-    form_id           TEXT,
-    rec_type          TEXT,
-    field_type        TEXT,
-    field_index       INTEGER,
-    vmad_str_idx      INTEGER  DEFAULT 0,
-    updated_at        REAL     DEFAULT (unixepoch('now', 'subsec')),
-    UNIQUE(mod_name, esp_name, key)
-);
-
-CREATE TABLE IF NOT EXISTS string_checkpoints (
-    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
-    checkpoint_id         TEXT    NOT NULL,
-    mod_name              TEXT    NOT NULL,
-    esp_name              TEXT    NOT NULL,
-    key                   TEXT    NOT NULL,
-    original_translation  TEXT    NOT NULL DEFAULT '',
-    original_status       TEXT    NOT NULL DEFAULT 'pending',
-    original_quality_score INTEGER,
-    created_at            REAL    DEFAULT (unixepoch('now', 'subsec'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_strings_mod      ON strings(mod_name);
-CREATE INDEX IF NOT EXISTS idx_strings_status   ON strings(mod_name, status);
-CREATE INDEX IF NOT EXISTS idx_strings_esp      ON strings(mod_name, esp_name);
-CREATE INDEX IF NOT EXISTS idx_strings_key      ON strings(mod_name, esp_name, key);
-CREATE INDEX IF NOT EXISTS idx_checkpoints_id   ON string_checkpoints(checkpoint_id);
-CREATE INDEX IF NOT EXISTS idx_checkpoints_mod  ON string_checkpoints(mod_name);
-"""
 
 
 class TranslationDB:
@@ -77,19 +37,13 @@ class TranslationDB:
         return conn
 
     def _init_schema(self) -> None:
-        """Create tables and indexes if they don't exist."""
+        """Create tables and indexes if they don't exist, then run migrations."""
         conn = self._connect()
         conn.executescript(SCHEMA_SQL)
-        self._migrate(conn)
+        conn.executescript(NEW_TABLES_SQL)
+        MigrationRunner.run(conn)
         conn.commit()
         log.info("TranslationDB initialized at %s", self.db_path)
-
-    def _migrate(self, conn: sqlite3.Connection) -> None:
-        """Apply incremental schema migrations for existing databases."""
-        existing = {row[1] for row in conn.execute("PRAGMA table_info(strings)").fetchall()}
-        if "vmad_str_idx" not in existing:
-            conn.execute("ALTER TABLE strings ADD COLUMN vmad_str_idx INTEGER DEFAULT 0")
-            log.info("Migration: added vmad_str_idx column to strings table")
 
     def execute(self, sql: str, params=()) -> sqlite3.Cursor:
         return self._connect().execute(sql, params)

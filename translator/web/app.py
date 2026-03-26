@@ -3,6 +3,7 @@ Flask application factory for Nolvus Translator Web UI.
 """
 from __future__ import annotations
 import logging
+import shutil
 import sys
 from pathlib import Path
 
@@ -48,22 +49,39 @@ def create_app(config_path: Path | None = None) -> Flask:
     app.config["TRANSLATION_DB"] = _db
     app.config["STRING_REPO"] = _repo
 
+    # ── Init ReservationManager ──────────────────────────────────────────────
+    from translator.reservation.reservation_manager import ReservationManager
+    _reservation_mgr = ReservationManager(_db, ttl_seconds=300)
+    app.config["RESERVATION_MGR"] = _reservation_mgr
+
+    # ── Init TranslationCache ────────────────────────────────────────────────
+    from translator.data_manager.translation_cache import TranslationCache
+    _translation_cache = TranslationCache(_db)
+    app.config["TRANSLATION_CACHE"] = _translation_cache
+
+    # ── Init StatsManager ────────────────────────────────────────────────────
+    from translator.statistics.stats_manager import StatsManager
+    _stats_mgr = StatsManager(_db)
+    app.config["STATS_MGR"] = _stats_mgr
+
     # ── Init mod scanner ────────────────────────────────────────────────────
-    # Pass repo so scanner reads translated_strings stats from SQLite (single source)
+    # StatsManager is passed so scanner uses materialized stats (faster than raw COUNT(*))
     from translator.web.mod_scanner import ModScanner
     if cfg:
         scanner = ModScanner(
-            mods_dir          = cfg.paths.mods_dir,
+            mods_dirs         = cfg.paths.mods_dirs,
             translation_cache = cfg.paths.translation_cache,
             nexus_cache       = cfg.paths.nexus_cache,
             repo              = _repo,
+            stats_mgr         = _stats_mgr,
         )
     else:
         scanner = ModScanner(
-            mods_dir          = Path("mods"),
+            mods_dirs         = [Path("mods")],
             translation_cache = ROOT / "cache/translation_cache.json",
             nexus_cache       = ROOT / "cache/nexus_cache.json",
             repo              = _repo,
+            stats_mgr         = _stats_mgr,
         )
     app.config["SCANNER"] = scanner
 
@@ -83,11 +101,72 @@ def create_app(config_path: Path | None = None) -> Flask:
     from translator.web.global_dict import GlobalTextDict
     cache_dir = cfg.paths.translation_cache.parent if cfg else ROOT / "cache"
     gd = GlobalTextDict(
-        mods_dir   = cfg.paths.mods_dir if cfg else Path("mods"),
+        mods_dirs  = cfg.paths.mods_dirs if cfg else [Path("mods")],
         cache_path = cache_dir / "_global_text_dict.json",
     )
     gd.load()  # fast — just reads existing JSON from disk
     app.config["GLOBAL_DICT"] = gd
+
+    # ── Background threads ───────────────────────────────────────────────────
+    import threading as _threading
+    import time as _time
+
+    def _bg_expire_reservations():
+        while True:
+            _time.sleep(60)
+            try:
+                n = _reservation_mgr.expire_stale()
+                if n:
+                    log.info("Expired %d stale reservations", n)
+            except Exception as exc:
+                log.warning("expire_stale error: %s", exc)
+
+    _threading.Thread(
+        target=_bg_expire_reservations,
+        daemon=True, name="reservation-expiry",
+    ).start()
+
+    def _bg_populate_hashes():
+        _time.sleep(5)  # let the app finish starting up
+        try:
+            n = _translation_cache.populate_hashes()
+            if n:
+                log.info("Populated %d string hashes in background", n)
+        except Exception as exc:
+            log.warning("populate_hashes error: %s", exc)
+
+    _threading.Thread(
+        target=_bg_populate_hashes,
+        daemon=True, name="hash-populate",
+    ).start()
+
+    # Single-mod session storage + cleanup (60-min TTL)
+    app.config["SINGLE_MOD_SESSIONS"] = {}
+
+    def _bg_cleanup_single_sessions():
+        while True:
+            _time.sleep(300)  # every 5 min
+            sessions = app.config.get("SINGLE_MOD_SESSIONS", {})
+            now      = _time.time()
+            expired  = [sid for sid, s in list(sessions.items())
+                        if now - s.get("last_access", s["created_at"]) > 3600]
+            for sid in expired:
+                s = sessions.pop(sid, None)
+                if not s:
+                    continue
+                mod_name = s.get("mod_name", f"__single__{sid}")
+                try:
+                    _repo.db.execute("DELETE FROM strings WHERE mod_name=?", (mod_name,))
+                    _repo.db.commit()
+                except Exception:
+                    pass
+                shutil.rmtree(s["dir"], ignore_errors=True)
+                log.info("Single-mod session expired and cleaned up: %s", sid)
+
+    _threading.Thread(
+        target=_bg_cleanup_single_sessions,
+        daemon=True, name="single-session-cleanup",
+    ).start()
 
     # ── Init job manager ────────────────────────────────────────────────────
     from translator.web.job_manager import JobManager

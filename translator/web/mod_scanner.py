@@ -61,75 +61,116 @@ class ModInfo:
 
 
 class ModScanner:
-    """Scans mods_dir and builds a list of ModInfo objects."""
+    """Scans one or more mods_dirs and builds a list of ModInfo objects."""
 
-    def __init__(self, mods_dir: Path, translation_cache: Path,
-                 nexus_cache: Path, repo=None):
-        self.mods_dir          = mods_dir
+    def __init__(self, mods_dir: Path | None = None, translation_cache: Path = Path("cache/translation_cache.json"),
+                 nexus_cache: Path = Path("cache/nexus_cache.json"), repo=None, stats_mgr=None,
+                 mods_dirs: list | None = None):
+        # Support both mods_dirs (list) and mods_dir (single) for backward compat
+        if mods_dirs is not None:
+            self.mods_dirs = [Path(d) for d in mods_dirs if d]
+        elif mods_dir is not None:
+            self.mods_dirs = [Path(mods_dir)]
+        else:
+            self.mods_dirs = []
+        # Primary dir for backward compat
+        self.mods_dir          = self.mods_dirs[0] if self.mods_dirs else Path("mods")
         self.translation_cache = translation_cache
         self.nexus_cache       = nexus_cache
-        self._repo             = repo  # StringRepo — reads stats from SQLite when set
+        self._repo             = repo       # StringRepo — fallback stats via raw SQL
+        self._stats_mgr        = stats_mgr  # StatsManager — preferred stats source
         # Persistent cache for real ESP string counts (invalidated by mtime)
         self._counts_cache_path = translation_cache.parent / "_string_counts.json"
         self._cache: dict[str, ModInfo] = {}
+        self._folder_to_dir: dict[str, Path] = {}  # folder_name → which mods_dir it lives in
         self._scanned_at: float = 0.0
 
     _SCAN_TTL = 60  # seconds before a full re-scan is forced
 
     def scan_all(self) -> list[ModInfo]:
-        """Full scan of mods_dir.  Returns sorted list of ModInfo.
+        """Full scan of all mods_dirs.  Returns sorted list of ModInfo.
         Results are cached for SCAN_TTL seconds to avoid hammering the filesystem
         on every page request (3 789 folders × filesystem I/O is expensive).
         """
         now = time.time()
         if self._cache and (now - self._scanned_at) < self._SCAN_TTL:
             mods = sorted(self._cache.values(), key=lambda m: m.folder_name)
-            if self._repo:
+            if self._stats_mgr:
+                self._patch_stats_from_stats_mgr(mods)
+            elif self._repo:
                 self._patch_stats_from_db(mods)
             return mods
 
-        if not self.mods_dir.is_dir():
+        active_dirs = [d for d in self.mods_dirs if d.is_dir()]
+        if not active_dirs:
             return []
 
         trans_cache  = self._load_translation_cache()
         counts_cache = self._load_counts_cache()   # load once, not once-per-mod
-        result: list[ModInfo] = []
 
-        for folder in sorted(self.mods_dir.iterdir()):
-            if not folder.is_dir():
-                continue
-            try:
-                info = self._scan_mod(folder, trans_cache, counts_cache)
-                result.append(info)
-                self._cache[folder.name] = info
-            except Exception as exc:
-                log.warning(f"scan_mod failed for {folder.name}: {exc}")
+        for mods_dir in active_dirs:
+            for folder in sorted(mods_dir.iterdir()):
+                if not folder.is_dir():
+                    continue
+                if folder.name in self._cache:
+                    # Folder from an earlier mods_dir wins (first-dir priority)
+                    continue
+                try:
+                    info = self._scan_mod(folder, trans_cache, counts_cache)
+                    self._cache[folder.name] = info
+                    self._folder_to_dir[folder.name] = mods_dir
+                except Exception as exc:
+                    log.warning(f"scan_mod failed for {folder.name}: {exc}")
 
         self._scanned_at = now
-        return result
+        return sorted(self._cache.values(), key=lambda m: m.folder_name)
 
     def invalidate(self, folder_name: str | None = None) -> None:
         """Bust the scan cache.  Pass a mod folder name to evict just one entry,
         or None to force a full re-scan on next call to scan_all()."""
         if folder_name:
             self._cache.pop(folder_name, None)
+            self._folder_to_dir.pop(folder_name, None)
         else:
             self._cache.clear()
+            self._folder_to_dir.clear()
             self._scanned_at = 0.0
+
+    def get_mod_path(self, folder_name: str) -> Optional[Path]:
+        """Return the full path to a mod folder, searching all mods_dirs."""
+        # Check in-memory mapping first (populated by scan_all)
+        if folder_name in self._folder_to_dir:
+            return self._folder_to_dir[folder_name] / folder_name
+        # Search all mods_dirs
+        for mods_dir in self.mods_dirs:
+            p = mods_dir / folder_name
+            if p.is_dir():
+                self._folder_to_dir[folder_name] = mods_dir
+                return p
+        return None
 
     def get_mod(self, folder_name: str) -> Optional[ModInfo]:
         if folder_name in self._cache:
             info = self._cache[folder_name]
-            if self._repo:
+            if self._stats_mgr:
+                self._patch_stats_from_stats_mgr([info])
+            elif self._repo:
                 self._patch_mod_stats_from_db(info)
             return info
-        folder = self.mods_dir / folder_name
-        if folder.is_dir():
-            trans_cache  = self._load_translation_cache()
-            counts_cache = self._load_counts_cache()
-            info = self._scan_mod(folder, trans_cache, counts_cache)
-            self._cache[folder_name] = info
-            return info
+        # Search all mods_dirs
+        trans_cache  = self._load_translation_cache()
+        counts_cache = self._load_counts_cache()
+        for mods_dir in self.mods_dirs:
+            folder = mods_dir / folder_name
+            if folder.is_dir():
+                info = self._scan_mod(folder, trans_cache, counts_cache)
+                self._cache[folder_name] = info
+                self._folder_to_dir[folder_name] = mods_dir
+                if self._stats_mgr:
+                    self._patch_stats_from_stats_mgr([info])
+                elif self._repo:
+                    self._patch_mod_stats_from_db(info)
+                return info
         return None
 
     def get_mod_strings(self, folder_name: str,
@@ -150,8 +191,8 @@ class ModScanner:
         This preserves original English text even after translations have been applied
         back to the ESP binary (which would otherwise show Russian as "original").
         """
-        folder = self.mods_dir / folder_name
-        if not folder.is_dir():
+        folder = self.get_mod_path(folder_name)
+        if folder is None or not folder.is_dir():
             return []
 
         trans_cache = self._load_translation_cache()
@@ -526,6 +567,25 @@ class ModScanner:
 
         return info
 
+    def _patch_stats_from_stats_mgr(self, mods: list[ModInfo]) -> None:
+        """Bulk-patch translation stats from StatsManager (materialized cache)."""
+        try:
+            all_stats = self._stats_mgr.get_all_stats()
+        except Exception:
+            return
+        for info in mods:
+            ms = all_stats.get(info.folder_name)
+            if ms:
+                # Convert ModStats dataclass to dict compatible with _apply_stats
+                self._apply_stats(info, {
+                    "translated":   ms.translated,
+                    "needs_review": ms.needs_review,
+                    "pending":      ms.pending,
+                })
+                # Override status from StatsManager's computed value
+                if ms.status not in ("no_strings", "unknown"):
+                    info.status = ms.status  # type: ignore[assignment]
+
     def _patch_stats_from_db(self, mods: list[ModInfo]) -> None:
         """Bulk-patch translation stats on cached ModInfo objects from SQLite."""
         try:
@@ -581,15 +641,22 @@ class ModScanner:
         mod_name: if given, scan only that specific mod folder.
         Returns a summary dict.
         """
-        if not self.mods_dir.is_dir():
+        active_dirs = [d for d in self.mods_dirs if d.is_dir()]
+        if not active_dirs:
             return {"scanned": 0, "esp_files": 0, "total_strings": 0,
                     "bsa_strings": 0, "swf_strings": 0}
 
         if mod_name:
-            folder = self.mods_dir / mod_name
-            folders = [folder] if folder.is_dir() else []
+            mod_path = self.get_mod_path(mod_name)
+            folders = [mod_path] if mod_path and mod_path.is_dir() else []
         else:
-            folders = [f for f in sorted(self.mods_dir.iterdir()) if f.is_dir()]
+            seen: set[str] = set()
+            folders = []
+            for mods_dir in active_dirs:
+                for f in sorted(mods_dir.iterdir()):
+                    if f.is_dir() and f.name not in seen:
+                        folders.append(f)
+                        seen.add(f.name)
         counts_cache = self._load_counts_cache()
         counts_dirty = False
         n_esp = 0

@@ -1,5 +1,5 @@
 import { apiFetch, apiPost } from './client'
-import type { ModInfo, StringEntry } from '@/types'
+import type { ModInfo, StringEntry, ReservationInfo, StringHistoryEntry } from '@/types'
 
 interface ModsListParams {
   status?: string
@@ -12,6 +12,9 @@ interface ModStringsParams {
   q?: string
   page?: number
   per?: number
+  sort_by?: string
+  sort_dir?: string
+  rec_type?: string
 }
 
 interface ModStringsResponse {
@@ -42,6 +45,9 @@ export const modsApi = {
     if (params.q) qs.set('q', params.q)
     if (params.page !== undefined) qs.set('page', String(params.page))
     if (params.per !== undefined) qs.set('per', String(params.per))
+    if (params.sort_by) qs.set('sort_by', params.sort_by)
+    if (params.sort_dir) qs.set('sort_dir', params.sort_dir)
+    if (params.rec_type) qs.set('rec_type', params.rec_type)
     const query = qs.toString()
     return apiFetch<ModStringsResponse>(
       `/mods/${encodeURIComponent(name)}/strings${query ? `?${query}` : ''}`,
@@ -98,4 +104,52 @@ export const modsApi = {
     apiPost<{ ok: boolean; reset: number }>(
       `/api/mods/${encodeURIComponent(name)}/reset-translations`,
     ),
+
+  getReservations: (name: string) =>
+    apiFetch<{ reservations: ReservationInfo[] }>(
+      `/api/mods/${encodeURIComponent(name)}/reservations`,
+    ),
+
+  getStringHistory: (stringId: number) =>
+    apiFetch<{ history: StringHistoryEntry[] }>(
+      `/api/strings/${stringId}/history`,
+    ),
+
+  approveString: (stringId: number) =>
+    apiPost<{ ok: boolean; quality_score: number | null }>(
+      `/api/strings/${stringId}/approve`,
+    ),
+
+  approveBulk: (modName: string, ids: number[]) =>
+    apiPost<{ ok: boolean; approved: number }>(
+      `/api/mods/${encodeURIComponent(modName)}/strings/approve-bulk`,
+      { ids },
+    ),
+
+  getConflicts: (modName: string) =>
+    apiFetch<{ original: string; translations: string; variant_count: number; occurrence_count: number }[]>(
+      `/api/mods/${encodeURIComponent(modName)}/strings/conflicts`,
+    ),
+
+  getRecTypes: (name: string) =>
+    apiFetch<{ rec_types: string[] }>(
+      `/mods/${encodeURIComponent(name)}/rec_types`,
+      { headers: { Accept: 'application/json' } },
+    ),
+
+  replaceStrings: (
+    name: string,
+    body: { find: string; replace: string; esp?: string; scope?: string },
+  ) => apiPost<{ ok: boolean; count: number }>(
+    `/mods/${encodeURIComponent(name)}/strings/replace`,
+    body,
+  ),
+
+  syncDuplicates: (
+    name: string,
+    body: { original: string; translation: string; status: string; quality_score: number | null },
+  ) => apiPost<{ ok: boolean; count: number }>(
+    `/mods/${encodeURIComponent(name)}/strings/sync-duplicates`,
+    body,
+  ),
 }

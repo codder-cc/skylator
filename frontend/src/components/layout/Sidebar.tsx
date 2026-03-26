@@ -10,9 +10,11 @@ import {
   Wrench,
   ScrollText,
   Cpu,
+  PackageOpen,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useMachinesStore } from '@/stores/machinesStore'
+import { useJobsStore } from '@/stores/jobsStore'
 
 interface NavItem {
   to: string
@@ -24,6 +26,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { to: '/',           label: 'Dashboard',   icon: <LayoutDashboard className="w-4 h-4" />, exact: true },
   { to: '/mods',       label: 'Mods',        icon: <Layers className="w-4 h-4" /> },
+  { to: '/single',    label: 'Single Mod',  icon: <PackageOpen className="w-4 h-4" /> },
   { to: '/jobs',       label: 'Jobs',        icon: <Briefcase className="w-4 h-4" /> },
   { to: '/servers',    label: 'Servers',     icon: <Server className="w-4 h-4" /> },
   { to: '/config',     label: 'Config',      icon: <Settings className="w-4 h-4" /> },
@@ -37,6 +40,10 @@ export function Sidebar() {
   const routerState = useRouterState()
   const pathname = routerState.location.pathname
   const mode = useMachinesStore((s) => s.mode)
+  const jobs = useJobsStore((s) => s.jobs)
+  const runningCount = Object.values(jobs).filter(
+    (j) => j.status === 'running' || j.status === 'pending',
+  ).length
 
   function isActive(item: NavItem): boolean {
     if (item.exact) return pathname === item.to
@@ -75,6 +82,11 @@ export function Sidebar() {
                 {item.icon}
               </span>
               {item.label}
+              {item.to === '/jobs' && runningCount > 0 && (
+                <span className="ml-auto flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-success text-bg-base text-[10px] font-bold leading-none">
+                  {runningCount}
+                </span>
+              )}
             </Link>
           )
         })}

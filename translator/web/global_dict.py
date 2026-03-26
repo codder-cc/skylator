@@ -31,8 +31,15 @@ class GlobalTextDict:
         gd.rebuild()                       # full rescan (slow, run in thread)
     """
 
-    def __init__(self, mods_dir: Path, cache_path: Path) -> None:
-        self.mods_dir   = mods_dir
+    def __init__(self, mods_dir: Path | None = None, cache_path: Path = Path("cache/_global_text_dict.json"),
+                 mods_dirs: list | None = None) -> None:
+        if mods_dirs is not None:
+            self.mods_dirs = [Path(d) for d in mods_dirs if d]
+        elif mods_dir is not None:
+            self.mods_dirs = [Path(mods_dir)]
+        else:
+            self.mods_dirs = []
+        self.mods_dir   = self.mods_dirs[0] if self.mods_dirs else Path("mods")
         self.cache_path = cache_path
         self._dict: dict[str, str] = {}
         self._loaded = False
@@ -99,8 +106,12 @@ class GlobalTextDict:
         progress_cb(done, total) — called periodically if provided.
         Returns number of unique entries.
         """
-        log.info("GlobalTextDict: rebuilding from %s ...", self.mods_dir)
-        all_json = list(self.mods_dir.rglob("*.trans.json"))
+        active_dirs = [d for d in self.mods_dirs if d.is_dir()]
+        log.info("GlobalTextDict: rebuilding from %d dir(s): %s",
+                 len(active_dirs), [str(d) for d in active_dirs])
+        all_json: list[Path] = []
+        for d in active_dirs:
+            all_json.extend(d.rglob("*.trans.json"))
         total = len(all_json)
         log.info("GlobalTextDict: scanning %d .trans.json files", total)
 
@@ -123,7 +134,9 @@ class GlobalTextDict:
                 pass
 
         # Also scan MCM translation pairs (*_english.txt + *_russian.txt)
-        all_en_mcm = list(self.mods_dir.rglob("interface/translations/*_english.txt"))
+        all_en_mcm: list[Path] = []
+        for d in active_dirs:
+            all_en_mcm.extend(d.rglob("interface/translations/*_english.txt"))
         log.info("GlobalTextDict: scanning %d MCM english files", len(all_en_mcm))
         for en_path in all_en_mcm:
             stem   = en_path.stem.replace("_english", "")

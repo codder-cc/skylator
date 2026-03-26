@@ -34,6 +34,10 @@ import { StatusBadge } from '@/components/shared/StatusBadge'
 import { ProgressBar } from '@/components/shared/ProgressBar'
 import { TimeAgo } from '@/components/shared/TimeAgo'
 import { useMachines } from '@/hooks/useMachines'
+import {
+  TRANSLATION_MODES, DEPLOY_MODES,
+  type TranslationMode, type DeployMode,
+} from '@/lib/constants'
 
 export const Route = createFileRoute('/mods/$modName/')({
   component: ModDetailPage,
@@ -436,11 +440,14 @@ function ModDetailPage() {
   const navigate = useNavigate()
   const machines = useMachines()
   const queryClient = useQueryClient()
+  const [translationMode, setTranslationMode] = useState<TranslationMode>('untranslated')
+  const [deployMode, setDeployMode] = useState<DeployMode>('all')
+  const [showConflicts, setShowConflicts] = useState(false)
 
   const { data: mod, isLoading } = useQuery({
     queryKey: QK.mod(decodedName),
     queryFn: () => modsApi.get(decodedName),
-    staleTime: 30_000,
+    staleTime: 5_000,
   })
 
   const { data: allJobs = [] } = useQuery({
@@ -457,17 +464,31 @@ function ModDetailPage() {
     .sort((a, b) => b.created_at - a.created_at)
     .slice(0, 5)
 
+  const { data: conflicts, isLoading: conflictsLoading, refetch: refetchConflicts } = useQuery({
+    queryKey: ['mods', decodedName, 'conflicts'],
+    queryFn: () => modsApi.getConflicts(decodedName),
+    enabled: showConflicts,
+    staleTime: 30_000,
+  })
+
   // ── Mutations ──────────────────────────────────────────────────────────────
 
   function makeJobMutation(type: string, extra?: Record<string, unknown>) {
     return useMutation({ // eslint-disable-line react-hooks/rules-of-hooks
-      mutationFn: () =>
-        jobsApi.create({
+      mutationFn: () => {
+        const isTranslate = type === 'translate_mod'
+        const isApply     = type === 'apply_mod'
+        return jobsApi.create({
           type,
           mods: [decodedName],
-          options: { machines },
+          options: {
+            machines,
+            ...(isTranslate && { translation_mode: translationMode }),
+            ...(isApply     && { deploy_mode: deployMode }),
+          },
           ...extra,
-        }),
+        })
+      },
       onSuccess: (data) => {
         if (data.ok && data.job_id) {
           queryClient.invalidateQueries({ queryKey: QK.jobs() })
@@ -477,13 +498,14 @@ function ModDetailPage() {
     })
   }
 
-  const scanMut           = makeJobMutation('scan')
-  const translateAllMut   = makeJobMutation('translate_mod')
-  const translateEspMut   = makeJobMutation('translate_mod', { scope: 'esp' })
-  const translateBsaMut   = makeJobMutation('translate_mod', { scope: 'bsa' })
-  const validateMut       = makeJobMutation('validate')
-  const applyMut          = makeJobMutation('apply_mod')
-  const fetchNexusMut     = makeJobMutation('fetch_nexus')
+  const scanMut            = makeJobMutation('scan')
+  const translateAllMut    = makeJobMutation('translate_mod')
+  const translateEspMut    = makeJobMutation('translate_mod', { scope: 'esp' })
+  const translateBsaMut    = makeJobMutation('translate_mod', { scope: 'bsa' })
+  const validateMut        = makeJobMutation('validate')
+  const applyMut           = makeJobMutation('apply_mod')
+  const applyBsaMut        = makeJobMutation('translate_bsa')
+  const fetchNexusMut      = makeJobMutation('fetch_nexus')
   const recomputeScoresMut = makeJobMutation('recompute_scores')
 
   const fixUntranslatableMut = useMutation({
@@ -496,7 +518,10 @@ function ModDetailPage() {
 
   const translateForceMut = useMutation({ // eslint-disable-line react-hooks/rules-of-hooks
     mutationFn: () =>
-      jobsApi.create({ type: 'translate_mod', mods: [decodedName], options: { machines, force: true } }),
+      jobsApi.create({
+        type: 'translate_mod', mods: [decodedName],
+        options: { machines, force: true, translation_mode: 'force_all' },
+      }),
     onSuccess: (data) => {
       if (data.ok && data.job_id) {
         queryClient.invalidateQueries({ queryKey: QK.jobs() })
@@ -528,8 +553,10 @@ function ModDetailPage() {
         {
           label: 'Nexus',
           icon: <Globe size={16} />,
-          status: 'inactive',
-          tooltip: 'Fetch Nexus Mods description for AI context',
+          status: mod.nexus_mod_id !== null ? 'done' : 'inactive',
+          tooltip: mod.nexus_mod_id !== null
+            ? `Nexus ID ${mod.nexus_mod_id} — re-fetch to refresh context`
+            : 'Fetch Nexus Mods description for AI context',
           onClick: () => fetchNexusMut.mutate(),
           isPending: fetchNexusMut.isPending,
         },
@@ -544,19 +571,29 @@ function ModDetailPage() {
         {
           label: 'Validate',
           icon: <ShieldCheck size={16} />,
-          status: 'inactive',
-          tooltip: 'Run validation — checks token preservation and quality scores',
+          status: mod.needs_review_strings > 0 ? 'partial' : mod.pct >= 100 ? 'done' : 'inactive',
+          tooltip: mod.needs_review_strings > 0
+            ? `${mod.needs_review_strings} strings need review`
+            : 'Run validation — checks token preservation and quality scores',
           onClick: () => validateMut.mutate(),
           isPending: validateMut.isPending,
         },
         {
           label: 'Apply ESP',
           icon: <Cpu size={16} />,
-          status: 'inactive',
+          status: mod.status === 'done' ? 'done' : mod.pct > 0 ? 'partial' : 'inactive',
           tooltip: 'Apply translations to ESP binary files',
           onClick: () => applyMut.mutate(),
           isPending: applyMut.isPending,
         },
+        ...(mod.bsa_files.length > 0 ? [{
+          label: 'Apply BSA',
+          icon: <Archive size={16} />,
+          status: 'inactive' as const,
+          tooltip: `Apply BSA/MCM/SWF translations (${mod.bsa_files.length} BSA file${mod.bsa_files.length !== 1 ? 's' : ''})`,
+          onClick: () => applyBsaMut.mutate(),
+          isPending: applyBsaMut.isPending,
+        }] : []),
       ]
     : []
 
@@ -658,6 +695,64 @@ function ModDetailPage() {
         />
       </div>
 
+      {/* Conflicts panel */}
+      {mod.translated_strings > 0 && (
+        <div className="card overflow-hidden">
+          <button
+            onClick={() => setShowConflicts((v) => !v)}
+            className="w-full flex items-center justify-between px-4 py-3 hover:bg-bg-card2/40 transition-colors"
+          >
+            <div className="flex items-center gap-2 text-sm font-semibold text-text-main">
+              <AlertTriangle size={14} className="text-warning/70" />
+              Translation Conflicts
+              {conflicts && conflicts.length > 0 && (
+                <span className="ml-1 text-xs bg-warning/20 text-warning px-1.5 py-0.5 rounded font-medium">
+                  {conflicts.length}
+                </span>
+              )}
+            </div>
+            {showConflicts ? <ChevronUp size={14} className="text-text-muted" /> : <ChevronDown size={14} className="text-text-muted" />}
+          </button>
+          {showConflicts && (
+            <div className="border-t border-border-subtle px-4 py-3">
+              {conflictsLoading ? (
+                <div className="text-xs text-text-muted italic">Scanning for conflicts…</div>
+              ) : !conflicts || conflicts.length === 0 ? (
+                <div className="text-xs text-success flex items-center gap-1.5">
+                  <CheckCircle size={12} />
+                  No conflicts — all originals have consistent translations.
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {conflicts.map((c, i) => (
+                    <div key={i} className="text-xs border border-warning/20 rounded p-2 bg-warning/5">
+                      <div className="text-text-muted/70 truncate mb-1" title={c.original}>
+                        <span className="font-medium text-text-main">{c.variant_count} variants</span>
+                        {' · '}
+                        {c.occurrence_count} strings
+                        {' · '}
+                        <span className="font-mono">{c.original.slice(0, 60)}{c.original.length > 60 ? '…' : ''}</span>
+                      </div>
+                      <div className="text-warning/80 font-mono text-[11px] leading-relaxed">
+                        {c.translations.split(',').map((t, ti) => (
+                          <div key={ti} className="truncate" title={t}>→ {t.trim()}</div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                  <button
+                    onClick={() => void refetchConflicts()}
+                    className="text-xs text-accent hover:underline mt-1"
+                  >
+                    Refresh
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
         {/* Files section */}
         <div className="card p-4 space-y-3">
@@ -697,6 +792,36 @@ function ModDetailPage() {
         {/* Actions card */}
         <div className="card p-4 space-y-3">
           <h2 className="text-sm font-semibold text-text-main uppercase tracking-wide">Actions</h2>
+
+          {/* Mode selectors */}
+          <div className="grid grid-cols-2 gap-2">
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] text-text-muted uppercase tracking-wide">Translation Mode</label>
+              <select
+                value={translationMode}
+                onChange={(e) => setTranslationMode(e.target.value as TranslationMode)}
+                className="bg-bg-card2 border border-border-subtle rounded px-2 py-1 text-xs text-text-main focus:outline-none focus:border-accent transition-colors"
+              >
+                <option value="untranslated">Untranslated only</option>
+                <option value="needs_review">Needs Review only</option>
+                <option value="force_all">Force All</option>
+              </select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] text-text-muted uppercase tracking-wide">Deploy Mode</label>
+              <select
+                value={deployMode}
+                onChange={(e) => setDeployMode(e.target.value as DeployMode)}
+                className="bg-bg-card2 border border-border-subtle rounded px-2 py-1 text-xs text-text-main focus:outline-none focus:border-accent transition-colors"
+              >
+                <option value="all">Apply All</option>
+                <option value="skip_untranslated">Skip Untranslated</option>
+                <option value="skip_partial">Skip Partial</option>
+                <option value="skip_issues">Skip with Issues</option>
+              </select>
+            </div>
+          </div>
+
           <div className="space-y-2">
             <ActionButton
               onClick={() => translateAllMut.mutate()}

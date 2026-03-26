@@ -1,15 +1,16 @@
-import { createFileRoute, Link } from '@tanstack/react-router'
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { QK } from '@/lib/queryKeys'
 import { jobsApi } from '@/api/jobs'
 import { useJobStream } from '@/hooks/useJobStream'
 import { StatusBadge } from '@/components/shared/StatusBadge'
+import { SourceBadge } from '@/components/shared/SourceBadge'
 import { ProgressBar } from '@/components/shared/ProgressBar'
 import { LogViewer } from '@/components/shared/LogViewer'
 import { TimeAgo } from '@/components/shared/TimeAgo'
 import { JOB_TERMINAL_STATUSES } from '@/lib/constants'
 import { cn } from '@/lib/utils'
-import type { WorkerStatus } from '@/types'
+import type { WorkerStatus, StringUpdate } from '@/types'
 import {
   ChevronLeft,
   Clock,
@@ -19,6 +20,7 @@ import {
   Activity,
   XCircle,
   RefreshCw,
+  SkipForward,
 } from 'lucide-react'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -45,8 +47,20 @@ function MetaCell({ label, children }: { label: string; children: React.ReactNod
 
 // ── Workers table ─────────────────────────────────────────────────────────────
 
-function WorkersTable({ workers }: { workers: WorkerStatus[] }) {
+function WorkersTable({ workers, updates }: { workers: WorkerStatus[]; updates: StringUpdate[] }) {
   if (workers.length === 0) return null
+
+  // Avg quality score per worker from string_updates
+  const workerScores: Record<string, { sum: number; count: number }> = {}
+  for (const u of updates) {
+    if (u.machine_label && u.quality_score != null) {
+      const w = workerScores[u.machine_label] ?? { sum: 0, count: 0 }
+      w.sum += u.quality_score
+      w.count++
+      workerScores[u.machine_label] = w
+    }
+  }
+
   return (
     <div className="card p-4">
       <h3 className="text-xs font-semibold text-text-muted mb-3 uppercase tracking-wide flex items-center gap-2">
@@ -59,36 +73,53 @@ function WorkersTable({ workers }: { workers: WorkerStatus[] }) {
             <tr className="text-text-muted text-xs border-b border-border-subtle">
               <th className="text-left pb-2 font-medium">Machine</th>
               <th className="text-right pb-2 font-medium">Strings done</th>
+              <th className="text-right pb-2 font-medium">Avg score</th>
               <th className="text-right pb-2 pr-4 font-medium">tok/s</th>
               <th className="text-left pb-2 font-medium">Current string</th>
             </tr>
           </thead>
           <tbody>
-            {workers.map((w) => (
-              <tr key={w.label} className={cn('border-b border-border-subtle/30 last:border-0', !w.alive && 'opacity-40')}>
-                <td className="py-2 pr-4 whitespace-nowrap">
-                  <span className={cn(
-                    'inline-block w-2 h-2 rounded-full mr-2 shrink-0',
-                    w.alive ? 'bg-success animate-pulse' : 'bg-text-muted',
-                  )} />
-                  <span className="font-mono text-xs text-text-main">{w.label}</span>
-                </td>
-                <td className="py-2 text-right font-mono text-xs tabular-nums text-text-muted pr-2">
-                  {w.done}
-                </td>
-                <td className="py-2 text-right pr-4">
-                  <span className={cn(
-                    'font-mono text-xs tabular-nums font-semibold',
-                    w.tps > 0 ? 'text-accent' : 'text-text-muted/50',
-                  )}>
-                    {w.tps > 0 ? w.tps.toFixed(1) : '—'}
-                  </span>
-                </td>
-                <td className="py-2 text-xs text-text-muted truncate max-w-xs">
-                  {w.current_text || <span className="opacity-40 italic">idle</span>}
-                </td>
-              </tr>
-            ))}
+            {workers.map((w) => {
+              const sc = workerScores[w.label]
+              const avgScore = sc && sc.count > 0 ? Math.round(sc.sum / sc.count) : null
+              return (
+                <tr key={w.label} className={cn('border-b border-border-subtle/30 last:border-0', !w.alive && 'opacity-40')}>
+                  <td className="py-2 pr-4 whitespace-nowrap">
+                    <span className={cn(
+                      'inline-block w-2 h-2 rounded-full mr-2 shrink-0',
+                      w.alive ? 'bg-success animate-pulse' : 'bg-text-muted',
+                    )} />
+                    <span className="font-mono text-xs text-text-main">{w.label}</span>
+                  </td>
+                  <td className="py-2 text-right font-mono text-xs tabular-nums text-text-muted pr-2">
+                    {w.done}
+                  </td>
+                  <td className="py-2 text-right pr-2">
+                    {avgScore != null ? (
+                      <span className={cn(
+                        'font-mono text-xs tabular-nums font-semibold',
+                        avgScore >= 80 ? 'text-success' : avgScore >= 50 ? 'text-warning' : 'text-danger',
+                      )}>
+                        {avgScore}
+                      </span>
+                    ) : (
+                      <span className="text-text-muted/40 text-xs">—</span>
+                    )}
+                  </td>
+                  <td className="py-2 text-right pr-4">
+                    <span className={cn(
+                      'font-mono text-xs tabular-nums font-semibold',
+                      w.tps > 0 ? 'text-accent' : 'text-text-muted/50',
+                    )}>
+                      {w.tps > 0 ? w.tps.toFixed(1) : '—'}
+                    </span>
+                  </td>
+                  <td className="py-2 text-xs text-text-muted truncate max-w-xs">
+                    {w.current_text || <span className="opacity-40 italic">idle</span>}
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
@@ -195,7 +226,81 @@ function TimingCard({ job }: { job: ReturnType<typeof useQuery<Awaited<ReturnTyp
   )
 }
 
-// ── Cancel button ─────────────────────────────────────────────────────────────
+// ── String updates panel ──────────────────────────────────────────────────────
+
+const SOURCE_PILL: Record<string, string> = {
+  ai:             'bg-violet-500/15 text-violet-300',
+  cache:          'bg-sky-500/15 text-sky-300',
+  dict:           'bg-teal-500/15 text-teal-300',
+  manual:         'bg-amber-500/15 text-amber-300',
+  untranslatable: 'bg-slate-500/15 text-slate-300',
+}
+
+function SourceBreakdown({ updates }: { updates: StringUpdate[] }) {
+  const counts: Record<string, number> = {}
+  for (const u of updates) {
+    const s = u.source ?? 'ai'
+    counts[s] = (counts[s] ?? 0) + 1
+  }
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      {Object.entries(counts).map(([src, n]) => (
+        <span key={src} className={cn('text-[10px] px-1.5 py-0.5 rounded font-medium', SOURCE_PILL[src] ?? 'bg-bg-card2 text-text-muted')}>
+          {n} {src}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function StringUpdatesPanel({ updates }: { updates: StringUpdate[] }) {
+  if (updates.length === 0) return null
+  // Show most recent 50
+  const recent = updates.slice(-50).reverse()
+  return (
+    <div className="card p-4">
+      <div className="flex items-center gap-3 mb-3 flex-wrap">
+        <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wide flex items-center gap-2">
+          <Hash size={12} />
+          Recent Translations ({updates.length} total)
+        </h3>
+        <SourceBreakdown updates={updates} />
+      </div>
+      <div className="overflow-x-auto max-h-64 overflow-y-auto">
+        <table className="w-full text-xs">
+          <thead className="sticky top-0 bg-bg-card">
+            <tr className="text-text-muted/60 uppercase text-[10px] tracking-wide border-b border-border-subtle">
+              <th className="text-left px-2 py-1.5">Key</th>
+              <th className="text-left px-2 py-1.5">Source</th>
+              <th className="text-left px-2 py-1.5">Machine</th>
+              <th className="text-left px-2 py-1.5">Translation</th>
+            </tr>
+          </thead>
+          <tbody>
+            {recent.map((u, i) => (
+              <tr key={i} className="border-t border-border-subtle/30 hover:bg-bg-card2/20">
+                <td className="px-2 py-1.5 font-mono text-text-muted/70 max-w-[140px] truncate" title={u.key}>
+                  {u.key.split(':').slice(-1)[0] ?? u.key}
+                </td>
+                <td className="px-2 py-1.5">
+                  <SourceBadge source={u.source} />
+                </td>
+                <td className="px-2 py-1.5 text-text-muted/60 font-mono whitespace-nowrap">
+                  {u.machine_label ?? '—'}
+                </td>
+                <td className="px-2 py-1.5 text-text-main max-w-[300px] truncate" title={u.translation}>
+                  {u.translation || <span className="italic text-text-muted/40">empty</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ── Cancel / Resume buttons ───────────────────────────────────────────────────
 
 function CancelButton({ jobId }: { jobId: string }) {
   const qc = useQueryClient()
@@ -212,6 +317,31 @@ function CancelButton({ jobId }: { jobId: string }) {
     >
       {mut.isPending ? <RefreshCw size={11} className="animate-spin" /> : <XCircle size={11} />}
       Cancel
+    </button>
+  )
+}
+
+function ResumeButton({ jobId }: { jobId: string }) {
+  const navigate = useNavigate()
+  const qc = useQueryClient()
+  const mut = useMutation({
+    mutationFn: () => jobsApi.resume(jobId),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: QK.jobs() })
+      if (data.ok && data.job_id) {
+        navigate({ to: '/jobs/$jobId', params: { jobId: data.job_id } })
+      }
+    },
+  })
+
+  return (
+    <button
+      onClick={() => mut.mutate()}
+      disabled={mut.isPending}
+      className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-accent/20 text-accent border border-accent/30 hover:bg-accent/30 disabled:opacity-50 transition-colors"
+    >
+      {mut.isPending ? <RefreshCw size={11} className="animate-spin" /> : <SkipForward size={11} />}
+      Resume
     </button>
   )
 }
@@ -255,6 +385,9 @@ function JobDetailPage() {
         </h1>
         <StatusBadge status={job.status} />
         {job.status === 'running' && <CancelButton jobId={jobId} />}
+        {(job.status === 'failed' || job.status === 'cancelled') && job.job_type === 'translate_mod' && (
+          <ResumeButton jobId={jobId} />
+        )}
       </div>
 
       {/* Meta grid */}
@@ -280,7 +413,10 @@ function JobDetailPage() {
       )}
 
       {/* Workers */}
-      <WorkersTable workers={job.worker_updates ?? []} />
+      <WorkersTable workers={job.worker_updates ?? []} updates={job.string_updates ?? []} />
+
+      {/* String updates */}
+      <StringUpdatesPanel updates={job.string_updates ?? []} />
 
       {/* Error */}
       {job.error && (

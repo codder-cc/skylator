@@ -2,6 +2,7 @@
 from __future__ import annotations
 import logging
 from flask import Blueprint, current_app, jsonify, request
+from translator.web.routes.utils import get_mod_path
 
 log = logging.getLogger(__name__)
 
@@ -22,14 +23,46 @@ def clear_setup_reports():
 
 @bp.route("/stats")
 def stats():
-    scanner = current_app.config["SCANNER"]
-    return jsonify(scanner.get_stats())
+    scanner   = current_app.config["SCANNER"]
+    base      = scanner.get_stats()
+    stats_mgr = current_app.config.get("STATS_MGR")
+    if stats_mgr:
+        try:
+            all_stats = stats_mgr.get_all_stats()
+            if all_stats:
+                translated    = sum(s.translated   for s in all_stats.values())
+                needs_review  = sum(s.needs_review for s in all_stats.values())
+                pending       = sum(s.pending       for s in all_stats.values())
+                mods_done     = sum(1 for s in all_stats.values() if s.status == "done")
+                mods_partial  = sum(1 for s in all_stats.values() if s.status == "partial")
+                mods_pending  = sum(1 for s in all_stats.values() if s.status == "pending")
+                total_str     = translated + needs_review + pending
+                base.update({
+                    "translated_strings":  translated,
+                    "pending_strings":     pending + needs_review,
+                    "needs_review":        needs_review,
+                    "pct_complete":        round(translated / max(total_str, 1) * 100, 1),
+                    "mods_translated":     mods_done,
+                    "mods_partial":        mods_partial,
+                    "mods_pending":        mods_pending,
+                })
+        except Exception:
+            pass
+    return jsonify(base)
 
 
 @bp.route("/mods")
 def mods():
     scanner = current_app.config["SCANNER"]
     mods    = scanner.scan_all()
+
+    status_filter = request.args.get("status", "")
+    q_filter      = request.args.get("q", "").lower()
+    if status_filter:
+        mods = [m for m in mods if m.status == status_filter]
+    if q_filter:
+        mods = [m for m in mods if q_filter in m.folder_name.lower()]
+
     return jsonify([m.to_dict() for m in mods])
 
 
@@ -75,6 +108,14 @@ def reset_translations(mod_name: str):
     if scanner:
         scanner.invalidate(mod_name)
 
+    stats_mgr = current_app.config.get("STATS_MGR")
+    if stats_mgr:
+        try:
+            stats_mgr.invalidate(mod_name)
+            stats_mgr.recompute(mod_name)
+        except Exception:
+            pass
+
     log.info("reset-translations %s: reset %d strings", mod_name, reset)
     return jsonify({"ok": True, "reset": reset})
 
@@ -116,6 +157,14 @@ def fix_untranslatable(mod_name: str):
         scanner = current_app.config.get("SCANNER")
         if scanner:
             scanner.invalidate(mod_name)
+
+        stats_mgr = current_app.config.get("STATS_MGR")
+        if stats_mgr:
+            try:
+                stats_mgr.invalidate(mod_name)
+                stats_mgr.recompute(mod_name)
+            except Exception:
+                pass
 
     log.info("fix-untranslatable %s: fixed %d strings", mod_name, fixed)
     return jsonify({"ok": True, "fixed": fixed})
@@ -210,14 +259,11 @@ def mod_context_api(mod_name: str):
     ?force=1  — bypass cache, regenerate auto_context via LLM.
     """
     import concurrent.futures
-    cfg = current_app.config.get("TRANSLATOR_CFG")
-    if not cfg:
-        return jsonify({"ok": False, "error": "No config"})
-
-    folder = cfg.paths.mods_dir / mod_name
-    if not folder.is_dir():
+    folder = get_mod_path(mod_name)
+    if not folder or not folder.is_dir():
         return jsonify({"ok": False, "error": "Mod not found"}), 404
 
+    cfg = current_app.config.get("TRANSLATOR_CFG")
     force = request.args.get("force", "").lower() in ("1", "true", "yes")
 
     # Custom context from context.txt
@@ -259,12 +305,11 @@ def mod_nexus_raw(mod_name: str):
     """Return the raw Nexus mod description from disk cache (no API call).
     Returns {ok, mod_id, name, description, fetched_at} or {ok:false, error}.
     """
-    cfg = current_app.config.get("TRANSLATOR_CFG")
-    if not cfg:
-        return jsonify({"ok": False, "error": "No config"})
-
     import configparser, json as _json, time as _time
-    folder = cfg.paths.mods_dir / mod_name
+    cfg    = current_app.config.get("TRANSLATOR_CFG")
+    folder = get_mod_path(mod_name)
+    if not folder:
+        return jsonify({"ok": False, "error": "Mod not found"}), 404
     meta   = folder / "meta.ini"
 
     mod_id = None
@@ -310,8 +355,8 @@ def mod_nexus_fetch(mod_name: str):
     if not cfg:
         return jsonify({"ok": False, "error": "No config"})
 
-    folder = cfg.paths.mods_dir / mod_name
-    if not folder.is_dir():
+    folder = get_mod_path(mod_name)
+    if not folder or not folder.is_dir():
         return jsonify({"ok": False, "error": "Mod folder not found"}), 404
 
     try:
@@ -361,8 +406,8 @@ def save_mod_context(mod_name: str):
     data = request.get_json() or {}
     context_text = data.get("context", "")
 
-    mod_dir = cfg.paths.mods_dir / mod_name
-    if not mod_dir.is_dir():
+    mod_dir = get_mod_path(mod_name)
+    if not mod_dir or not mod_dir.is_dir():
         return jsonify({"error": "Mod not found"}), 404
 
     context_file = mod_dir / "context.txt"
@@ -672,7 +717,9 @@ def translate_one_string(mod_name: str):
         log.info("[translate-one] %s | untranslatable — setting translation=original", key_str)
         _repo = current_app.config.get("STRING_REPO")
         from translator.web.workers import save_translation
-        save_translation(cfg.paths.mods_dir, mod_name, cfg.paths.translation_cache,
+        _mp = get_mod_path(mod_name)
+        save_translation(_mp.parent if _mp else cfg.paths.mods_dir, mod_name,
+                         cfg.paths.translation_cache,
                          esp_name, key_str, original, cfg=cfg, repo=_repo)
         return jsonify({"ok": True, "translation": original,
                         "quality_score": 100, "status": "translated",
@@ -698,7 +745,8 @@ def translate_one_string(mod_name: str):
                 log.info("[translate-one] %s | global dict hit → %s", key_str, existing[:80])
                 from translator.web.workers import save_translation
                 _repo = current_app.config.get("STRING_REPO")
-                save_translation(cfg.paths.mods_dir, mod_name,
+                _mp = get_mod_path(mod_name)
+                save_translation(_mp.parent if _mp else cfg.paths.mods_dir, mod_name,
                                  cfg.paths.translation_cache,
                                  esp_name, key_str, existing, cfg=cfg, repo=_repo)
                 try:
@@ -732,14 +780,14 @@ def translate_one_string(mod_name: str):
         xlogs.append(f"input: {original[:100]}")
         log.info("[translate-one] %s | input: %s", key_str, original[:200])
 
-        mod_folder = cfg.paths.mods_dir / mod_name
-        context    = ContextBuilder().get_mod_context(mod_folder, force=False)
+        mod_folder = get_mod_path(mod_name)
+        context    = ContextBuilder().get_mod_context(mod_folder, force=False) if mod_folder else ""
 
         # Build translation memory from existing .trans.json for consistency
         esp_stem   = Path(esp_name).stem
-        trans_json = cfg.paths.mods_dir / mod_name / (esp_stem + ".trans.json")
-        if not trans_json.exists():
-            hits = list((cfg.paths.mods_dir / mod_name).rglob(esp_stem + ".trans.json"))
+        trans_json = mod_folder / (esp_stem + ".trans.json") if mod_folder else None
+        if trans_json and not trans_json.exists():
+            hits = list(mod_folder.rglob(esp_stem + ".trans.json")) if mod_folder else []
             trans_json = hits[0] if hits else None
         tm_pairs: dict = {}
         if trans_json and trans_json.exists():
@@ -823,7 +871,8 @@ def translate_one_string(mod_name: str):
         log.info("[translate-one] %s | done — status=%s qs=%s", key_str, status, qs)
 
         repo = current_app.config.get("STRING_REPO")
-        save_translation(cfg.paths.mods_dir, mod_name,
+        _mp = get_mod_path(mod_name)
+        save_translation(_mp.parent if _mp else cfg.paths.mods_dir, mod_name,
                          cfg.paths.translation_cache,
                          esp_name, key_str, translated, cfg=cfg,
                          quality_score=qs, status=status, repo=repo)
@@ -1400,3 +1449,137 @@ def delete_checkpoint(checkpoint_id: str):
         return jsonify({"error": "DB not available"}), 503
     repo.delete_checkpoint(checkpoint_id)
     return jsonify({"ok": True})
+
+
+# ── String history + approve ─────────────────────────────────────────────────
+
+@bp.route("/strings/<int:string_id>/history")
+def get_string_history(string_id: int):
+    """Return per-string translation history."""
+    repo = current_app.config.get("STRING_REPO")
+    if not repo:
+        return jsonify({"error": "DB not available"}), 503
+    return jsonify(repo.get_history(string_id))
+
+
+@bp.route("/strings/<int:string_id>/approve", methods=["POST"])
+def approve_string(string_id: int):
+    """Promote a needs_review string to translated."""
+    repo = current_app.config.get("STRING_REPO")
+    if not repo:
+        return jsonify({"error": "DB not available"}), 503
+    cfg = current_app.config.get("TRANSLATOR_CFG")
+    mods_dir = cfg.paths.mods_dir if cfg else "."
+    from translator.data_manager.string_manager import StringManager
+    mgr = StringManager(repo, mods_dir)
+    mgr.approve_string(string_id)
+    return jsonify({"ok": True})
+
+
+@bp.route("/mods/<path:mod_name>/strings/approve-bulk", methods=["POST"])
+def approve_bulk_strings(mod_name: str):
+    """Approve multiple needs_review strings at once."""
+    repo = current_app.config.get("STRING_REPO")
+    if not repo:
+        return jsonify({"error": "DB not available"}), 503
+    cfg = current_app.config.get("TRANSLATOR_CFG")
+    mods_dir = cfg.paths.mods_dir if cfg else "."
+    data = request.get_json() or {}
+    ids: list[int] = data.get("ids", [])
+    if not ids:
+        return jsonify({"ok": True, "approved": 0})
+    from translator.data_manager.string_manager import StringManager
+    mgr = StringManager(repo, mods_dir)
+    approved = 0
+    for string_id in ids:
+        try:
+            mgr.approve_string(int(string_id))
+            approved += 1
+        except Exception:
+            pass
+    stats_mgr = current_app.config.get("STATS_MGR")
+    if stats_mgr and approved:
+        try:
+            stats_mgr.invalidate(mod_name)
+            stats_mgr.recompute(mod_name)
+        except Exception:
+            pass
+    scanner = current_app.config.get("SCANNER")
+    if scanner and approved:
+        scanner.invalidate(mod_name)
+    return jsonify({"ok": True, "approved": approved})
+
+
+@bp.route("/mods/<path:mod_name>/strings/conflicts")
+def get_string_conflicts(mod_name: str):
+    """Return strings where the same original has 2+ different translations in this mod."""
+    repo = current_app.config.get("STRING_REPO")
+    if not repo:
+        return jsonify({"error": "DB not available"}), 503
+    rows = repo.db.execute("""
+        SELECT original,
+               GROUP_CONCAT(DISTINCT translation) AS translations,
+               COUNT(DISTINCT translation)         AS variant_count,
+               COUNT(*)                            AS occurrence_count
+        FROM strings
+        WHERE mod_name = ?
+          AND status IN ('translated', 'needs_review')
+          AND translation != ''
+          AND translation != original
+        GROUP BY original
+        HAVING COUNT(DISTINCT translation) > 1
+        ORDER BY COUNT(DISTINCT translation) DESC, COUNT(*) DESC
+        LIMIT 200
+    """, (mod_name,)).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@bp.route("/stats/mods")
+def get_all_mod_stats():
+    """Return materialized stats for all mods from mod_stats_cache."""
+    stats_mgr = current_app.config.get("STATS_MGR")
+    if not stats_mgr:
+        return jsonify({"error": "StatsManager not available"}), 503
+    all_stats = stats_mgr.get_all_stats()
+    return jsonify({
+        name: {
+            "mod_name":       s.mod_name,
+            "total":          s.total,
+            "translated":     s.translated,
+            "pending":        s.pending,
+            "needs_review":   s.needs_review,
+            "untranslatable": s.untranslatable,
+            "reserved":       s.reserved,
+            "status":         s.status,
+            "last_computed_at": s.last_computed_at,
+        }
+        for name, s in all_stats.items()
+    })
+
+
+@bp.route("/stats/recompute", methods=["POST"])
+def recompute_stats():
+    """Trigger a stats recompute for one mod or all mods."""
+    stats_mgr = current_app.config.get("STATS_MGR")
+    if not stats_mgr:
+        return jsonify({"error": "StatsManager not available"}), 503
+    data     = request.get_json() or {}
+    mod_name = data.get("mod_name")
+    stats_mgr.invalidate(mod_name)
+    stats_mgr.recompute(mod_name)
+    return jsonify({"ok": True})
+
+
+@bp.route("/mods/<path:mod_name>/reservations")
+def get_mod_reservations(mod_name: str):
+    """Return active string reservations for a mod."""
+    repo = current_app.config.get("STRING_REPO")
+    if not repo:
+        return jsonify([])
+    rows = repo.db.execute("""
+        SELECT sr.id, sr.string_id, s.key, sr.machine_label, sr.job_id, sr.expires_at
+        FROM string_reservations sr
+        JOIN strings s ON sr.string_id = s.id
+        WHERE s.mod_name = ? AND sr.status = 'active'
+    """, (mod_name,)).fetchall()
+    return jsonify([dict(r) for r in rows])

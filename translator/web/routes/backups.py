@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from flask import (Blueprint, abort, current_app, jsonify,
                    redirect, request)
+from translator.web.routes.utils import get_mod_path
 
 log = logging.getLogger(__name__)
 
@@ -43,10 +44,10 @@ def create_backup():
 
     ts = time.strftime("%Y%m%d_%H%M%S")
     if mod_name:
-        src  = cfg.paths.mods_dir / mod_name
-        dest = backup_dir / f"{mod_name}__{ts}__{label}"
-        if not src.is_dir():
+        src  = get_mod_path(mod_name)
+        if not src or not src.is_dir():
             return jsonify({"error": "Mod not found"}), 404
+        dest = backup_dir / f"{mod_name}__{ts}__{label}"
         shutil.copytree(str(src), str(dest))
     else:
         # Full backup of translation cache
@@ -84,8 +85,9 @@ def restore_backup(backup_id: str):
         shutil.copy2(str(backup_path), str(dest))
         return jsonify({"ok": True, "restored_to": str(dest)})
 
-    # Directory backup → restore mod folder
-    dest = cfg.paths.mods_dir / mod_name
+    # Directory backup → restore mod folder (restore to same dir it was backed up from)
+    existing = get_mod_path(mod_name)
+    dest = existing if existing else (cfg.paths.mods_dir / mod_name)
     if dest.exists():
         # Keep current as safety backup
         safety = cfg.paths.backup_dir / f"{mod_name}__before_restore__{int(time.time())}"
@@ -141,7 +143,10 @@ def restore_mod_esp():
 
     for backup_path in backup_files:
         rel = backup_path.relative_to(cfg.paths.backup_dir)
-        original_path = cfg.paths.mods_dir / rel
+        # For file-level restores: find which mods_dir the mod lives in
+        _mp = get_mod_path(mod_name)
+        _base = _mp.parent if _mp else cfg.paths.mods_dir
+        original_path = _base / rel
         original_path.parent.mkdir(parents=True, exist_ok=True)
         log.info("Restoring %s: %s -> %s", backup_path.suffix, backup_path, original_path)
         shutil.copy2(str(backup_path), str(original_path))
@@ -208,8 +213,8 @@ def snapshot_trans_json():
     if not mod_name:
         return jsonify({"error": "mod_name required"}), 400
 
-    mod_dir = cfg.paths.mods_dir / mod_name
-    if not mod_dir.is_dir():
+    mod_dir = get_mod_path(mod_name)
+    if not mod_dir or not mod_dir.is_dir():
         return jsonify({"error": "Mod not found"}), 404
 
     backup_dir = cfg.paths.backup_dir

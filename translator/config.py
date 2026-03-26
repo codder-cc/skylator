@@ -24,11 +24,16 @@ class PathsConfig:
     skyrim_terms:       Path
     log_file:           Path
     # These are only needed for the full translation pipeline (not the server)
-    mods_dir:           Optional[Path] = None
+    mods_dirs:          list = field(default_factory=list)  # list[Path] — multiple mods dirs
     backup_dir:         Optional[Path] = None
     bsarch_exe:         Optional[Path] = None
     temp_dir:           Optional[Path] = None
     ffdec_jar:          Optional[Path] = None
+
+    @property
+    def mods_dir(self) -> Optional[Path]:
+        """Primary (first) mods directory — for backward compatibility."""
+        return self.mods_dirs[0] if self.mods_dirs else None
 
 
 @dataclass
@@ -173,11 +178,19 @@ def load_config(config_file: Path = _CONFIG_FILE) -> TranslatorConfig:
     root = config_file.parent
     p = raw["paths"]
 
+    # Support both mods_dirs (list) and mods_dir (single string) in YAML
+    _mods_dirs_raw = p.get("mods_dirs") or []
+    if isinstance(_mods_dirs_raw, str):
+        _mods_dirs_raw = [_mods_dirs_raw]
+    if not _mods_dirs_raw and p.get("mods_dir"):
+        _mods_dirs_raw = [p["mods_dir"]]
+    mods_dirs = [Path(d) for d in _mods_dirs_raw if d]
+
     paths = PathsConfig(
         model_cache_dir   = _resolve(root, p["model_cache_dir"]),
         nexus_cache       = _resolve(root, p["nexus_cache"]),
         translation_cache = _resolve(root, p["translation_cache"]),
-        mods_dir          = Path(p["mods_dir"])   if p.get("mods_dir")   else None,
+        mods_dirs         = mods_dirs,
         backup_dir        = Path(p["backup_dir"]) if p.get("backup_dir") else None,
         bsarch_exe        = Path(p["bsarch_exe"]) if p.get("bsarch_exe") else None,
         temp_dir          = Path(p["temp_dir"])   if p.get("temp_dir")   else None,

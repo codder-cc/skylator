@@ -13,6 +13,7 @@ def register_routes(app: Flask):
     from translator.web.routes.terms_rt   import bp as bp_terms
     from translator.web.routes.api        import bp as bp_api
     from translator.web.routes.servers_rt import bp as bp_servers
+    from translator.web.routes.single_rt  import bp as bp_single
 
     app.register_blueprint(bp_dash)
     app.register_blueprint(bp_mods)
@@ -24,3 +25,4 @@ def register_routes(app: Flask):
     app.register_blueprint(bp_terms)
     app.register_blueprint(bp_api)
     app.register_blueprint(bp_servers)
+    app.register_blueprint(bp_single)

@@ -20,18 +20,20 @@ export const Route = createFileRoute('/mods/')({
 })
 
 const STATUS_TABS = [
-  { value: 'all', label: 'All' },
+  { value: 'all',     label: 'All' },
   { value: 'pending', label: 'Pending' },
   { value: 'partial', label: 'Partial' },
-  { value: 'done', label: 'Done' },
+  { value: 'done',    label: 'Done' },
+  { value: 'error',   label: 'Error' },
 ] as const
 
 const STATUS_SORT_ORDER: Record<string, number> = {
-  pending: 0,
-  partial: 1,
-  unknown: 2,
-  no_strings: 3,
-  done: 4,
+  error:      0,
+  pending:    1,
+  partial:    2,
+  unknown:    3,
+  no_strings: 4,
+  done:       5,
 }
 
 function sortMods(mods: ModInfo[]): ModInfo[] {
@@ -165,6 +167,8 @@ function ModCard({ mod }: { mod: ModInfo }) {
   )
 }
 
+const PER_PAGE = 100
+
 function ModsPage() {
   const navigate = useNavigate({ from: '/mods/' })
   const { status, q } = Route.useSearch()
@@ -172,6 +176,8 @@ function ModsPage() {
 
   // Local debounced search input
   const [inputValue, setInputValue] = useState(q)
+  const [page, setPage] = useState(0)
+
   useEffect(() => {
     setInputValue(q)
   }, [q])
@@ -181,6 +187,9 @@ function ModsPage() {
     }, 300)
     return () => clearTimeout(timer)
   }, [inputValue]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Reset page when filters change
+  useEffect(() => { setPage(0) }, [q, status])
 
   // Load all mods once — filter/search client-side (backend ignores q/status params anyway)
   const { data: allMods, isLoading, isFetching, refetch } = useQuery({
@@ -200,6 +209,10 @@ function ModsPage() {
     return sortMods(filtered)
   }, [allMods, q, status])
 
+  const totalPages = Math.max(1, Math.ceil(sorted.length / PER_PAGE))
+  const safePage   = Math.min(page, totalPages - 1)
+  const visible    = sorted.slice(safePage * PER_PAGE, (safePage + 1) * PER_PAGE)
+
   return (
     <div className="space-y-5">
       {/* Page header */}
@@ -211,6 +224,7 @@ function ModsPage() {
               {sorted.length !== allMods.length
                 ? `${sorted.length} of ${allMods.length} mods`
                 : `${allMods.length} mod${allMods.length !== 1 ? 's' : ''}`}
+              {totalPages > 1 && ` · page ${safePage + 1}/${totalPages}`}
             </p>
           )}
         </div>
@@ -288,11 +302,35 @@ function ModsPage() {
           )}
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {sorted.map((mod) => (
-            <ModCard key={mod.folder_name} mod={mod} />
-          ))}
-        </div>
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {visible.map((mod) => (
+              <ModCard key={mod.folder_name} mod={mod} />
+            ))}
+          </div>
+
+          {totalPages > 1 && (
+            <div className="flex items-center justify-center gap-2 pt-2">
+              <button
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={safePage === 0}
+                className="px-3 py-1.5 rounded text-sm bg-bg-card border border-border-subtle text-text-muted hover:text-text-main disabled:opacity-40 transition-colors"
+              >
+                ← Prev
+              </button>
+              <span className="text-sm text-text-muted">
+                {safePage + 1} / {totalPages}
+              </span>
+              <button
+                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                disabled={safePage === totalPages - 1}
+                className="px-3 py-1.5 rounded text-sm bg-bg-card border border-border-subtle text-text-muted hover:text-text-main disabled:opacity-40 transition-colors"
+              >
+                Next →
+              </button>
+            </div>
+          )}
+        </>
       )}
     </div>
   )

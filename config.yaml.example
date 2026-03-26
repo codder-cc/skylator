@@ -7,7 +7,12 @@
 # ── Paths ─────────────────────────────────────────────────────────────────────
 paths:
   model_cache_dir:  "models"          # relative to project root; models/ is gitignored
-  mods_dir:         "H:/Nolvus/Instances/Nolvus Awakening/MODS/mods"
+  # Single mods folder (old format, still supported):
+  # mods_dir: "H:/Nolvus/Instances/Nolvus Awakening/MODS/mods"
+  # Multiple mods folders (new format — all will be scanned and shown in the UI):
+  mods_dirs:
+    - "H:/Nolvus/Instances/Nolvus Awakening/MODS/mods"
+    # - "H:/AnotherProfile/MODS/mods"
   backup_dir:       "H:/Nolvus/Instances/Nolvus Awakening/MODS/mods_backup"
   bsarch_exe:       "H:/Nolvus/Instances/Nolvus Awakening/TOOLS/BSArch/BSArch.exe"
   temp_dir:         "H:/Nolvus/Temp/bsa_extract"

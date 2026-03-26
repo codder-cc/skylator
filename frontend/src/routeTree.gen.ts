@@ -23,7 +23,13 @@ import { Route as JobsJobIdRouteImport } from './routes/jobs/$jobId'
 import { Route as ModsModNameIndexRouteImport } from './routes/mods/$modName/index'
 import { Route as ModsModNameStringsRouteImport } from './routes/mods/$modName/strings'
 import { Route as ModsModNameContextRouteImport } from './routes/mods/$modName/context'
+import { Route as SingleRouteImport } from './routes/single'
 
+const SingleRoute = SingleRouteImport.update({
+  id: '/single',
+  path: '/single',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ToolsRoute = ToolsRouteImport.update({
   id: '/tools',
   path: '/tools',
@@ -102,6 +108,7 @@ export interface FileRoutesByFullPath {
   '/config': typeof ConfigRoute
   '/logs': typeof LogsRoute
   '/servers': typeof ServersRoute
+  '/single': typeof SingleRoute
   '/terminology': typeof TerminologyRoute
   '/tools': typeof ToolsRoute
   '/jobs/$jobId': typeof JobsJobIdRoute
@@ -118,6 +125,7 @@ export interface FileRoutesByTo {
   '/config': typeof ConfigRoute
   '/logs': typeof LogsRoute
   '/servers': typeof ServersRoute
+  '/single': typeof SingleRoute
   '/terminology': typeof TerminologyRoute
   '/tools': typeof ToolsRoute
   '/jobs/$jobId': typeof JobsJobIdRoute
@@ -135,6 +143,7 @@ export interface FileRoutesById {
   '/config': typeof ConfigRoute
   '/logs': typeof LogsRoute
   '/servers': typeof ServersRoute
+  '/single': typeof SingleRoute
   '/terminology': typeof TerminologyRoute
   '/tools': typeof ToolsRoute
   '/jobs/$jobId': typeof JobsJobIdRoute
@@ -153,6 +162,7 @@ export interface FileRouteTypes {
     | '/config'
     | '/logs'
     | '/servers'
+    | '/single'
     | '/terminology'
     | '/tools'
     | '/jobs/$jobId'
@@ -169,6 +179,7 @@ export interface FileRouteTypes {
     | '/config'
     | '/logs'
     | '/servers'
+    | '/single'
     | '/terminology'
     | '/tools'
     | '/jobs/$jobId'
@@ -185,6 +196,7 @@ export interface FileRouteTypes {
     | '/config'
     | '/logs'
     | '/servers'
+    | '/single'
     | '/terminology'
     | '/tools'
     | '/jobs/$jobId'
@@ -202,6 +214,7 @@ export interface RootRouteChildren {
   ConfigRoute: typeof ConfigRoute
   LogsRoute: typeof LogsRoute
   ServersRoute: typeof ServersRoute
+  SingleRoute: typeof SingleRoute
   TerminologyRoute: typeof TerminologyRoute
   ToolsRoute: typeof ToolsRoute
   JobsJobIdRoute: typeof JobsJobIdRoute
@@ -254,6 +267,13 @@ declare module '@tanstack/react-router' {
       path: '/backups'
       fullPath: '/backups'
       preLoaderRoute: typeof BackupsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/single': {
+      id: '/single'
+      path: '/single'
+      fullPath: '/single'
+      preLoaderRoute: typeof SingleRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/$': {
@@ -322,6 +342,7 @@ const rootRouteChildren: RootRouteChildren = {
   ConfigRoute: ConfigRoute,
   LogsRoute: LogsRoute,
   ServersRoute: ServersRoute,
+  SingleRoute: SingleRoute,
   TerminologyRoute: TerminologyRoute,
   ToolsRoute: ToolsRoute,
   JobsJobIdRoute: JobsJobIdRoute,

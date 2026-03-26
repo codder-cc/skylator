@@ -19,14 +19,19 @@ def config_page():
 
 @bp.route("/save", methods=["POST"])
 def save_config():
-    data     = request.get_json() or {}
-    raw_yaml = data.get("yaml", "")
+    ct = request.content_type or ""
+    if ct.startswith("text/plain"):
+        raw_yaml = request.get_data(as_text=True)
+    else:
+        data     = request.get_json() or {}
+        raw_yaml = data.get("yaml", "")
+
     if not raw_yaml:
         return jsonify({"error": "Empty YAML"}), 400
 
     # Validate YAML
     try:
-        parsed = yaml.safe_load(raw_yaml)
+        yaml.safe_load(raw_yaml)
     except yaml.YAMLError as exc:
         return jsonify({"error": f"YAML parse error: {exc}"}), 400
 
@@ -43,20 +48,22 @@ def save_config():
 
 @bp.route("/raw")
 def raw_config():
-    return current_app.response_class(
-        _read_raw(), mimetype="text/plain"
-    )
+    return jsonify({"yaml": _read_raw()})
 
 
 @bp.route("/validate", methods=["POST"])
 def validate_config():
-    data     = request.get_json() or {}
-    raw_yaml = data.get("yaml", "")
+    ct = request.content_type or ""
+    if ct.startswith("text/plain"):
+        raw_yaml = request.get_data(as_text=True)
+    else:
+        data     = request.get_json() or {}
+        raw_yaml = data.get("yaml", "")
     try:
         yaml.safe_load(raw_yaml)
         return jsonify({"ok": True})
     except yaml.YAMLError as exc:
-        return jsonify({"ok": False, "error": str(exc)})
+        return jsonify({"ok": False, "errors": [str(exc)]})
 
 
 def _read_raw() -> str:

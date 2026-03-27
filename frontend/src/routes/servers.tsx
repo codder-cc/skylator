@@ -664,7 +664,7 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark }: WorkerRowProps) 
   const workerCommit = worker.commit ?? ''
   const upToDate = hostCommit && workerCommit && workerCommit === hostCommit
   const otaStatus = worker.ota_status ?? 'idle'
-  const isUpdating = otaStatus === 'updating' || otaMut.isPending
+  const isUpdating = otaStatus === 'updating' || otaStatus === 'restarting' || otaMut.isPending
 
   return (
     <tr className="border-t border-border-subtle hover:bg-bg-card2/50 transition-colors">
@@ -673,7 +673,11 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark }: WorkerRowProps) 
           <span
             className={cn(
               'w-2 h-2 rounded-full flex-shrink-0',
-              worker.alive ? 'bg-success' : 'bg-danger',
+              worker.alive
+                ? 'bg-success'
+                : otaStatus === 'restarting'
+                  ? 'bg-warning animate-pulse'
+                  : 'bg-danger',
             )}
           />
           <span className="text-sm font-medium text-text-main">{worker.label}</span>
@@ -730,10 +734,16 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark }: WorkerRowProps) 
           </span>
 
           {/* Status line */}
-          {isUpdating && (
+          {(otaStatus === 'updating' || otaMut.isPending) && (
             <span className="flex items-center gap-1 text-[10px] text-accent">
               <Loader2 size={9} className="animate-spin" />
               updating…
+            </span>
+          )}
+          {otaStatus === 'restarting' && (
+            <span className="flex items-center gap-1 text-[10px] text-warning">
+              <Loader2 size={9} className="animate-spin" />
+              restarting…
             </span>
           )}
           {!isUpdating && otaStatus === 'success' && upToDate && (
@@ -938,7 +948,13 @@ function ServersPage() {
   const workersQ = useQuery({
     queryKey: QK.workers(),
     queryFn: workersApi.list,
-    refetchInterval: 10_000,
+    refetchInterval: (query) => {
+      const workers = query.state.data ?? []
+      const hasActiveOta = workers.some(
+        (w) => w.ota_status === 'updating' || w.ota_status === 'restarting',
+      )
+      return hasActiveOta ? 3_000 : 10_000
+    },
   })
 
   const serversQ = useQuery({

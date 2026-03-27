@@ -34,8 +34,9 @@ class WorkerInfo:
     hardware:     dict = field(default_factory=dict)  # ram_total_mb, vram_total_mb, cpu_name, etc.
     host_reachable_url: str = ""  # host URL as seen by this worker (set from request.host_url at register time)
     commit:       str = ""        # short git commit hash reported by the worker
-    ota_status:   str = "idle"    # idle | updating | success | failed
+    ota_status:   str = "idle"    # idle | updating | restarting | success | failed
     ota_steps:    list = field(default_factory=list)  # step strings from last OTA run
+    ota_restart_at: float = 0.0   # time.time() when restarting phase began
 
     def to_dict(self) -> dict:
         return {
@@ -55,6 +56,7 @@ class WorkerInfo:
             "commit":       self.commit,
             "ota_status":   self.ota_status,
             "ota_steps":    self.ota_steps,
+            "ota_restart_at": self.ota_restart_at,
         }
 
 
@@ -79,9 +81,19 @@ class WorkerRegistry:
     # ── Worker lifecycle ──────────────────────────────────────────────────────
 
     def register(self, info: WorkerInfo) -> None:
-        """Register or update a worker.  last_seen is set to now."""
+        """Register or update a worker.  last_seen is set to now.
+
+        If the worker was in 'restarting' OTA state, preserve the OTA steps
+        and mark success — the reconnect itself confirms the restart completed.
+        """
         info.last_seen = time.time()
         with self._lock:
+            existing = self._workers.get(info.label)
+            if existing and existing.ota_status == "restarting":
+                # Worker came back after OTA restart — carry over steps, mark done
+                info.ota_status  = "success"
+                info.ota_steps   = existing.ota_steps
+                info.ota_restart_at = 0.0
             self._workers[info.label] = info
             # Ensure work queue exists
             if info.label not in self._work_queues:

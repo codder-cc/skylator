@@ -149,8 +149,9 @@ export interface WorkerInfo {
   hardware?: WorkerHardware
   alive: boolean
   commit?: string
-  ota_status?: 'idle' | 'updating' | 'success' | 'failed'
+  ota_status?: 'idle' | 'updating' | 'restarting' | 'success' | 'failed'
   ota_steps?: string[]
+  ota_restart_at?: number
 }
 
 export interface BenchmarkSampleResult {

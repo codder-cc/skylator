@@ -1259,6 +1259,7 @@ def workers_ota_update(label: str):
     log.info("OTA update queued for worker %s (chunk %s)", label, chunk_id[:8])
 
     def _collect():
+        import time as _time
         raw = registry.collect_result(chunk_id, timeout=180.0)
         with registry._lock:
             w = registry._workers.get(label)
@@ -1266,15 +1267,41 @@ def workers_ota_update(label: str):
                 return
             if raw is None:
                 w.ota_status = "failed"
-                w.ota_steps  = ["timed out waiting for worker response"]
+                w.ota_steps  = ["timed out — worker never sent result"]
                 return
             try:
                 data = _json.loads(raw)
-                w.ota_status = "success" if data.get("ok") else "failed"
-                w.ota_steps  = data.get("steps", [])
+                if data.get("ok"):
+                    # Worker will now restart — keep visible as 'restarting'
+                    w.ota_status    = "restarting"
+                    w.ota_steps     = data.get("steps", [])
+                    w.ota_restart_at = _time.time()
+                else:
+                    w.ota_status = "failed"
+                    w.ota_steps  = data.get("steps", [])
+                    return
             except Exception:
                 w.ota_status = "failed"
                 w.ota_steps  = [raw[:200]]
+                return
+
+        # Watchdog: if worker doesn't reconnect within 60 s, mark failed
+        deadline = _time.time() + 60
+        while _time.time() < deadline:
+            _time.sleep(3)
+            with registry._lock:
+                w = registry._workers.get(label)
+                if w is None or w.ota_status != "restarting":
+                    return  # reconnected (register() cleared it) or already failed
+            log.debug("OTA watchdog: still waiting for %s to reconnect…", label)
+
+        with registry._lock:
+            w = registry._workers.get(label)
+            if w and w.ota_status == "restarting":
+                w.ota_status = "failed"
+                w.ota_steps  = (w.ota_steps or []) + ["worker did not reconnect within 60 s"]
+                w.ota_restart_at = 0.0
+        log.warning("OTA watchdog: %s did not reconnect — marked failed", label)
 
     threading.Thread(target=_collect, daemon=True, name=f"ota-collect-{label}").start()
     return jsonify({"ok": True, "chunk_id": chunk_id})

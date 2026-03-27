@@ -788,6 +788,7 @@ async def _async_register(client, host_url: str, my_url: str,
                 "gpu":          state.gpu_label,
                 "capabilities": caps,
                 "commit":       _get_git_commit(),
+                "hardware":     state.hardware,
             },
             timeout=10.0,
         )

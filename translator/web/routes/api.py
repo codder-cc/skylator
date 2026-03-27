@@ -1137,6 +1137,7 @@ def workers_register():
         model              = data.get("model", ""),
         gpu                = data.get("gpu", ""),
         commit             = data.get("commit", ""),
+        hardware           = data.get("hardware") or {},
         host_reachable_url = request.host_url.rstrip("/"),  # LAN IP as seen by the remote
     )
     registry.register(info)

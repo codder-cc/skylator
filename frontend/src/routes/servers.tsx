@@ -47,7 +47,7 @@ function ResourceBar({
   totalMb: number
   note?: string
 }) {
-  if (totalMb <= 0) return null
+  if (!totalMb || totalMb <= 0 || !Number.isFinite(usedMb)) return null
   const pct     = Math.min(100, Math.round((usedMb / totalMb) * 100))
   const barColor =
     pct >= 90 ? 'bg-danger' : pct >= 75 ? 'bg-warning' : 'bg-success'

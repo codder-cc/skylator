@@ -89,8 +89,10 @@ class WorkerRegistry:
         info.last_seen = time.time()
         with self._lock:
             existing = self._workers.get(info.label)
-            if existing and existing.ota_status == "restarting":
-                # Worker came back after OTA restart — carry over steps, mark done
+            if existing and existing.ota_status in ("restarting", "updating"):
+                # Worker came back after OTA restart — carry over steps, mark done.
+                # Also catches 'updating' for the race where the result arrived before
+                # _collect set the status to 'restarting'.
                 info.ota_status  = "success"
                 info.ota_steps   = existing.ota_steps
                 info.ota_restart_at = 0.0
@@ -168,10 +170,14 @@ class WorkerRegistry:
 
     def register_chunk_wait(self, chunk_id: str) -> threading.Event:
         """Register that the host is waiting for a result for chunk_id.
-        Returns an event that will be set when the result arrives."""
+        Returns an event that will be set when the result arrives.
+        If the result already arrived before we registered, sets the event immediately."""
         event = threading.Event()
         with self._lock:
             self._result_events[chunk_id] = event
+            # Result may have arrived before _collect thread was scheduled — set now.
+            if chunk_id in self._result_values:
+                event.set()
         return event
 
     def deliver_result(self, chunk_id: str, result: str) -> bool:

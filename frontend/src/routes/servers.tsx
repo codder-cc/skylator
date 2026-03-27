@@ -666,8 +666,14 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark }: WorkerRowProps) 
   const otaStatus = worker.ota_status ?? 'idle'
 
   useEffect(() => {
-    if (otaStatus === 'success' || otaStatus === 'failed') clearFlight()
-  }, [otaStatus])
+    if (otaStatus === 'success' || otaStatus === 'failed') {
+      clearFlight()
+    } else if (otaStatus === 'idle' && otaInFlight && worker.alive) {
+      // Worker reconnected alive with idle status while OTA was in-flight.
+      // Means it restarted successfully but _collect missed the transition.
+      clearFlight()
+    }
+  }, [otaStatus, otaInFlight, worker.alive])
 
   useEffect(() => () => { if (otaFlightTimer.current) clearTimeout(otaFlightTimer.current) }, [])
 

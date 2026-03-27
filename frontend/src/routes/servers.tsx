@@ -847,6 +847,21 @@ function HostOtaCard() {
       </div>
 
       <div className="px-5 py-4 space-y-3">
+        {/* Always-visible status row */}
+        <div className="flex items-center gap-3 text-xs">
+          <span className="flex items-center gap-1.5 font-mono text-text-muted">
+            <GitCommit size={12} className="shrink-0" />
+            {s ? s.commit : '—'}
+          </span>
+          <span className="flex items-center gap-1.5 font-mono text-text-muted">
+            <GitBranch size={12} className="shrink-0" />
+            {s ? s.branch : '—'}
+          </span>
+          {s && behind === 0 && (
+            <span className="text-success">up to date</span>
+          )}
+        </div>
+
         {/* Pending commits */}
         {s && s.pending_commits.length > 0 && (
           <div className="space-y-1">

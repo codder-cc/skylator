@@ -1021,11 +1021,14 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
             # ── OTA update ────────────────────────────────────────────────────
             if chunk_type == "ota_update":
                 log.info("Pull worker: OTA update requested")
+                import subprocess as _sp, os as _os
+                steps: list[str] = []
+                ok = True
                 try:
-                    import subprocess, os, sys
+                    # 1. git pull
                     r = await loop.run_in_executor(
                         None,
-                        lambda: subprocess.run(
+                        lambda: _sp.run(
                             ["git", "pull", "--ff-only"],
                             cwd=str(Path(__file__).parent),
                             capture_output=True, text=True, timeout=120,
@@ -1033,24 +1036,46 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                     )
                     out = (r.stdout + r.stderr).strip()
                     ok  = r.returncode == 0
+                    steps.append(f"git pull: {out}")
                     log.info("Pull worker OTA git pull: %s", out)
-                    result_data = {"ok": ok, "output": out}
+
+                    # 2. pip install -r requirements.txt (pick up new deps)
+                    if ok:
+                        pip_r = await loop.run_in_executor(
+                            None,
+                            lambda: _sp.run(
+                                [sys.executable, "-m", "pip", "install", "-r",
+                                 str(Path(__file__).parent / "requirements.txt"),
+                                 "--quiet"],
+                                cwd=str(Path(__file__).parent),
+                                capture_output=True, text=True, timeout=300,
+                            ),
+                        )
+                        pip_out = (pip_r.stdout + pip_r.stderr).strip()
+                        steps.append(f"pip install: {'ok' if pip_r.returncode == 0 else pip_out[-500:]}")
+                        log.info("Pull worker OTA pip install rc=%d", pip_r.returncode)
+
                 except Exception as exc:
                     log.error("Pull worker OTA update failed: %s", exc)
-                    result_data = {"ok": False, "error": str(exc)}
+                    ok = False
+                    steps.append(f"error: {exc}")
+
+                result_data = {"ok": ok, "steps": steps}
 
                 # Post result back before restarting
-                await loop.run_in_executor(
-                    None,
-                    lambda: httpx.post(f"{base}/api/workers/{label}/result",
-                                       json={"chunk_id": chunk_id,
-                                             "result": _json.dumps(result_data)},
-                                       timeout=15.0),
-                )
-                if result_data.get("ok"):
+                try:
+                    await state.http_client.post(
+                        f"{base}/api/workers/{label}/result",
+                        json={"chunk_id": chunk_id, "result": _json.dumps(result_data)},
+                        timeout=15.0,
+                    )
+                except Exception:
+                    pass
+
+                if ok:
                     log.info("Pull worker OTA: restarting process…")
                     await asyncio.sleep(1)
-                    os.execv(sys.executable, [sys.executable] + sys.argv)
+                    _os.execv(sys.executable, [sys.executable] + sys.argv)
                 continue
 
             # ── Inference ─────────────────────────────────────────────────────

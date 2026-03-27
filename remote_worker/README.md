@@ -181,10 +181,13 @@ The host can push an update to any registered remote worker from the **Servers**
 Click the **Update** button in the Version column — the worker will:
 
 1. `git pull` the latest code
-2. Restart itself automatically
+2. `pip install -r requirements.txt` (or `requirements-metal.txt` on Apple Silicon) to pick up new dependencies
+3. Restart itself automatically
 
 The worker reports its current commit hash in every heartbeat so the host UI
 can show whether it is up to date or behind.
+
+> First-time setup still requires a manual start (`bash start.sh`). OTA handles all subsequent updates.
 
 ---
 

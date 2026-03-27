@@ -658,7 +658,15 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark }: WorkerRowProps) 
   })
   const otaMut = useMutation({
     mutationFn: () => workersApi.requestOtaUpdate(worker.label),
-    onSuccess: () => setTimeout(() => qc.invalidateQueries({ queryKey: QK.workers() }), 8000),
+    onSuccess: () => {
+      // Poll workers every 5 s for up to 90 s waiting for worker to come back
+      let attempts = 0
+      const poll = setInterval(() => {
+        attempts++
+        qc.invalidateQueries({ queryKey: QK.workers() })
+        if (attempts >= 18) clearInterval(poll)
+      }, 5000)
+    },
   })
 
   const workerCommit = worker.commit ?? ''
@@ -731,8 +739,14 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark }: WorkerRowProps) 
           {!upToDate && workerCommit && hostCommit && (
             <span className="text-[10px] text-warning">behind</span>
           )}
-          {otaMut.isSuccess && !otaMut.isPending ? (
-            <span className="text-[10px] text-success">update sent ✓</span>
+          {otaMut.isError && (
+            <span className="text-[10px] text-danger" title={otaMut.error?.message}>failed ✗</span>
+          )}
+          {otaMut.isSuccess && !upToDate ? (
+            <span className="flex items-center gap-1 text-[10px] text-text-muted">
+              <Loader2 size={9} className="animate-spin" />
+              restarting…
+            </span>
           ) : (
             <button
               onClick={() => { if (!otaMut.isPending) otaMut.mutate() }}
@@ -743,7 +757,7 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark }: WorkerRowProps) 
               {otaMut.isPending
                 ? <Loader2 size={9} className="animate-spin" />
                 : <ArrowDownCircle size={9} />}
-              {otaMut.isPending ? 'Updating…' : upToDate ? 'Re-update' : 'Update'}
+              {otaMut.isPending ? 'sending…' : upToDate ? 'Re-update' : 'Update'}
             </button>
           )}
         </div>

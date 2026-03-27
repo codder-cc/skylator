@@ -1021,7 +1021,7 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
             # ── OTA update ────────────────────────────────────────────────────
             if chunk_type == "ota_update":
                 log.info("Pull worker: OTA update requested")
-                import subprocess as _sp, os as _os
+                import subprocess as _sp, os as _os, sys as _sys
                 steps: list[str] = []
                 ok = True
                 try:
@@ -1048,7 +1048,7 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                         pip_r = await loop.run_in_executor(
                             None,
                             lambda: _sp.run(
-                                [sys.executable, "-m", "pip", "install", "-r",
+                                [_sys.executable, "-m", "pip", "install", "-r",
                                  str(Path(__file__).parent / _req),
                                  "--quiet"],
                                 cwd=str(Path(__file__).parent),
@@ -1079,7 +1079,7 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                 if ok:
                     log.info("Pull worker OTA: restarting process…")
                     await asyncio.sleep(1)
-                    _os.execv(sys.executable, [sys.executable] + sys.argv)
+                    _os.execv(_sys.executable, [_sys.executable] + _sys.argv)
                 continue
 
             # ── Inference ─────────────────────────────────────────────────────

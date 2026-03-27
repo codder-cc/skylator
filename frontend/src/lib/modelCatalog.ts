@@ -36,7 +36,7 @@ export const MODEL_CATALOG: ModelEntry[] = [
     sizeMb: 14336,
     layers: 64, kvHeads: 8, headDim: 128,
     minVramMb: 0,
-    minRamMb: 20000,
+    minRamMb: 14336,
     draftRepoId: 'mlx-community/Qwen2.5-1.5B-Instruct-4bit',
     defaultParams: { n_ctx: 4096, batch_size: 8, num_draft_tokens: 4 },
   },
@@ -49,7 +49,7 @@ export const MODEL_CATALOG: ModelEntry[] = [
     sizeMb: 14336,
     layers: 64, kvHeads: 8, headDim: 128,
     minVramMb: 0,
-    minRamMb: 20000,
+    minRamMb: 14336,
     draftRepoId: 'mlx-community/Qwen2.5-1.5B-Instruct-4bit',
     defaultParams: { n_ctx: 4096, batch_size: 8, num_draft_tokens: 3 },
   },
@@ -146,11 +146,10 @@ export function getRecommendedPresets(
     if (m.backend === 'mlx') {
       if (!hw.unified_memory) {
         fit = 'none'
-      } else if (hw.ram_free_mb >= m.minRamMb) {
+      } else if (hw.ram_total_mb >= m.minRamMb) {
+        // macOS unified memory: use total RAM (free is always low — OS reclaims on demand)
         fit = 'full'
         recommended = true
-      } else if (hw.ram_total_mb >= m.minRamMb) {
-        fit = 'partial'
       }
     } else {
       const available = hw.unified_memory ? hw.ram_free_mb : hw.vram_free_mb

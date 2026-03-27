@@ -805,26 +805,26 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark }: WorkerRowProps) 
             Load
           </button>
           {worker.model && (
-            <>
-              <button
-                onClick={() => unloadMut.mutate()}
-                disabled={unloadMut.isPending}
-                className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-danger/20 text-danger border border-danger/30 hover:bg-danger/30 disabled:opacity-50 transition-colors"
-              >
-                {unloadMut.isPending
-                  ? <Loader2 className="w-3 h-3 animate-spin" />
-                  : <PowerOff className="w-3 h-3" />}
-                Unload
-              </button>
-              <button
-                onClick={() => onBenchmark(worker)}
-                className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-bg-card2 text-text-muted border border-border-subtle hover:text-text-main transition-colors"
-              >
-                <Play className="w-3 h-3" />
-                Benchmark
-              </button>
-            </>
+            <button
+              onClick={() => unloadMut.mutate()}
+              disabled={unloadMut.isPending}
+              className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-danger/20 text-danger border border-danger/30 hover:bg-danger/30 disabled:opacity-50 transition-colors"
+            >
+              {unloadMut.isPending
+                ? <Loader2 className="w-3 h-3 animate-spin" />
+                : <PowerOff className="w-3 h-3" />}
+              Unload
+            </button>
           )}
+          <button
+            onClick={() => onBenchmark(worker)}
+            disabled={!worker.model}
+            title={worker.model ? 'Run benchmark' : 'Load a model first'}
+            className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-bg-card2 text-text-muted border border-border-subtle hover:text-text-main disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            <Play className="w-3 h-3" />
+            Benchmark
+          </button>
         </div>
       </td>
     </tr>

@@ -944,16 +944,18 @@ function ServersPage() {
     }
   }, [])
 
-  const hostCommitQ = useQuery({
-    queryKey: ['ota', 'host-commit'],
-    queryFn: otaApi.hostCommit,
-    staleTime: 30_000,
+  // Reuse the same status query that HostOtaCard uses — single source of truth for host commit
+  const hostStatusQ = useQuery({
+    queryKey: ['ota', 'status'],
+    queryFn: otaApi.status,
+    staleTime: 0,
+    refetchInterval: 60_000,
   })
 
   const workers = workersQ.data ?? []
   const servers = serversQ.data ?? []
   const reports = reportsQ.data ?? []
-  const hostCommit = hostCommitQ.data?.commit ?? ''
+  const hostCommit = hostStatusQ.data?.commit ?? ''
 
   return (
     <div className="space-y-6">

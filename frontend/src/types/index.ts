@@ -122,6 +122,16 @@ export interface CachedModel {
   backend: string   // "mlx" | "llamacpp"
 }
 
+export interface WorkerHardware {
+  ram_total_mb: number
+  ram_free_mb: number
+  vram_total_mb: number    // 0 for Apple Silicon (unified memory)
+  vram_free_mb: number
+  unified_memory: boolean  // true for Apple Silicon: RAM is GPU memory
+  cpu_name: string
+  cpu_cores: number
+}
+
 export interface WorkerInfo {
   label: string
   url: string
@@ -134,7 +144,28 @@ export interface WorkerInfo {
   current_task: string | null
   models: CachedModel[]
   stats: { tps_avg: number; tps_last: number; queue_depth: number; jobs_completed: number } | null
+  hardware?: WorkerHardware
   alive: boolean
+}
+
+export interface BenchmarkSampleResult {
+  label: string
+  elapsed_sec: number
+  tps: number
+  cyrillic_ok: boolean
+  token_preserved: boolean
+  output: string
+}
+
+export interface BenchmarkResult {
+  results: BenchmarkSampleResult[]
+  tps_avg: number
+  recommended_params: {
+    batch_size: number
+    n_ctx: number
+    n_batch: number
+  }
+  error?: string
 }
 
 export interface GpuInfo {

@@ -82,7 +82,7 @@ class LlamaCppBackend(BaseBackend):
             model_path   = gguf_path,
             n_gpu_layers = self._mcfg.n_gpu_layers,
             n_ctx        = self._mcfg.n_ctx,
-            n_batch      = 512,
+            n_batch      = getattr(self._mcfg, "n_batch", 512),
             flash_attn   = self._mcfg.flash_attn,
             verbose      = False,
         )

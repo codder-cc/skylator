@@ -37,10 +37,13 @@ import socket
 import time
 import uuid
 from collections import deque
+from contextlib import asynccontextmanager
 from typing import Optional
 
 log = logging.getLogger(__name__)
 
+
+# ── File transfer helper ───────────────────────────────────────────────────────
 
 def _download_staged_files(transfer: dict) -> dict:
     """Download staged model files from host and return updated payload with model_path.
@@ -83,10 +86,10 @@ def _download_staged_files(transfer: dict) -> dict:
         log.info("Transfer: %s done (%d MB)", rel, actual // 1024 // 1024)
 
     log.info("Transfer: all files complete in %s", dest_root)
-    # For GGUF: model_path = path to .gguf file; for MLX: model_path = directory
     gguf_files = [f for f in files if f["path"].endswith(".gguf")]
     model_path = str(dest_root / gguf_files[0]["path"]) if gguf_files else str(dest_root)
     return {"model_path": model_path}
+
 
 from pydantic import BaseModel
 
@@ -96,11 +99,9 @@ from pydantic import BaseModel
 class ModelLoadRequest(BaseModel):
     """Load (or hot-swap) the inference model.  Send from frontend / host."""
     backend_type:       str        = "llamacpp"   # "llamacpp" | "mlx"
-    # Identify the model — choose one approach:
-    model_path:         str | None = None         # absolute path to .gguf file
-    repo_id:            str        = ""            # HuggingFace repo id
-    gguf_filename:      str        = ""            # .gguf filename inside repo
-    # Model parameters
+    model_path:         str | None = None
+    repo_id:            str        = ""
+    gguf_filename:      str        = ""
     n_gpu_layers:       int        = -1
     n_ctx:              int        = 8192
     max_new_tokens:     int        = 2048
@@ -109,28 +110,24 @@ class ModelLoadRequest(BaseModel):
     top_p:              float      = 0.9
     repetition_penalty: float      = 1.05
     batch_size:         int        = 12
+    n_batch:            int        = 512
     flash_attn:         bool       = False
-    # Language pair (used by /translate endpoint only)
     source_lang:        str        = "English"
     target_lang:        str        = "Russian"
+    draft_repo_id:      str        = ""
+    num_draft_tokens:   int        = 3
 
 
 class TranslateRequest(BaseModel):
-    """
-    Translate a list of strings.
-    The caller (host / frontend) provides all prompt ingredients — nothing is
-    read from local files on the remote.
-    """
+    """Translate a list of strings — caller provides all prompt ingredients."""
     texts:           list[str]
     src_lang:        str        = "English"
     tgt_lang:        str        = "Russian"
     context:         str        = ""
-    # Prompt customisation — all optional, have sensible defaults
-    system_prompt:   str | None = None   # None = use built-in Skyrim translator prompt
-    terminology:     str        = ""     # pre-built glossary block ("Key terms:\n  word → trans")
-    preserve_tokens: list[str]  = []     # tokens not to translate
-    thinking:        bool       = False  # enable Qwen3 chain-of-thought
-    # Sampling overrides (None fields fall back to loaded model's defaults)
+    system_prompt:   str | None = None
+    terminology:     str        = ""
+    preserve_tokens: list[str]  = []
+    thinking:        bool       = False
     params:          dict       = {}
 
 
@@ -157,27 +154,29 @@ class InfoResponse(BaseModel):
     model:        str
     backend_type: str
     version:      str = "2.0.0"
-    capabilities: list[str] = []   # ["llamacpp", "mlx"]
+    capabilities: list[str] = []
+    hardware:     dict = {}
 
 
 # ── Job model ──────────────────────────────────────────────────────────────────
 
 class JobRecord:
     def __init__(self, job_id: str, kind: str, payload: dict):
-        self.job_id:         str             = job_id
-        self.kind:           str             = kind
-        self.payload:        dict            = payload
-        self.status:         str             = "queued"
-        self.created_at:     float           = time.time()
-        self.started_at:     Optional[float] = None
-        self.finished_at:    Optional[float] = None
-        self.tokens_gen:     int             = 0
-        self.tokens_per_sec: float           = 0.0
+        self.job_id:         str              = job_id
+        self.kind:           str              = kind
+        self.payload:        dict             = payload
+        self.status:         str              = "queued"
+        self.created_at:     float            = time.time()
+        self.started_at:     Optional[float]  = None
+        self.finished_at:    Optional[float]  = None
+        self.tokens_gen:     int              = 0
+        self.tokens_per_sec: float            = 0.0
         self.result:         Optional[object] = None
-        self.error:          Optional[str]   = None
-        self.progress:       int             = 0
-        self.total:          int             = 0
-        self.eta:            Optional[float] = None
+        self.error:          Optional[str]    = None
+        self.progress:       int              = 0
+        self.total:          int              = 0
+        self.eta:            Optional[float]  = None
+        # [FIX #4] Unlimited queue — no silent event drops for slow subscribers
         self._subscribers:   list[asyncio.Queue] = []
 
     def elapsed(self) -> float:
@@ -204,6 +203,59 @@ class JobRecord:
         }
 
 
+# ── Token estimation ───────────────────────────────────────────────────────────
+
+def _estimate_tokens(text: str) -> int:
+    """[FIX #5] Estimate token count with Cyrillic-aware heuristic.
+
+    Cyrillic text tokenises at ~2 chars/token (not 4) due to sub-word splitting.
+    Latin text is ~4 chars/token.  Spaces are not counted.
+    """
+    cyrillic = sum(1 for c in text if '\u0400' <= c <= '\u04FF')
+    other    = len(text) - cyrillic - text.count(' ')
+    return max(1, cyrillic // 2 + other // 4)
+
+
+# ── Benchmark helpers ──────────────────────────────────────────────────────────
+
+BENCHMARK_SAMPLES = [
+    {"label": "short",  "texts": ["Soul Gem", "Dragon Bone", "Arrow in the knee"]},
+    {"label": "medium", "texts": [
+        "You have chosen to follow the path of the warrior.",
+        "The ancient Nordic tombs of Skyrim hold many secrets waiting to be uncovered.",
+    ]},
+    {"label": "tokens", "texts": [
+        "<Alias=PlayerName>, the Dragonborn, has arrived at Whiterun. (%d gold)",
+    ]},
+]
+
+
+def _compute_recommended_params(tps_avg: float, hardware: dict) -> dict:
+    """[FIX #6] Derive recommended inference params from measured TPS and hardware."""
+    if tps_avg >= 20:
+        batch_size = 16
+    elif tps_avg >= 12:
+        batch_size = 12
+    elif tps_avg >= 6:
+        batch_size = 8
+    else:
+        batch_size = 4
+
+    unified      = hardware.get("unified_memory", False)
+    effective_mb = (hardware.get("ram_total_mb", 0) if unified
+                    else hardware.get("vram_total_mb", 0))
+    if effective_mb >= 24_000:
+        n_ctx, n_batch = 8192, 2048
+    elif effective_mb >= 16_000:
+        n_ctx, n_batch = 4096, 2048
+    elif effective_mb >= 8_000:
+        n_ctx, n_batch = 4096, 1024
+    else:
+        n_ctx, n_batch = 2048, 512
+
+    return {"batch_size": batch_size, "n_ctx": n_ctx, "n_batch": n_batch}
+
+
 # ── Server state ───────────────────────────────────────────────────────────────
 
 class ServerState:
@@ -212,13 +264,15 @@ class ServerState:
         self.backend_type:str = ""
         self.model_label: str = ""
         self.gpu_label:   str = ""
+        self.hardware:    dict = {}
         self.queue: asyncio.Queue = None
         self.queue_depth: int = 0
         self.jobs: dict[str, JobRecord] = {}
         self.completed_order: deque[str] = deque()
         self.tps_history: deque[float]   = deque(maxlen=20)
-        # Lock to prevent concurrent model loads
-        self._model_lock: asyncio.Lock   = None   # created in startup
+        self._model_lock: asyncio.Lock   = None   # created in lifespan
+        # [FIX #9, #10] Persistent async HTTP client — created in lifespan
+        self.http_client = None
 
     @property
     def tps_avg(self) -> float:
@@ -270,6 +324,114 @@ class ServerState:
             pass
         return caps
 
+    def detect_hardware(self) -> dict:
+        """Detect hardware — called once at startup. Caches static fields (CPU name/cores).
+        Dynamic fields (free RAM/VRAM) are refreshed by refresh_free_memory()."""
+        import subprocess as _sp
+        try:
+            import psutil
+            mem          = psutil.virtual_memory()
+            ram_total_mb = mem.total     // (1024 * 1024)
+            ram_free_mb  = mem.available // (1024 * 1024)
+            cpu_cores    = psutil.cpu_count(logical=False) or psutil.cpu_count() or 0
+        except Exception:
+            ram_total_mb = ram_free_mb = cpu_cores = 0
+
+        cpu_name       = ""
+        unified_memory = False
+        vram_total_mb  = 0
+        vram_free_mb   = 0
+
+        if platform.system() == "Darwin":
+            unified_memory = True
+            try:
+                r = _sp.run(["sysctl", "-n", "machdep.cpu.brand_string"],
+                            capture_output=True, text=True, timeout=5)
+                cpu_name = r.stdout.strip()
+            except Exception:
+                pass
+        else:
+            try:
+                if platform.system() == "Windows":
+                    r = _sp.run(["wmic", "cpu", "get", "name", "/format:list"],
+                                capture_output=True, text=True, timeout=5)
+                    for line in r.stdout.splitlines():
+                        if "Name=" in line:
+                            cpu_name = line.split("=", 1)[-1].strip()
+                            break
+                else:
+                    r = _sp.run(["grep", "-m1", "model name", "/proc/cpuinfo"],
+                                capture_output=True, text=True, timeout=5)
+                    if ":" in r.stdout:
+                        cpu_name = r.stdout.split(":", 1)[-1].strip()
+            except Exception:
+                pass
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    props         = torch.cuda.get_device_properties(0)
+                    vram_total_mb = props.total_memory // (1024 * 1024)
+                    vram_free_mb  = (props.total_memory - torch.cuda.memory_allocated(0)) // (1024 * 1024)
+            except ImportError:
+                pass
+            if vram_total_mb == 0:
+                try:
+                    r = _sp.run(
+                        ["nvidia-smi", "--query-gpu=memory.total,memory.free",
+                         "--format=csv,noheader,nounits"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    if r.returncode == 0:
+                        parts         = r.stdout.strip().splitlines()[0].split(",")
+                        vram_total_mb = int(parts[0].strip())
+                        vram_free_mb  = int(parts[1].strip())
+                except Exception:
+                    pass
+
+        if not cpu_name:
+            cpu_name = platform.processor()
+
+        return {
+            "ram_total_mb":   ram_total_mb,
+            "ram_free_mb":    ram_free_mb,
+            "vram_total_mb":  vram_total_mb,
+            "vram_free_mb":   vram_free_mb,
+            "unified_memory": unified_memory,
+            "cpu_name":       cpu_name,
+            "cpu_cores":      cpu_cores,
+        }
+
+    def refresh_free_memory(self) -> None:
+        """[FIX #8] Update only the free-memory fields — cheap, called on every heartbeat."""
+        try:
+            import psutil
+            self.hardware["ram_free_mb"] = psutil.virtual_memory().available // (1024 * 1024)
+        except Exception:
+            pass
+
+        if not self.hardware.get("unified_memory"):
+            # Try torch first (exact), fall back to nvidia-smi
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    props = torch.cuda.get_device_properties(0)
+                    self.hardware["vram_free_mb"] = (
+                        props.total_memory - torch.cuda.memory_allocated(0)
+                    ) // (1024 * 1024)
+                    return
+            except ImportError:
+                pass
+            try:
+                import subprocess as _sp
+                r = _sp.run(
+                    ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if r.returncode == 0:
+                    self.hardware["vram_free_mb"] = int(r.stdout.strip().splitlines()[0])
+            except Exception:
+                pass
+
     def add_job(self, job: JobRecord) -> None:
         self.jobs[job.job_id] = job
 
@@ -287,7 +449,9 @@ class ServerState:
                 pass
 
 
+# Default module-level instance — used when create_server_app() is called without state=
 _state = ServerState()
+
 
 # ── mDNS ──────────────────────────────────────────────────────────────────────
 
@@ -340,48 +504,45 @@ def _unregister_mdns() -> None:
 # ── Model factory ──────────────────────────────────────────────────────────────
 
 def _build_backend(req: ModelLoadRequest):
-    """Instantiate a backend from a ModelLoadRequest. Does NOT call load()."""
+    """[FIX #7] Instantiate a backend — single ModelConfig construction path."""
     from config import ModelConfig
+    from pathlib import Path
 
     if req.model_path:
-        from pathlib import Path
-        model_cfg = ModelConfig(
-            repo_id        = "",
-            local_dir_name = str(Path(req.model_path).parent),
-            gguf_filename  = Path(req.model_path).name,
-            n_gpu_layers   = req.n_gpu_layers,
-            n_ctx          = req.n_ctx,
-            max_new_tokens = req.max_new_tokens,
-            temperature    = req.temperature,
-            top_k          = req.top_k,
-            top_p          = req.top_p,
-            repetition_penalty = req.repetition_penalty,
-            batch_size     = req.batch_size,
-            flash_attn     = req.flash_attn,
-            source_lang    = req.source_lang,
-            target_lang    = req.target_lang,
-        )
+        p         = Path(req.model_path)
+        local_dir = str(p.parent)
+        gguf_file = p.name
+        repo      = ""
     else:
-        model_cfg = ModelConfig(
-            repo_id        = req.repo_id,
-            local_dir_name = req.repo_id.split("/")[-1] if req.repo_id else "",
-            gguf_filename  = req.gguf_filename,
-            n_gpu_layers   = req.n_gpu_layers,
-            n_ctx          = req.n_ctx,
-            max_new_tokens = req.max_new_tokens,
-            temperature    = req.temperature,
-            top_k          = req.top_k,
-            top_p          = req.top_p,
-            repetition_penalty = req.repetition_penalty,
-            batch_size     = req.batch_size,
-            flash_attn     = req.flash_attn,
-            source_lang    = req.source_lang,
-            target_lang    = req.target_lang,
-        )
+        local_dir = req.repo_id.split("/")[-1] if req.repo_id else ""
+        gguf_file = req.gguf_filename
+        repo      = req.repo_id
+
+    model_cfg = ModelConfig(
+        repo_id            = repo,
+        local_dir_name     = local_dir,
+        gguf_filename      = gguf_file,
+        n_gpu_layers       = req.n_gpu_layers,
+        n_ctx              = req.n_ctx,
+        max_new_tokens     = req.max_new_tokens,
+        temperature        = req.temperature,
+        top_k              = req.top_k,
+        top_p              = req.top_p,
+        repetition_penalty = req.repetition_penalty,
+        batch_size         = req.batch_size,
+        n_batch            = req.n_batch,
+        flash_attn         = req.flash_attn,
+        source_lang        = req.source_lang,
+        target_lang        = req.target_lang,
+    )
 
     if req.backend_type == "mlx":
         from models.mlx_backend import MlxBackend
-        return MlxBackend(model_cfg), "mlx"
+        return MlxBackend(
+            model_cfg,
+            draft_repo_id    = req.draft_repo_id or None,
+            num_draft_tokens = req.num_draft_tokens,
+        ), "mlx"
 
     from models.llamacpp_backend import LlamaCppBackend
     return LlamaCppBackend(model_cfg), "llamacpp"
@@ -497,18 +658,23 @@ async def _run_chat(job: JobRecord, state: ServerState,
 
 def _record_tps(state: ServerState, job: JobRecord, elapsed: float) -> None:
     try:
-        from models.llamacpp_backend import get_token_stats
-        stats = get_token_stats()
-        comp  = stats.get("completion", 0)
+        if state.backend_type == "mlx":
+            # [FIX #5] Use Cyrillic-aware token estimation instead of naive // 4
+            result_text = (job.result if isinstance(job.result, str) else
+                           " ".join(job.result) if isinstance(job.result, list) else "")
+            comp = _estimate_tokens(result_text)
+        else:
+            from models.llamacpp_backend import get_token_stats
+            comp = get_token_stats().get("completion", 0)
         job.tokens_gen = comp
-        if elapsed > 0:
+        if elapsed > 0 and comp > 0:
             job.tokens_per_sec = round(comp / elapsed, 2)
             state.tps_history.append(job.tokens_per_sec)
     except Exception:
         pass
 
 
-# ── Reverse registration + pull-mode worker ────────────────────────────────────
+# ── Network helpers ────────────────────────────────────────────────────────────
 
 def _get_my_url(host: str, port: int) -> str:
     if host:
@@ -531,19 +697,17 @@ def _get_cached_models() -> list:
         if not MODELS_CACHE.exists():
             return files
 
-        # GGUF files
         for p in sorted(MODELS_CACHE.rglob("*.gguf")):
             try:
                 files.append({
                     "name":    p.name,
-                    "path":    str(p),   # absolute path so remote worker can load directly
+                    "path":    str(p),
                     "size_mb": p.stat().st_size // (1024 * 1024),
                     "backend": "llamacpp",
                 })
             except Exception:
                 pass
 
-        # MLX model dirs: snapshot dirs containing config.json + *.safetensors
         for config_file in sorted(MODELS_CACHE.rglob("config.json")):
             snapshot_dir = config_file.parent
             if not list(snapshot_dir.glob("*.safetensors")):
@@ -552,16 +716,15 @@ def _get_cached_models() -> list:
                 size_mb = sum(
                     f.stat().st_size for f in snapshot_dir.rglob("*") if f.is_file()
                 ) // (1024 * 1024)
-                # Derive a human-readable name: strip models--org-- prefix if present
-                raw_name = snapshot_dir.parent.parent.name  # models--org--name in snapshot layout
+                raw_name = snapshot_dir.parent.parent.name
                 if raw_name.startswith("models--"):
                     parts = raw_name[len("models--"):].split("--", 1)
-                    display_name = parts[-1]   # just the model name, no org prefix
+                    display_name = parts[-1]
                 else:
-                    display_name = snapshot_dir.name  # flat layout: dir name IS the model name
+                    display_name = snapshot_dir.name
                 files.append({
                     "name":    display_name,
-                    "path":    str(snapshot_dir),   # absolute path
+                    "path":    str(snapshot_dir),
                     "size_mb": size_mb,
                     "backend": "mlx",
                 })
@@ -573,19 +736,42 @@ def _get_cached_models() -> list:
         return []
 
 
-def _register_with_host(host_url: str, my_url: str, capabilities: list[str]) -> bool:
+# ── Async HTTP helpers ─────────────────────────────────────────────────────────
+
+async def _post_result(client, base: str, label: str, chunk_id: str,
+                       result: str, attempts: int = 3) -> None:
+    """[FIX #2] Post chunk result to host with exponential-backoff retry."""
+    url     = f"{base}/api/workers/{label}/result"
+    payload = {"chunk_id": chunk_id, "result": result}
+    for attempt in range(attempts):
+        try:
+            r = await client.post(url, json=payload, timeout=15.0)
+            r.raise_for_status()
+            return
+        except Exception as exc:
+            if attempt < attempts - 1:
+                wait = 2 ** attempt
+                log.warning("Result post attempt %d/%d failed: %s — retrying in %ds",
+                            attempt + 1, attempts, exc, wait)
+                await asyncio.sleep(wait)
+            else:
+                log.error("Result post failed after %d attempts: %s", attempts, exc)
+
+
+async def _async_register(client, host_url: str, my_url: str,
+                           caps: list[str], state: ServerState) -> bool:
+    """Register with host. Returns True on success."""
+    label = f"{platform.system().lower()}-{socket.gethostname()}"
     try:
-        import httpx
-        label = f"{platform.system().lower()}-{socket.gethostname()}"
-        r = httpx.post(
+        r = await client.post(
             f"{host_url.rstrip('/')}/api/workers/register",
             json={
                 "label":        label,
                 "url":          my_url,
                 "platform":     platform.system().lower(),
-                "model":        _state.model_label,
-                "gpu":          _state.gpu_label,
-                "capabilities": capabilities,
+                "model":        state.model_label,
+                "gpu":          state.gpu_label,
+                "capabilities": caps,
             },
             timeout=10.0,
         )
@@ -598,61 +784,85 @@ def _register_with_host(host_url: str, my_url: str, capabilities: list[str]) -> 
     return False
 
 
-def _unregister_from_host(host_url: str) -> None:
+async def _async_unregister(client, host_url: str) -> None:
+    label = f"{platform.system().lower()}-{socket.gethostname()}"
     try:
-        import httpx
-        label = f"{platform.system().lower()}-{socket.gethostname()}"
-        httpx.delete(f"{host_url.rstrip('/')}/api/workers/{label}", timeout=5.0)
+        await client.delete(f"{host_url.rstrip('/')}/api/workers/{label}", timeout=5.0)
     except Exception:
         pass
 
 
+# ── Registration + heartbeat loop ──────────────────────────────────────────────
+
 async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
-                                   capabilities: list[str]) -> None:
+                                   caps: list[str], state: ServerState) -> None:
     my_url = _get_my_url(mdns_host, mdns_port)
     label  = f"{platform.system().lower()}-{socket.gethostname()}"
-    for _ in range(5):
-        if _register_with_host(host_url, my_url, capabilities):
+
+    # [FIX #3] Retry indefinitely with exponential backoff — no hard cap
+    delay = 5
+    while True:
+        if await _async_register(state.http_client, host_url, my_url, caps, state):
             break
-        await asyncio.sleep(10)
-    needs_register = False   # set True when host was unreachable
+        log.info("Registration failed — retrying in %ds", delay)
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, 60)
+
+    needs_register = False
     while True:
         await asyncio.sleep(15)
         try:
-            import httpx
-            # Push state to host — no reverse TCP needed for info/cache checks
-            r = httpx.post(f"{host_url.rstrip('/')}/api/workers/heartbeat",
-                           json={
-                               "label":        label,
-                               "model":        _state.model_label,
-                               "backend_type": _state.backend_type,
-                               "models":       _get_cached_models(),
-                               "stats": {
-                                   "tps_avg":        _state.tps_avg,
-                                   "tps_last":       _state.tps_last,
-                                   "queue_depth":    _state.queue_depth,
-                                   "jobs_completed": len(_state.completed_order),
-                               },
-                           }, timeout=8.0)
-            # Re-register if host came back after being down, or if it lost us
+            # [FIX #8] Refresh free memory before every heartbeat
+            state.refresh_free_memory()
+
+            r = await state.http_client.post(
+                f"{host_url.rstrip('/')}/api/workers/heartbeat",
+                json={
+                    "label":        label,
+                    "model":        state.model_label,
+                    "backend_type": state.backend_type,
+                    "models":       _get_cached_models(),
+                    "hardware":     state.hardware,
+                    "stats": {
+                        "tps_avg":        state.tps_avg,
+                        "tps_last":       state.tps_last,
+                        "queue_depth":    state.queue_depth,
+                        "jobs_completed": len(state.completed_order),
+                    },
+                },
+                timeout=8.0,
+            )
             if needs_register or r.status_code == 404:
-                _register_with_host(host_url, my_url, capabilities)
+                asyncio.create_task(
+                    _async_register(state.http_client, host_url, my_url, caps, state)
+                )
             needs_register = False
-        except Exception:
-            # Host unreachable — re-register as soon as it comes back
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("Heartbeat failed: %s", exc)
             needs_register = True
 
 
-async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int) -> None:
+# ── Pull-mode worker loop ──────────────────────────────────────────────────────
+
+async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
+                            state: ServerState) -> None:
     """Poll host for work chunks → execute → post result back.
 
+    [FIX #9] Uses async httpx directly — no run_in_executor for HTTP calls.
+    [FIX #10] Reuses the persistent client on state for keep-alive.
+    [FIX #1] Catches and logs specific error types; always logs exc on warning.
+    [FIX #2] Uses _post_result() with retry for all result posts.
+
     Chunk types:
-      infer       — run inference on a prompt (default)
-      load_model  — load / hot-swap a model
+      infer        — run inference on a prompt (default)
+      load_model   — load / hot-swap a model
       unload_model — unload current model
+      benchmark    — run benchmark samples and return TPS + quality results
     All communication is outbound (remote → host) — no reverse TCP needed.
     """
-    import httpx, json as _json
+    import httpx as _httpx
     loop  = asyncio.get_running_loop()
     label = f"{platform.system().lower()}-{socket.gethostname()}"
     base  = host_url.rstrip("/")
@@ -660,11 +870,13 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int) -> No
 
     while True:
         try:
-            r = await loop.run_in_executor(
-                None,
-                lambda: httpx.get(f"{base}/api/workers/{label}/chunk",
-                                   params={"timeout": "15"}, timeout=22.0),
+            # [FIX #9] Direct async call — no blocking thread consumed during long-poll
+            r = await state.http_client.get(
+                f"{base}/api/workers/{label}/chunk",
+                params={"timeout": "15"},
+                timeout=22.0,
             )
+            r.raise_for_status()
             data  = r.json()
             chunk = data.get("chunk")
             if not chunk:
@@ -695,42 +907,98 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int) -> No
                                                   if k in ModelLoadRequest.model_fields})
                     backend, bt = await loop.run_in_executor(None, lambda: _build_backend(req))
                     await loop.run_in_executor(None, backend.load)
-                    _state.backend      = backend
-                    _state.backend_type = bt
-                    _state.model_label  = req.gguf_filename or req.repo_id or req.model_path or "unknown"
-                    log.info("Pull worker: model loaded — %s via %s", _state.model_label, bt)
-                    result_data = {"ok": True, "model": _state.model_label}
+                    state.backend      = backend
+                    state.backend_type = bt
+                    state.model_label  = req.gguf_filename or req.repo_id or req.model_path or "unknown"
+                    state.refresh_free_memory()
+                    log.info("Pull worker: model loaded — %s via %s", state.model_label, bt)
+                    result_data = {"ok": True, "model": state.model_label}
                 except Exception as exc:
                     log.error("Pull worker: load_model failed: %s", exc)
                     result_data = {"ok": False, "error": str(exc)}
-                await loop.run_in_executor(
-                    None,
-                    lambda: httpx.post(f"{base}/api/workers/{label}/result",
-                                       json={"chunk_id": chunk_id,
-                                             "result": _json.dumps(result_data)},
-                                       timeout=15.0),
-                )
+                await _post_result(state.http_client, base, label, chunk_id,
+                                   json.dumps(result_data))
                 continue
 
             # ── Model unload ──────────────────────────────────────────────────
             if chunk_type == "unload_model":
                 log.info("Pull worker: unloading model")
                 try:
-                    if _state.backend:
-                        await loop.run_in_executor(None, _state.backend.unload)
-                    _state.backend     = None
-                    _state.model_label = ""
+                    if state.backend:
+                        await loop.run_in_executor(None, state.backend.unload)
+                    state.backend      = None
+                    state.model_label  = ""
+                    state.refresh_free_memory()
                     result_data = {"ok": True}
                 except Exception as exc:
                     log.error("Pull worker: unload failed: %s", exc)
                     result_data = {"ok": False, "error": str(exc)}
-                await loop.run_in_executor(
-                    None,
-                    lambda: httpx.post(f"{base}/api/workers/{label}/result",
-                                       json={"chunk_id": chunk_id,
-                                             "result": _json.dumps(result_data)},
-                                       timeout=15.0),
-                )
+                await _post_result(state.http_client, base, label, chunk_id,
+                                   json.dumps(result_data))
+                continue
+
+            # ── Benchmark ─────────────────────────────────────────────────────
+            if chunk_type == "benchmark":
+                import re as _re
+                samples = chunk.get("samples") or BENCHMARK_SAMPLES
+                if not (state.backend and state.backend.is_loaded):
+                    result_data = {"error": "No model loaded", "results": [], "tps_avg": 0.0,
+                                   "recommended_params": {}}
+                else:
+                    from prompt.builder import build_prompt
+                    from prompt.parser  import parse_numbered_output
+                    mcfg     = getattr(state.backend, "_mcfg", None)
+                    src_lang = mcfg.source_lang if mcfg else "English"
+                    tgt_lang = mcfg.target_lang if mcfg else "Russian"
+                    bench_results = []
+                    for sample in samples:
+                        texts  = sample["texts"]
+                        slabel = sample.get("label", "?")
+                        bp_prompt = build_prompt(
+                            texts=texts, src_lang=src_lang, tgt_lang=tgt_lang,
+                            context="", system_prompt=None, thinking=False,
+                            terminology="", preserve_tokens=[], model_type="qwen",
+                        )
+                        t0 = time.time()
+                        try:
+                            _p  = bp_prompt
+                            raw = await loop.run_in_executor(
+                                None, lambda p=_p: state.backend._infer(p)
+                            )
+                        except Exception as exc:
+                            log.error("Benchmark sample %s failed: %s", slabel, exc)
+                            raw = ""
+                        elapsed = time.time() - t0
+                        parsed   = parse_numbered_output(raw, len(texts))
+                        combined = "\n".join(parsed)
+                        # [FIX #5] Use Cyrillic-aware estimate
+                        comp = _estimate_tokens(combined)
+                        tps  = round(comp / elapsed, 2) if elapsed > 0 else 0.0
+                        cyrillic_ok     = bool(_re.search(r'[а-яА-ЯёЁ]', combined))
+                        token_preserved = True
+                        for text in texts:
+                            for tok in _re.findall(r'<[^>]+>|%[ds]|\n', text):
+                                if tok not in combined:
+                                    token_preserved = False
+                                    break
+                        bench_results.append({
+                            "label":           slabel,
+                            "elapsed_sec":     round(elapsed, 2),
+                            "tps":             tps,
+                            "cyrillic_ok":     cyrillic_ok,
+                            "token_preserved": token_preserved,
+                            "output":          combined,
+                        })
+                    tps_avg = round(sum(r["tps"] for r in bench_results) / len(bench_results), 2) \
+                              if bench_results else 0.0
+                    # [FIX #6] Derive recommended params from measured TPS + hardware
+                    result_data = {
+                        "results":            bench_results,
+                        "tps_avg":            tps_avg,
+                        "recommended_params": _compute_recommended_params(tps_avg, state.hardware),
+                    }
+                await _post_result(state.http_client, base, label, chunk_id,
+                                   json.dumps(result_data), attempts=3)
                 continue
 
             # ── Inference ─────────────────────────────────────────────────────
@@ -744,7 +1012,7 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int) -> No
             try:
                 result = await loop.run_in_executor(
                     None,
-                    lambda: _state.backend._infer(prompt, params=params),
+                    lambda: state.backend._infer(prompt, params=params),
                 )
                 elapsed = time.time() - t0
                 log.info("Pull worker: chunk %s done in %.1fs", chunk_id[:8], elapsed)
@@ -752,105 +1020,136 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int) -> No
                 log.error("Pull worker: inference error for chunk %s: %s", chunk_id[:8], exc)
                 result = ""
 
-            await loop.run_in_executor(
-                None,
-                lambda: httpx.post(f"{base}/api/workers/{label}/result",
-                                   json={"chunk_id": chunk_id, "result": result or ""},
-                                   timeout=15.0),
-            )
+            await _post_result(state.http_client, base, label, chunk_id, result or "")
+
+        except asyncio.CancelledError:
+            log.info("Pull worker loop cancelled")
+            raise
+        except _httpx.NetworkError as exc:
+            # [FIX #1] Distinguish network errors (transient) from logic errors
+            log.warning("Pull worker: network error (will retry): %s", exc)
+            await asyncio.sleep(3)
         except Exception as exc:
-            log.warning("Pull worker error (will retry): %s", exc)
+            # [FIX #1] Always log the exception, not just swallow it
+            log.warning("Pull worker: unexpected error (will retry): %s", exc)
             await asyncio.sleep(3)
 
 
 # ── App factory ────────────────────────────────────────────────────────────────
 
 def create_server_app(
-    model_cfg       = None,
-    backend_type:str= "llamacpp",
-    mdns_enabled:bool = True,
-    mdns_host:str   = "",
-    mdns_port:int   = 8765,
-    host_url:str    = "",
+    model_cfg         = None,
+    backend_type: str = "llamacpp",
+    mdns_enabled: bool = True,
+    mdns_host: str    = "",
+    mdns_port: int    = 8765,
+    host_url: str     = "",
+    state: ServerState | None = None,  # [FIX #12] injectable state — testable, non-global
 ):
+    import httpx as _httpx
     from fastapi import FastAPI, HTTPException
     from fastapi.responses import StreamingResponse
+
+    # [FIX #12] Use provided state or fall back to default module-level instance
+    if state is None:
+        state = _state
+
+    # [FIX #11] Use lifespan context manager — replaces deprecated @app.on_event
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # ── Startup ──────────────────────────────────────────────────────────
+        state.queue        = asyncio.Queue()
+        state._model_lock  = asyncio.Lock()
+        state.gpu_label    = state.detect_gpu()
+        state.hardware     = state.detect_hardware()
+        caps               = state.detect_capabilities()
+
+        # [FIX #9, #10] Persistent async HTTP client with keep-alive
+        state.http_client = _httpx.AsyncClient(
+            timeout = _httpx.Timeout(connect=10.0, read=25.0, write=15.0, pool=None),
+            limits  = _httpx.Limits(max_keepalive_connections=5, max_connections=10),
+        )
+
+        if model_cfg is not None:
+            from config import ModelConfig as _MC
+            loop = asyncio.get_running_loop()
+            req = ModelLoadRequest(
+                backend_type       = backend_type,
+                model_path         = str(model_cfg.local_dir_name + "/" + model_cfg.gguf_filename)
+                                     if hasattr(model_cfg, "gguf_filename") else None,
+                repo_id            = getattr(model_cfg, "repo_id", ""),
+                gguf_filename      = getattr(model_cfg, "gguf_filename", ""),
+                n_gpu_layers       = getattr(model_cfg, "n_gpu_layers", -1),
+                n_ctx              = getattr(model_cfg, "n_ctx", 8192),
+                max_new_tokens     = getattr(model_cfg, "max_new_tokens", 2048),
+                temperature        = getattr(model_cfg, "temperature", 0.3),
+                top_k              = getattr(model_cfg, "top_k", 20),
+                top_p              = getattr(model_cfg, "top_p", 0.9),
+                repetition_penalty = getattr(model_cfg, "repetition_penalty", 1.05),
+                batch_size         = getattr(model_cfg, "batch_size", 12),
+                flash_attn         = getattr(model_cfg, "flash_attn", False),
+                source_lang        = getattr(model_cfg, "source_lang", "English"),
+                target_lang        = getattr(model_cfg, "target_lang", "Russian"),
+            )
+            backend, bt = _build_backend(req)
+            # Use run_in_executor so event loop stays responsive during load
+            await loop.run_in_executor(None, backend.load)
+            state.backend      = backend
+            state.backend_type = bt
+            state.model_label  = (getattr(model_cfg, "gguf_filename", None)
+                                   or getattr(model_cfg, "local_dir_name", "unknown"))
+            log.info("Model loaded at startup: %s via %s", state.model_label, bt)
+        else:
+            log.info("No model at startup — use POST /model/load to load one")
+
+        worker_task = asyncio.create_task(_worker(state))
+
+        if mdns_enabled:
+            _register_mdns(mdns_host, mdns_port, state)
+
+        bg_tasks: list[asyncio.Task] = []
+        if host_url:
+            bg_tasks.append(asyncio.create_task(
+                _register_and_heartbeat(host_url, mdns_host, mdns_port, caps, state)
+            ))
+            bg_tasks.append(asyncio.create_task(
+                _pull_worker_loop(host_url, mdns_host, mdns_port, state)
+            ))
+
+        yield
+
+        # ── Shutdown ─────────────────────────────────────────────────────────
+        for t in bg_tasks:
+            t.cancel()
+        worker_task.cancel()
+
+        if state.backend and state.backend.is_loaded:
+            state.backend.unload()
+
+        _unregister_mdns()
+
+        if host_url and state.http_client:
+            await _async_unregister(state.http_client, host_url)
+
+        await state.http_client.aclose()
 
     app = FastAPI(
         title       = "Skylator Remote Worker",
         description = "Dumb inference executor — frontend controls everything",
         version     = "2.0.0",
+        lifespan    = lifespan,
     )
 
-    @app.on_event("startup")
-    async def _startup():
-        _state.queue       = asyncio.Queue()
-        _state._model_lock = asyncio.Lock()
-        _state.gpu_label   = _state.detect_gpu()
-        caps               = _state.detect_capabilities()
-
-        if model_cfg is not None:
-            # Model provided at CLI startup — load immediately
-            from config import ModelConfig as _MC
-            req = ModelLoadRequest(
-                backend_type   = backend_type,
-                model_path     = str(model_cfg.local_dir_name + "/" + model_cfg.gguf_filename)
-                                 if hasattr(model_cfg, "gguf_filename") else None,
-                repo_id        = getattr(model_cfg, "repo_id", ""),
-                gguf_filename  = getattr(model_cfg, "gguf_filename", ""),
-                n_gpu_layers   = getattr(model_cfg, "n_gpu_layers", -1),
-                n_ctx          = getattr(model_cfg, "n_ctx", 8192),
-                max_new_tokens = getattr(model_cfg, "max_new_tokens", 2048),
-                temperature    = getattr(model_cfg, "temperature", 0.3),
-                top_k          = getattr(model_cfg, "top_k", 20),
-                top_p          = getattr(model_cfg, "top_p", 0.9),
-                repetition_penalty = getattr(model_cfg, "repetition_penalty", 1.05),
-                batch_size     = getattr(model_cfg, "batch_size", 12),
-                flash_attn     = getattr(model_cfg, "flash_attn", False),
-                source_lang    = getattr(model_cfg, "source_lang", "English"),
-                target_lang    = getattr(model_cfg, "target_lang", "Russian"),
-            )
-            backend, bt = _build_backend(req)
-            backend.load()
-            _state.backend      = backend
-            _state.backend_type = bt
-            _state.model_label  = (getattr(model_cfg, "gguf_filename", None)
-                                   or getattr(model_cfg, "local_dir_name", "unknown"))
-            log.info("Model loaded at startup: %s via %s", _state.model_label, bt)
-        else:
-            log.info("No model at startup — use POST /model/load to load one")
-
-        asyncio.create_task(_worker(_state))
-
-        if mdns_enabled:
-            _register_mdns(mdns_host, mdns_port, _state)
-
-        if host_url:
-            asyncio.create_task(_register_and_heartbeat(host_url, mdns_host, mdns_port, caps))
-            asyncio.create_task(_pull_worker_loop(host_url, mdns_host, mdns_port))
-
-    @app.on_event("shutdown")
-    async def _shutdown():
-        if _state.backend and _state.backend.is_loaded:
-            _state.backend.unload()
-        _unregister_mdns()
-        if host_url:
-            _unregister_from_host(host_url)
-
-    # ── Model management ────────────────────────────────────────────────────
+    # ── Model management ──────────────────────────────────────────────────────
 
     @app.post("/model/load")
     async def model_load(req: ModelLoadRequest):
-        """
-        Load (or hot-swap) the inference model.
-        If a model is already loaded, it is unloaded first.
-        All configuration comes from this request — no local files read.
-        """
+        """Load (or hot-swap) the inference model."""
         loop = asyncio.get_running_loop()
-        async with _state._model_lock:
-            if _state.backend and _state.backend.is_loaded:
-                log.info("Unloading current model before swap: %s", _state.model_label)
-                await loop.run_in_executor(None, _state.backend.unload)
+        async with state._model_lock:
+            if state.backend and state.backend.is_loaded:
+                log.info("Unloading current model before swap: %s", state.model_label)
+                await loop.run_in_executor(None, state.backend.unload)
 
             backend, bt = _build_backend(req)
             log.info("Loading model: %s via %s", req.gguf_filename or req.repo_id, bt)
@@ -860,55 +1159,64 @@ def create_server_app(
                 log.error("Model load failed: %s", exc)
                 raise HTTPException(status_code=500, detail=str(exc))
 
-            _state.backend      = backend
-            _state.backend_type = bt
-            _state.model_label  = (req.gguf_filename or req.repo_id or
+            state.backend      = backend
+            state.backend_type = bt
+            state.model_label  = (req.gguf_filename or req.repo_id or
                                    (req.model_path.split("/")[-1] if req.model_path else "unknown"))
+            state.refresh_free_memory()
 
-        log.info("Model ready: %s", _state.model_label)
-        return {"ok": True, "model": _state.model_label, "backend_type": bt}
+        log.info("Model ready: %s", state.model_label)
+        return {"ok": True, "model": state.model_label, "backend_type": bt}
 
     @app.post("/model/unload")
     async def model_unload():
         """Unload the current model and free VRAM."""
         loop = asyncio.get_running_loop()
-        async with _state._model_lock:
-            if not (_state.backend and _state.backend.is_loaded):
+        async with state._model_lock:
+            if not (state.backend and state.backend.is_loaded):
                 return {"ok": True, "message": "No model loaded"}
-            label = _state.model_label
-            await loop.run_in_executor(None, _state.backend.unload)
-            _state.backend     = None
-            _state.model_label = ""
+            label = state.model_label
+            await loop.run_in_executor(None, state.backend.unload)
+            state.backend      = None
+            state.model_label  = ""
+            state.refresh_free_memory()
         log.info("Model unloaded: %s", label)
         return {"ok": True, "unloaded": label}
 
     @app.get("/model")
     async def model_info():
         return {
-            "model":        _state.model_label,
-            "backend_type": _state.backend_type,
-            "loaded":       bool(_state.backend and _state.backend.is_loaded),
-            "queue_depth":  _state.queue_depth,
+            "model":        state.model_label,
+            "backend_type": state.backend_type,
+            "loaded":       bool(state.backend and state.backend.is_loaded),
+            "queue_depth":  state.queue_depth,
         }
 
-    # ── Diagnostics ─────────────────────────────────────────────────────────
+    # ── Diagnostics ───────────────────────────────────────────────────────────
 
     @app.get("/health", response_model=HealthResponse)
     async def health():
         return HealthResponse(
-            model_loaded = bool(_state.backend and _state.backend.is_loaded),
-            queue_depth  = _state.queue_depth,
+            model_loaded = bool(state.backend and state.backend.is_loaded),
+            queue_depth  = state.queue_depth,
         )
 
     @app.get("/info", response_model=InfoResponse)
     async def info():
         return InfoResponse(
             platform     = platform.system().lower(),
-            gpu          = _state.gpu_label,
-            model        = _state.model_label,
-            backend_type = _state.backend_type,
-            capabilities = _state.detect_capabilities(),
+            gpu          = state.gpu_label,
+            model        = state.model_label,
+            backend_type = state.backend_type,
+            capabilities = state.detect_capabilities(),
+            hardware     = state.hardware,
         )
+
+    @app.get("/hardware")
+    async def hardware():
+        """Return current hardware info (RAM/VRAM refreshed on demand)."""
+        state.refresh_free_memory()
+        return state.hardware
 
     @app.get("/models")
     async def list_models():
@@ -918,23 +1226,23 @@ def create_server_app(
 
     @app.get("/stats")
     async def stats():
-        completed    = sum(1 for j in _state.jobs.values() if j.status == "done")
-        errors       = sum(1 for j in _state.jobs.values() if j.status == "error")
-        total_tokens = sum(j.tokens_gen for j in _state.jobs.values())
+        completed    = sum(1 for j in state.jobs.values() if j.status == "done")
+        errors       = sum(1 for j in state.jobs.values() if j.status == "error")
+        total_tokens = sum(j.tokens_gen for j in state.jobs.values())
         return {
-            "tps_avg":          _state.tps_avg,
-            "tps_last":         _state.tps_last,
-            "tps_history":      list(_state.tps_history),
-            "jobs_total":       len(_state.jobs),
+            "tps_avg":          state.tps_avg,
+            "tps_last":         state.tps_last,
+            "tps_history":      list(state.tps_history),
+            "jobs_total":       len(state.jobs),
             "jobs_completed":   completed,
             "jobs_error":       errors,
             "tokens_generated": total_tokens,
         }
 
-    # ── Inference endpoints ──────────────────────────────────────────────────
+    # ── Inference endpoints ───────────────────────────────────────────────────
 
     def _require_model():
-        if not (_state.backend and _state.backend.is_loaded):
+        if not (state.backend and state.backend.is_loaded):
             raise HTTPException(status_code=503,
                                 detail="No model loaded. POST /model/load first.")
 
@@ -943,9 +1251,9 @@ def create_server_app(
         _require_model()
         job_id = str(uuid.uuid4())
         job    = JobRecord(job_id, "translate", req.model_dump())
-        _state.add_job(job)
-        _state.queue_depth += 1
-        await _state.queue.put(job)
+        state.add_job(job)
+        state.queue_depth += 1
+        await state.queue.put(job)
         return {"job_id": job_id, "status": "queued"}
 
     @app.post("/infer")
@@ -953,9 +1261,9 @@ def create_server_app(
         _require_model()
         job_id = str(uuid.uuid4())
         job    = JobRecord(job_id, "infer", req.model_dump())
-        _state.add_job(job)
-        _state.queue_depth += 1
-        await _state.queue.put(job)
+        state.add_job(job)
+        state.queue_depth += 1
+        await state.queue.put(job)
         return {"job_id": job_id, "status": "queued"}
 
     @app.post("/chat")
@@ -963,31 +1271,32 @@ def create_server_app(
         _require_model()
         job_id = str(uuid.uuid4())
         job    = JobRecord(job_id, "chat", req.model_dump())
-        _state.add_job(job)
-        _state.queue_depth += 1
-        await _state.queue.put(job)
+        state.add_job(job)
+        state.queue_depth += 1
+        await state.queue.put(job)
         return {"job_id": job_id, "status": "queued"}
 
-    # ── Job tracking ─────────────────────────────────────────────────────────
+    # ── Job tracking ──────────────────────────────────────────────────────────
 
     @app.get("/jobs")
     async def list_jobs():
-        return [j.to_dict() for j in _state.jobs.values()]
+        return [j.to_dict() for j in state.jobs.values()]
 
     @app.get("/jobs/{job_id}")
     async def get_job(job_id: str):
-        job = _state.jobs.get(job_id)
+        job = state.jobs.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found")
         return job.to_dict()
 
     @app.get("/jobs/{job_id}/stream")
     async def stream_job(job_id: str):
-        job = _state.jobs.get(job_id)
+        job = state.jobs.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found")
 
-        q: asyncio.Queue = asyncio.Queue(maxsize=50)
+        # [FIX #4] Unlimited queue — no silent event drops for slow consumers
+        q: asyncio.Queue = asyncio.Queue()
         job._subscribers.append(q)
 
         async def _generate():

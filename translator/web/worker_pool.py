@@ -144,6 +144,7 @@ class WorkerPool:
 
                     with _counter_lock:
                         for s, r in zip(chunk, core_results):
+                            r["machine_label"]   = label
                             done_count[0]        += 1
                             backend_done[label]  += 1
                             on_string_done(s, r)

@@ -84,12 +84,25 @@ class GlobalTextDict:
                 self._dict[original] = translation
 
     def save(self) -> None:
-        """Write current dictionary to disk."""
+        """Merge current dictionary into disk file (read-merge-write under lock).
+
+        Reading the file inside the lock ensures concurrent jobs don't overwrite
+        each other's entries — the last writer merges rather than replaces.
+        """
         with _LOCK:
             try:
                 self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+                existing: dict = {}
+                if self.cache_path.exists():
+                    try:
+                        existing = json.loads(
+                            self.cache_path.read_text(encoding="utf-8")
+                        )
+                    except Exception:
+                        pass
+                merged = {**existing, **self._dict}
                 self.cache_path.write_text(
-                    json.dumps(self._dict, ensure_ascii=False, indent=2),
+                    json.dumps(merged, ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
             except Exception as exc:

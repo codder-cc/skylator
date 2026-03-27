@@ -56,12 +56,15 @@ def _find_cached_snapshot(repo_id: str, cache_dir) -> str | None:
 class MlxBackend(BaseBackend):
     """BaseBackend implementation using mlx-lm for Apple Silicon."""
 
-    def __init__(self, model_cfg):
+    def __init__(self, model_cfg, draft_repo_id: str | None = None, num_draft_tokens: int = 3):
         super().__init__()
-        self._mcfg      = model_cfg
-        self._model     = None
-        self._tokenizer = None
-        self._label     = f"mlx:{model_cfg.repo_id}"
+        self._mcfg             = model_cfg
+        self._model            = None
+        self._tokenizer        = None
+        self._draft_model      = None
+        self._draft_repo_id    = draft_repo_id or getattr(model_cfg, "draft_repo_id", "") or None
+        self._num_draft_tokens = num_draft_tokens or getattr(model_cfg, "num_draft_tokens", 3)
+        self._label            = f"mlx:{model_cfg.repo_id}"
 
     def load(self) -> None:
         if self.is_loaded:
@@ -107,9 +110,32 @@ class MlxBackend(BaseBackend):
         self._state = ModelState.LOADED
         log.info("MlxBackend: loaded into unified memory")
 
+        if self._draft_repo_id:
+            log.info("MlxBackend: loading draft model %s for speculative decoding...",
+                     self._draft_repo_id)
+            try:
+                draft_load_path = self._draft_repo_id
+                cache_dir = getattr(self._mcfg, "local_cache_dir", None)
+                if cache_dir:
+                    local_draft = _find_cached_snapshot(self._draft_repo_id, cache_dir)
+                    if local_draft:
+                        draft_load_path = local_draft
+                    else:
+                        from huggingface_hub import snapshot_download
+                        draft_load_path = snapshot_download(
+                            self._draft_repo_id, cache_dir=str(cache_dir))
+                draft_model, _ = mlx_lm.load(draft_load_path)
+                self._draft_model = draft_model
+                log.info("MlxBackend: speculative decoding active (num_draft_tokens=%d)",
+                         self._num_draft_tokens)
+            except Exception as exc:
+                log.warning("MlxBackend: draft model load failed (%s) — "
+                            "continuing without speculative decoding", exc)
+
     def _do_unload(self) -> None:
-        self._model     = None
-        self._tokenizer = None
+        self._model       = None
+        self._tokenizer   = None
+        self._draft_model = None
         try:
             import mlx.core as mx
             mx.clear_cache()
@@ -165,14 +191,17 @@ class MlxBackend(BaseBackend):
                     preserve_tokens = preserve_tokens,
                     model_type      = "qwen",
                 )
-                raw = mlx_lm.generate(
-                    self._model,
-                    self._tokenizer,
-                    prompt            = prompt,
+                gen_kwargs: dict = dict(
                     max_tokens        = max_tokens,
                     sampler           = sampler,
                     logits_processors = logits_processors,
                     verbose           = False,
+                )
+                if self._draft_model is not None:
+                    gen_kwargs["draft_model"]      = self._draft_model
+                    gen_kwargs["num_draft_tokens"] = self._num_draft_tokens
+                raw = mlx_lm.generate(
+                    self._model, self._tokenizer, prompt=prompt, **gen_kwargs,
                 )
                 results.extend(parse_numbered_output(raw, len(batch)))
                 log.info("MlxBackend: batch %d/%d done",
@@ -194,15 +223,16 @@ class MlxBackend(BaseBackend):
         from mlx_lm.sample_utils import make_sampler
 
         p = params
-        raw = mlx_lm.generate(
-            self._model,
-            self._tokenizer,
-            prompt     = prompt,
-            max_tokens = p.max_tokens  if p and p.max_tokens  is not None else self._mcfg.max_new_tokens,
+        gen_kwargs: dict = dict(
+            max_tokens = p.max_tokens if p and p.max_tokens is not None else self._mcfg.max_new_tokens,
             sampler    = make_sampler(
                 temp  = p.temperature if p and p.temperature is not None else self._mcfg.temperature,
                 top_p = p.top_p       if p and p.top_p       is not None else self._mcfg.top_p,
             ),
             verbose = False,
         )
+        if self._draft_model is not None:
+            gen_kwargs["draft_model"]      = self._draft_model
+            gen_kwargs["num_draft_tokens"] = self._num_draft_tokens
+        raw = mlx_lm.generate(self._model, self._tokenizer, prompt=prompt, **gen_kwargs)
         return raw.strip()

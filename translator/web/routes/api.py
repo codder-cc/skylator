@@ -1030,8 +1030,9 @@ def workers_heartbeat():
     model        = data.get("model")         # currently loaded model label
     backend_type = data.get("backend_type")  # llamacpp | mlx
     stats        = data.get("stats")         # {tps_avg, tps_last, queue_depth, jobs_completed}
+    hardware     = data.get("hardware")      # {ram_total_mb, vram_total_mb, cpu_name, …}
     found = registry.heartbeat(label, models=models, model=model, backend_type=backend_type,
-                               stats=stats)
+                               stats=stats, hardware=hardware)
     if not found:
         return jsonify({"ok": False, "reregister": True}), 404
     return jsonify({"ok": True})
@@ -1079,6 +1080,35 @@ def workers_post_result(label: str):
     if not found:
         log.warning("Unexpected result for chunk_id %s from worker %s", chunk_id[:8], label)
     return jsonify({"ok": True, "matched": found})
+
+
+@bp.route("/workers/<label>/benchmark", methods=["POST"])
+def workers_benchmark(label: str):
+    """Run a performance benchmark on a registered worker.
+
+    Enqueues a 'benchmark' chunk with standard test samples and waits up to
+    120 s for results.  Returns TPS metrics and quality checks.
+    """
+    import json as _json, uuid as _uuid
+    registry = current_app.config.get("WORKER_REGISTRY")
+    if registry is None:
+        return jsonify({"error": "Registry not initialized"}), 500
+    worker = registry.get(label)
+    if worker is None:
+        return jsonify({"error": "Worker not found"}), 404
+    chunk_id = str(_uuid.uuid4())
+    registry.enqueue_chunk(label, {
+        "chunk_id": chunk_id,
+        "type":     "benchmark",
+    })
+    raw = registry.collect_result(chunk_id, timeout=120.0)
+    if raw is None:
+        return jsonify({"error": "Benchmark timed out"}), 504
+    try:
+        result = _json.loads(raw)
+    except Exception:
+        result = {"raw": raw}
+    return jsonify(result)
 
 
 @bp.route("/model-transfer/file")

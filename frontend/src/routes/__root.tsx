@@ -2,12 +2,14 @@ import { createRootRouteWithContext, Outlet } from '@tanstack/react-router'
 import type { QueryClient } from '@tanstack/react-query'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { Topbar } from '@/components/layout/Topbar'
+import { ErrorBoundary } from '@/components/shared/ErrorBoundary'
 import { useSSE } from '@/hooks/useSSE'
 import { useQueryClient } from '@tanstack/react-query'
 import { useJobsStore } from '@/stores/jobsStore'
 import { QK } from '@/lib/queryKeys'
 import { JOB_TERMINAL_STATUSES } from '@/lib/constants'
 import type { Job, StringUpdate } from '@/types'
+import { Toaster } from 'sonner'
 
 interface RouterContext {
   queryClient: QueryClient
@@ -66,9 +68,21 @@ function AppShell() {
       <div className="flex flex-col flex-1 min-w-0">
         <Topbar />
         <main className="flex-1 overflow-auto p-6">
-          <Outlet />
+          <ErrorBoundary>
+            <Outlet />
+          </ErrorBoundary>
         </main>
       </div>
+      <Toaster
+        position="bottom-right"
+        toastOptions={{
+          style: {
+            background: 'var(--color-bg-card)',
+            border: '1px solid var(--color-border)',
+            color: 'var(--color-text-main)',
+          },
+        }}
+      />
     </div>
   )
 }

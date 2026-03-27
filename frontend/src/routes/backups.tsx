@@ -5,6 +5,7 @@ import { backupsApi, checkpointsApi } from '@/api/backups'
 import { apiPost } from '@/api/client'
 import { QK } from '@/lib/queryKeys'
 import { timeAgo, humanSize, cn } from '@/lib/utils'
+import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import type { BackupEntry, CheckpointEntry } from '@/types'
 import {
   HardDrive,
@@ -174,11 +175,14 @@ interface BackupRowProps {
 
 function BackupRow({ entry, onRefresh }: BackupRowProps) {
   const [restoreMsg, setRestoreMsg] = useState('')
+  const [confirmRestore, setConfirmRestore] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   const restoreMut = useMutation({
     mutationFn: () => backupsApi.restore(entry.id),
     onSuccess: () => {
       setRestoreMsg('Restored successfully.')
+      setConfirmRestore(false)
       setTimeout(() => setRestoreMsg(''), 4000)
     },
     onError: (e: Error) => setRestoreMsg(`Error: ${e.message}`),
@@ -188,16 +192,6 @@ function BackupRow({ entry, onRefresh }: BackupRowProps) {
     mutationFn: () => backupsApi.delete(entry.id),
     onSuccess: onRefresh,
   })
-
-  const handleRestore = () => {
-    if (!window.confirm(`Restore backup "${entry.label || entry.id}"? This will overwrite current translation files.`)) return
-    restoreMut.mutate()
-  }
-
-  const handleDelete = () => {
-    if (!window.confirm(`Delete backup "${entry.label || entry.id}"? This cannot be undone.`)) return
-    deleteMut.mutate()
-  }
 
   return (
     <>
@@ -214,7 +208,7 @@ function BackupRow({ entry, onRefresh }: BackupRowProps) {
         <td className="px-4 py-3">
           <div className="flex gap-2">
             <button
-              onClick={handleRestore}
+              onClick={() => setConfirmRestore(true)}
               disabled={restoreMut.isPending || deleteMut.isPending}
               className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-accent/20 text-accent border border-accent/30 hover:bg-accent/30 disabled:opacity-50 transition-colors"
             >
@@ -224,7 +218,7 @@ function BackupRow({ entry, onRefresh }: BackupRowProps) {
               Restore
             </button>
             <button
-              onClick={handleDelete}
+              onClick={() => setConfirmDelete(true)}
               disabled={deleteMut.isPending || restoreMut.isPending}
               className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-danger/20 text-danger border border-danger/30 hover:bg-danger/30 disabled:opacity-50 transition-colors"
             >
@@ -245,6 +239,25 @@ function BackupRow({ entry, onRefresh }: BackupRowProps) {
           </td>
         </tr>
       )}
+      <ConfirmDialog
+        open={confirmRestore}
+        onOpenChange={setConfirmRestore}
+        title="Restore backup?"
+        description={`This will overwrite current translation files with backup "${entry.label || entry.id}".`}
+        confirmLabel="Restore"
+        loading={restoreMut.isPending}
+        onConfirm={() => restoreMut.mutate()}
+      />
+      <ConfirmDialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title="Delete backup?"
+        description={`Delete backup "${entry.label || entry.id}"? This cannot be undone.`}
+        confirmLabel="Delete"
+        variant="danger"
+        loading={deleteMut.isPending}
+        onConfirm={() => deleteMut.mutate()}
+      />
     </>
   )
 }
@@ -305,11 +318,14 @@ interface CheckpointRowProps {
 function CheckpointRow({ entry, onRefresh }: CheckpointRowProps) {
   const queryClient = useQueryClient()
   const [restoreMsg, setRestoreMsg] = useState('')
+  const [confirmRestore, setConfirmRestore] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   const restoreMut = useMutation({
     mutationFn: () => checkpointsApi.restore(entry.checkpoint_id),
     onSuccess: () => {
       setRestoreMsg('Restored successfully.')
+      setConfirmRestore(false)
       void queryClient.invalidateQueries({ queryKey: ['mods', entry.mod_name, 'strings'] })
       setTimeout(() => setRestoreMsg(''), 4000)
     },
@@ -321,16 +337,6 @@ function CheckpointRow({ entry, onRefresh }: CheckpointRowProps) {
     onSuccess: onRefresh,
   })
 
-  const handleRestore = () => {
-    if (!window.confirm(`Restore checkpoint for "${entry.mod_name}"? This will overwrite current translations.`)) return
-    restoreMut.mutate()
-  }
-
-  const handleDelete = () => {
-    if (!window.confirm(`Delete this checkpoint for "${entry.mod_name}"? This cannot be undone.`)) return
-    deleteMut.mutate()
-  }
-
   return (
     <>
       <tr className="border-t border-border-subtle hover:bg-bg-card2/40 transition-colors">
@@ -340,7 +346,7 @@ function CheckpointRow({ entry, onRefresh }: CheckpointRowProps) {
         <td className="px-4 py-3">
           <div className="flex gap-2">
             <button
-              onClick={handleRestore}
+              onClick={() => setConfirmRestore(true)}
               disabled={restoreMut.isPending || deleteMut.isPending}
               className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-accent/20 text-accent border border-accent/30 hover:bg-accent/30 disabled:opacity-50 transition-colors"
             >
@@ -350,7 +356,7 @@ function CheckpointRow({ entry, onRefresh }: CheckpointRowProps) {
               Restore
             </button>
             <button
-              onClick={handleDelete}
+              onClick={() => setConfirmDelete(true)}
               disabled={deleteMut.isPending || restoreMut.isPending}
               className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-danger/20 text-danger border border-danger/30 hover:bg-danger/30 disabled:opacity-50 transition-colors"
             >
@@ -371,6 +377,25 @@ function CheckpointRow({ entry, onRefresh }: CheckpointRowProps) {
           </td>
         </tr>
       )}
+      <ConfirmDialog
+        open={confirmRestore}
+        onOpenChange={setConfirmRestore}
+        title="Restore checkpoint?"
+        description={`Restore checkpoint for "${entry.mod_name}"? This will overwrite current translations.`}
+        confirmLabel="Restore"
+        loading={restoreMut.isPending}
+        onConfirm={() => restoreMut.mutate()}
+      />
+      <ConfirmDialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title="Delete checkpoint?"
+        description={`Delete this checkpoint for "${entry.mod_name}"? This cannot be undone.`}
+        confirmLabel="Delete"
+        variant="danger"
+        loading={deleteMut.isPending}
+        onConfirm={() => deleteMut.mutate()}
+      />
     </>
   )
 }

@@ -42,7 +42,7 @@ class JobCenter:
 
     def __init__(self):
         self._translate_pool = ThreadPoolExecutor(
-            max_workers=3, thread_name_prefix="job-translate"
+            thread_name_prefix="job-translate"
         )
         self._serial_pool = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="job-serial"

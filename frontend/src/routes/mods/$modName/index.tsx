@@ -1,7 +1,7 @@
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
+import { Breadcrumbs } from '@/components/shared/Breadcrumbs'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  ChevronLeft,
   Play,
   FileText,
   Archive,
@@ -618,7 +618,7 @@ function ModDetailPage() {
       <div className="card p-8 text-center text-text-muted">
         <AlertTriangle size={32} className="mx-auto mb-3 text-warning" />
         <p>Mod not found: <code className="text-text-main">{decodedName}</code></p>
-        <Link to="/mods" search={{ status: 'all', q: '' }} className="mt-4 inline-block text-accent hover:underline text-sm">
+        <Link to="/mods" search={{ status: 'all', q: '', sort_by: 'status', page: 0 }} className="mt-4 inline-block text-accent hover:underline text-sm">
           ← Back to mods
         </Link>
       </div>
@@ -629,17 +629,14 @@ function ModDetailPage() {
 
   return (
     <div className="space-y-5">
+      {/* Breadcrumbs */}
+      <Breadcrumbs items={[
+        { label: 'Mods', to: '/mods' },
+        { label: decodedName },
+      ]} />
+
       {/* Page header */}
       <div className="flex items-center gap-3">
-        <Link
-          to="/mods"
-          search={{ status: 'all', q: '' }}
-          className="flex items-center gap-1 text-sm text-text-muted hover:text-text-main transition-colors"
-        >
-          <ChevronLeft size={16} />
-          Mods
-        </Link>
-        <span className="text-border-subtle">/</span>
         <h1 className="text-xl font-bold text-text-main truncate flex-1 min-w-0" title={decodedName}>
           {decodedName}
         </h1>
@@ -669,7 +666,7 @@ function ModDetailPage() {
         <Link
           to="/mods/$modName/strings"
           params={{ modName }}
-          search={{ scope: 'all', status: 'needs_review', q: '', page: 1 }}
+          search={{ scope: 'all', status: 'needs_review', q: '', page: 1, sort_by: 'score', sort_dir: 'asc', rec_type: 'all' }}
           className={cn(
             'card p-4 block transition-colors',
             needsReview > 0 ? 'hover:bg-warning/5 cursor-pointer' : 'pointer-events-none',
@@ -901,7 +898,7 @@ function ModDetailPage() {
             <Link
               to="/mods/$modName/strings"
               params={{ modName }}
-              search={{ scope: 'all', status: 'all', q: '', page: 1 }}
+              search={{ scope: 'all', status: 'all', q: '', page: 1, sort_by: 'score', sort_dir: 'asc', rec_type: 'all' }}
               className={cn(
                 'flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors w-full',
                 'bg-bg-card2 text-text-muted hover:text-text-main hover:bg-bg-card2/80 border border-border-subtle',

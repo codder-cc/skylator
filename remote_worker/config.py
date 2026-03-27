@@ -24,12 +24,15 @@ class ModelConfig:
     top_p:              float = 0.9
     repetition_penalty: float = 1.05
     batch_size:         int   = 12
+    n_batch:            int   = 512   # llama.cpp: tokens processed in parallel during prefill
     flash_attn:         bool  = False
     # Language pair — used by LlamaCppBackend._translate_batch when building prompts locally
     source_lang:        str   = "English"
     target_lang:        str   = "Russian"
     # MLX only
     local_cache_dir:    str   = str(MODELS_CACHE)
+    draft_repo_id:      str   = ""    # MLX speculative decoding: smaller draft model HF repo
+    num_draft_tokens:   int   = 3     # tokens speculated per step
 
 
 class _Cfg:
@@ -68,9 +71,12 @@ def load_config(path) -> _Cfg:
         top_p              = m.get("top_p", 0.9),
         repetition_penalty = m.get("repetition_penalty", 1.05),
         batch_size         = m.get("batch_size", 12),
+        n_batch            = m.get("n_batch", 512),
         flash_attn         = m.get("flash_attn", False),
         source_lang        = t.get("source_lang", "English"),
         target_lang        = t.get("target_lang", "Russian"),
         local_cache_dir    = cache_dir,
+        draft_repo_id      = m.get("draft_repo_id", ""),
+        num_draft_tokens   = m.get("num_draft_tokens", 3),
     )
     return _Cfg(model_b, ens.get("backend_type", "llamacpp"))

@@ -31,6 +31,7 @@ class WorkerInfo:
     current_task: str = ""        # current string key (for UI)
     models:       list = field(default_factory=list)  # cached model files (pushed via heartbeat)
     stats:        dict = field(default_factory=dict)  # tps_avg, tps_last, queue_depth, jobs_completed
+    hardware:     dict = field(default_factory=dict)  # ram_total_mb, vram_total_mb, cpu_name, etc.
     host_reachable_url: str = ""  # host URL as seen by this worker (set from request.host_url at register time)
 
     def to_dict(self) -> dict:
@@ -46,6 +47,7 @@ class WorkerInfo:
             "current_task": self.current_task,
             "models":       self.models,
             "stats":        self.stats,
+            "hardware":     self.hardware,
             "alive":        (time.time() - self.last_seen) < WorkerRegistry.HEARTBEAT_TTL,
         }
 
@@ -81,7 +83,7 @@ class WorkerRegistry:
 
     def heartbeat(self, label: str, models: list | None = None,
                   model: str | None = None, backend_type: str | None = None,
-                  stats: dict | None = None) -> bool:
+                  stats: dict | None = None, hardware: dict | None = None) -> bool:
         """Update last_seen and any pushed fields.
         Returns False if unknown (caller should ask remote to re-register)."""
         with self._lock:
@@ -93,6 +95,7 @@ class WorkerRegistry:
             if model        is not None: w.model        = model
             if backend_type is not None: w.backend_type = backend_type
             if stats        is not None: w.stats        = stats
+            if hardware     is not None: w.hardware     = hardware
             return True
 
     def remove(self, label: str) -> None:

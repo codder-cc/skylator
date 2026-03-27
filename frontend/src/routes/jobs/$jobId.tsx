@@ -1,4 +1,5 @@
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { QK } from '@/lib/queryKeys'
 import { jobsApi } from '@/api/jobs'
@@ -8,11 +9,12 @@ import { SourceBadge } from '@/components/shared/SourceBadge'
 import { ProgressBar } from '@/components/shared/ProgressBar'
 import { LogViewer } from '@/components/shared/LogViewer'
 import { TimeAgo } from '@/components/shared/TimeAgo'
+import { Breadcrumbs } from '@/components/shared/Breadcrumbs'
+import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { JOB_TERMINAL_STATUSES } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 import type { WorkerStatus, StringUpdate } from '@/types'
 import {
-  ChevronLeft,
   Clock,
   Timer,
   Zap,
@@ -304,20 +306,35 @@ function StringUpdatesPanel({ updates }: { updates: StringUpdate[] }) {
 
 function CancelButton({ jobId }: { jobId: string }) {
   const qc = useQueryClient()
+  const [open, setOpen] = useState(false)
   const mut = useMutation({
     mutationFn: () => jobsApi.cancel(jobId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: QK.job(jobId) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.job(jobId) })
+      setOpen(false)
+    },
   })
 
   return (
-    <button
-      onClick={() => mut.mutate()}
-      disabled={mut.isPending}
-      className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-danger/20 text-danger border border-danger/30 hover:bg-danger/30 disabled:opacity-50 transition-colors"
-    >
-      {mut.isPending ? <RefreshCw size={11} className="animate-spin" /> : <XCircle size={11} />}
-      Cancel
-    </button>
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-danger/20 text-danger border border-danger/30 hover:bg-danger/30 transition-colors"
+      >
+        <XCircle size={11} />
+        Cancel
+      </button>
+      <ConfirmDialog
+        open={open}
+        onOpenChange={setOpen}
+        title="Cancel job?"
+        description="The job will be stopped. You can resume it later if it's a translate job."
+        confirmLabel="Cancel job"
+        variant="danger"
+        loading={mut.isPending}
+        onConfirm={() => mut.mutate()}
+      />
+    </>
   )
 }
 
@@ -375,11 +392,14 @@ function JobDetailPage() {
 
   return (
     <div className="space-y-4">
+      {/* Breadcrumbs */}
+      <Breadcrumbs items={[
+        { label: 'Jobs', to: '/jobs' },
+        { label: job.name },
+      ]} />
+
       {/* Header */}
       <div className="flex items-center gap-3">
-        <Link to="/jobs" className="text-text-muted hover:text-text-main transition-colors">
-          <ChevronLeft size={18} />
-        </Link>
         <h1 className="text-xl font-bold text-text-main flex-1 min-w-0 truncate">
           {job.name}
         </h1>

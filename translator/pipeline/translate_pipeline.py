@@ -105,7 +105,7 @@ class TranslatePipeline:
 
             string_ids = [s["id"] for s in strings if s.get("id")]
             if string_ids:
-                machine_label = backends[0][0] if backends else "Local GPU"
+                machine_label = backends[0][0] if backends else job.name
                 acq = _reservation_mgr.acquire_batch(string_ids, machine_label, job.id)
                 if acq.already_taken:
                     job.add_log(f"Skipped {len(acq.already_taken)} strings reserved by another job")
@@ -165,6 +165,8 @@ class TranslatePipeline:
                 if r.get("token_issues"):
                     job.add_log(f"Token mismatch [{s['key']}]: {'; '.join(r['token_issues'])}")
 
+                actual_label = r.get("machine_label") or (backends[0][0] if backends else "")
+
                 # Step 10: Save via StringManager
                 result = self._string_mgr.save_string(
                     mod_name=mod_name,
@@ -173,7 +175,7 @@ class TranslatePipeline:
                     translation=translation,
                     original=s.get("original", ""),
                     source="ai",
-                    machine_label=backends[0][0] if backends else "",
+                    machine_label=actual_label,
                     job_id=job.id,
                     quality_score=r.get("quality_score"),
                     status=r.get("status"),
@@ -191,7 +193,7 @@ class TranslatePipeline:
                     job, s["key"], s["esp"],
                     translation, result.status, result.quality_score,
                     source="ai",
-                    machine_label=backends[0][0] if backends else None,
+                    machine_label=actual_label,
                 )
                 with _tm_lock:
                     tm_pairs[s.get("original", "")] = translation

@@ -4,7 +4,14 @@ import { useState, useEffect, useRef } from 'react'
 import { workersApi } from '@/api/workers'
 import { QK } from '@/lib/queryKeys'
 import { timeAgo, cn } from '@/lib/utils'
-import type { WorkerInfo, SetupReport, CachedModel } from '@/types'
+import type { WorkerInfo, SetupReport, CachedModel, BenchmarkResult } from '@/types'
+import {
+  MODEL_CATALOG,
+  estimateVram,
+  recommendedGpuLayers,
+  getRecommendedPresets,
+  type ModelEntry,
+} from '@/lib/modelCatalog'
 import {
   Server,
   RefreshCw,
@@ -19,49 +26,42 @@ import {
   Loader2,
   X,
   Trash2,
+  Cpu,
+  MemoryStick,
+  Play,
 } from 'lucide-react'
 
-// ── Presets ───────────────────────────────────────────────────────────────────
-interface Preset {
+// ── Resource bar ──────────────────────────────────────────────────────────────
+function ResourceBar({
+  label,
+  usedMb,
+  totalMb,
+  note,
+}: {
   label: string
-  repo_id: string
-  gguf_filename: string
-  backend_type: 'llamacpp' | 'mlx'
+  usedMb: number
+  totalMb: number
+  note?: string
+}) {
+  if (totalMb <= 0) return null
+  const pct     = Math.min(100, Math.round((usedMb / totalMb) * 100))
+  const barColor =
+    pct >= 90 ? 'bg-danger' : pct >= 75 ? 'bg-warning' : 'bg-success'
+  const usedGb  = (usedMb  / 1024).toFixed(1)
+  const totalGb = (totalMb / 1024).toFixed(1)
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className="text-text-muted w-12 shrink-0">{label}</span>
+      <div className="flex-1 h-1.5 bg-bg-base rounded-full overflow-hidden">
+        <div className={cn('h-full rounded-full transition-all', barColor)} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="text-text-muted whitespace-nowrap">
+        {usedGb} / {totalGb} GB
+        {note && <span className="opacity-60"> {note}</span>}
+      </span>
+    </div>
+  )
 }
-
-const PRESETS: Preset[] = [
-  {
-    label: 'Qwen3.5-27B 4bit MLX — Huihui (Apple Silicon)',
-    repo_id: 'mlx-community/Huihui-Qwen3.5-27B-Claude-4.6-Opus-abliterated-4bit',
-    gguf_filename: '',
-    backend_type: 'mlx',
-  },
-  {
-    label: 'Qwen3.5-27B Q4_K_M GGUF — Huihui (CUDA / Metal)',
-    repo_id: 'Sepolian/Huihui-Qwen3.5-27B-Claude-4.6-Opus-abliterated-Q4_K_M',
-    gguf_filename: 'Huihui-Qwen3.5-27B-Claude-4.6-Opus-abliterated-Q4_K_M.gguf',
-    backend_type: 'llamacpp',
-  },
-  {
-    label: 'Qwen3.5-27B 4bit MLX — Instruct',
-    repo_id: 'mlx-community/Qwen3.5-27B-Instruct-4bit',
-    gguf_filename: '',
-    backend_type: 'mlx',
-  },
-  {
-    label: 'Qwen3.5-27B Q4_K_M GGUF — Instruct',
-    repo_id: 'huihui-ai/Qwen3.5-27B-Instruct-GGUF',
-    gguf_filename: 'Qwen3.5-27B-Instruct-Q4_K_M.gguf',
-    backend_type: 'llamacpp',
-  },
-  {
-    label: 'Qwen3-14B Q4_K_M GGUF',
-    repo_id: 'bartowski/Qwen3-14B-GGUF',
-    gguf_filename: 'Qwen3-14B-Q4_K_M.gguf',
-    backend_type: 'llamacpp',
-  },
-  { label: 'Custom', repo_id: '', gguf_filename: '', backend_type: 'llamacpp' },
-]
 
 // ── Load Model Dialog ─────────────────────────────────────────────────────────
 interface LoadModelDialogProps {
@@ -70,46 +70,80 @@ interface LoadModelDialogProps {
 }
 
 function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
-  const qc = useQueryClient()
-  const [tab, setTab] = useState<'hf' | 'local'>('hf')
-  const [presetIdx, setPresetIdx] = useState(0)
-  const [repoId, setRepoId] = useState(PRESETS[0].repo_id)
-  const [ggufFile, setGgufFile] = useState(PRESETS[0].gguf_filename)
-  const [localPath, setLocalPath] = useState('')
-  const [backendType, setBackendType] = useState<'llamacpp' | 'mlx'>(PRESETS[0].backend_type)
-  const [gpuLayers, setGpuLayers] = useState(-1)
-  const [nCtx, setNCtx] = useState(8192)
-  const [batchSize, setBatchSize] = useState(12)
-  const [maxNewTokens, setMaxNewTokens] = useState(2048)
-  const [loadStatus, setLoadStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
-  const [errorMsg, setErrorMsg] = useState('')
+  const qc       = useQueryClient()
+  const hw       = worker.hardware
+  const presets  = hw ? getRecommendedPresets(hw) : MODEL_CATALOG.map((m) => ({ ...m, fit: 'full' as const, recommended: false }))
 
-  const handlePreset = (idx: number) => {
-    setPresetIdx(idx)
-    const p = PRESETS[idx]
-    setRepoId(p.repo_id)
-    setGgufFile(p.gguf_filename)
-    setBackendType(p.backend_type)
+  // Pick first recommended preset, or first entry
+  const defaultPreset = presets.find((p) => p.recommended) ?? presets[0]
+
+  const [tab, setTab]               = useState<'hf' | 'local'>('hf')
+  const [selectedId, setSelectedId] = useState<string>(defaultPreset.id)
+  const [repoId, setRepoId]         = useState(defaultPreset.repoId)
+  const [ggufFile, setGgufFile]     = useState(defaultPreset.ggufFilename)
+  const [localPath, setLocalPath]   = useState('')
+  const [backendType, setBackendType] = useState<'llamacpp' | 'mlx'>(defaultPreset.backend)
+  const [gpuLayers, setGpuLayers]   = useState(defaultPreset.defaultParams.n_gpu_layers ?? -1)
+  const [nCtx, setNCtx]             = useState(defaultPreset.defaultParams.n_ctx)
+  const [nBatch, setNBatch]         = useState(defaultPreset.defaultParams.n_batch ?? 512)
+  const [batchSize, setBatchSize]   = useState(defaultPreset.defaultParams.batch_size)
+  const [maxNewTokens, setMaxNewTokens] = useState(2048)
+  const [draftRepoId, setDraftRepoId]  = useState(defaultPreset.draftRepoId ?? '')
+  const [loadStatus, setLoadStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
+  const [errorMsg, setErrorMsg]     = useState('')
+
+  const handlePresetChange = (id: string) => {
+    const p = presets.find((e) => e.id === id)
+    if (!p) return
+    setSelectedId(id)
+    setRepoId(p.repoId)
+    setGgufFile(p.ggufFilename)
+    setBackendType(p.backend)
+    setGpuLayers(p.defaultParams.n_gpu_layers ?? -1)
+    setNCtx(p.defaultParams.n_ctx)
+    setNBatch(p.defaultParams.n_batch ?? 512)
+    setBatchSize(p.defaultParams.batch_size)
+    setDraftRepoId(p.draftRepoId ?? '')
   }
 
   const selectCached = (m: CachedModel) => {
     setTab('local')
     setLocalPath(m.path)
     setBackendType(m.backend === 'mlx' ? 'mlx' : 'llamacpp')
-    setPresetIdx(PRESETS.length - 1) // Custom
+    setSelectedId('__custom__')
   }
+
+  // Live VRAM estimate
+  const catalogEntry: ModelEntry | undefined =
+    MODEL_CATALOG.find((m) => m.id === selectedId)
+
+  const vramEst = catalogEntry && backendType === 'llamacpp'
+    ? estimateVram(catalogEntry, gpuLayers, nCtx)
+    : null
+
+  const vramAvailMb = hw
+    ? (hw.unified_memory ? hw.ram_free_mb : hw.vram_free_mb)
+    : 0
+  const vramTotalMb = hw
+    ? (hw.unified_memory ? hw.ram_total_mb : hw.vram_total_mb)
+    : 0
+  const vramUsedMb  = vramAvailMb > 0 && vramTotalMb > 0
+    ? vramTotalMb - vramAvailMb
+    : 0
 
   const handleSubmit = async () => {
     setLoadStatus('loading')
     setErrorMsg('')
     try {
       const body: Record<string, unknown> = {
-        backend_type: backendType,
-        n_gpu_layers: gpuLayers,
-        n_ctx: nCtx,
-        batch_size: batchSize,
+        backend_type:   backendType,
+        n_gpu_layers:   gpuLayers,
+        n_ctx:          nCtx,
+        n_batch:        nBatch,
+        batch_size:     batchSize,
         max_new_tokens: maxNewTokens,
       }
+      if (draftRepoId) body.draft_repo_id = draftRepoId
       if (tab === 'hf') {
         body.repo_id = repoId
         if (ggufFile) body.gguf_filename = ggufFile
@@ -134,7 +168,7 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
   )
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 overflow-y-auto py-4">
       <div className="bg-bg-card border border-border-subtle rounded-lg w-full max-w-xl shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-border-subtle">
@@ -145,17 +179,48 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
         </div>
 
         <div className="p-5 space-y-4">
+          {/* Hardware info */}
+          {hw && (
+            <div className="p-3 bg-bg-base rounded border border-border-subtle space-y-1.5">
+              <div className="flex items-center gap-2 text-xs text-text-muted mb-1">
+                <Cpu className="w-3 h-3" />
+                <span>{hw.cpu_name} ({hw.cpu_cores}c)</span>
+                {hw.unified_memory && (
+                  <span className="px-1.5 py-0.5 rounded text-[10px] bg-accent/20 text-accent">unified</span>
+                )}
+              </div>
+              <ResourceBar
+                label={hw.unified_memory ? 'Memory' : 'RAM'}
+                usedMb={hw.ram_total_mb - hw.ram_free_mb}
+                totalMb={hw.ram_total_mb}
+              />
+              {!hw.unified_memory && hw.vram_total_mb > 0 && (
+                <ResourceBar
+                  label="VRAM"
+                  usedMb={hw.vram_total_mb - hw.vram_free_mb}
+                  totalMb={hw.vram_total_mb}
+                />
+              )}
+            </div>
+          )}
+
           {/* Preset */}
           <div>
-            <label className="block text-xs text-text-muted mb-1">Preset</label>
+            <label className="block text-xs text-text-muted mb-1">Model Preset</label>
             <select
-              value={presetIdx}
-              onChange={(e) => handlePreset(Number(e.target.value))}
+              value={selectedId}
+              onChange={(e) => handlePresetChange(e.target.value)}
               className="w-full bg-bg-card2 border border-border-subtle rounded px-3 py-2 text-sm text-text-main"
             >
-              {PRESETS.map((p, i) => (
-                <option key={p.label} value={i}>{p.label}</option>
+              {presets.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.recommended ? '★ ' : p.fit === 'full' ? '✓ ' : p.fit === 'partial' ? '⚠ ' : '✗ '}
+                  {p.label}
+                  {' · '}
+                  {Math.round(p.sizeMb / 1024)} GB
+                </option>
               ))}
+              <option value="__custom__">Custom</option>
             </select>
           </div>
 
@@ -197,6 +262,17 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
                   placeholder="model-Q4_K_M.gguf (blank for MLX)"
                 />
               </div>
+              {backendType === 'mlx' && (
+                <div>
+                  <label className="block text-xs text-text-muted mb-1">Draft Model Repo (speculative decoding, optional)</label>
+                  <input
+                    value={draftRepoId}
+                    onChange={(e) => setDraftRepoId(e.target.value)}
+                    className="w-full bg-bg-card2 border border-border-subtle rounded px-3 py-2 text-sm text-text-main font-mono"
+                    placeholder="mlx-community/Qwen2.5-1.5B-Instruct-4bit"
+                  />
+                </div>
+              )}
             </div>
           ) : (
             <div>
@@ -243,15 +319,31 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
                 <option value="mlx">mlx</option>
               </select>
             </div>
-            <div>
-              <label className="block text-xs text-text-muted mb-1">GPU Layers</label>
-              <input
-                type="number"
-                value={gpuLayers}
-                onChange={(e) => setGpuLayers(Number(e.target.value))}
-                className="w-full bg-bg-card2 border border-border-subtle rounded px-3 py-2 text-sm text-text-main"
-              />
-            </div>
+            {backendType === 'llamacpp' && (
+              <div>
+                <label className="block text-xs text-text-muted mb-1">
+                  GPU Layers
+                  {hw && catalogEntry && backendType === 'llamacpp' && (
+                    <button
+                      type="button"
+                      className="ml-2 text-accent hover:underline"
+                      onClick={() => {
+                        const rec = recommendedGpuLayers(catalogEntry, vramAvailMb, nCtx)
+                        setGpuLayers(rec)
+                      }}
+                    >
+                      auto
+                    </button>
+                  )}
+                </label>
+                <input
+                  type="number"
+                  value={gpuLayers}
+                  onChange={(e) => setGpuLayers(Number(e.target.value))}
+                  className="w-full bg-bg-card2 border border-border-subtle rounded px-3 py-2 text-sm text-text-main"
+                />
+              </div>
+            )}
             <div>
               <label className="block text-xs text-text-muted mb-1">Context (n_ctx)</label>
               <input
@@ -261,6 +353,17 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
                 className="w-full bg-bg-card2 border border-border-subtle rounded px-3 py-2 text-sm text-text-main"
               />
             </div>
+            {backendType === 'llamacpp' && (
+              <div>
+                <label className="block text-xs text-text-muted mb-1">Prefill Batch (n_batch)</label>
+                <input
+                  type="number"
+                  value={nBatch}
+                  onChange={(e) => setNBatch(Number(e.target.value))}
+                  className="w-full bg-bg-card2 border border-border-subtle rounded px-3 py-2 text-sm text-text-main"
+                />
+              </div>
+            )}
             <div>
               <label className="block text-xs text-text-muted mb-1">Batch Size</label>
               <input
@@ -270,7 +373,7 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
                 className="w-full bg-bg-card2 border border-border-subtle rounded px-3 py-2 text-sm text-text-main"
               />
             </div>
-            <div className="col-span-2">
+            <div>
               <label className="block text-xs text-text-muted mb-1">Max New Tokens</label>
               <input
                 type="number"
@@ -280,6 +383,31 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
               />
             </div>
           </div>
+
+          {/* VRAM estimate preview */}
+          {vramEst && vramTotalMb > 0 && (
+            <div className="p-3 bg-bg-base rounded border border-border-subtle space-y-2">
+              <div className="text-xs text-text-muted font-medium">VRAM estimate</div>
+              <ResourceBar
+                label={hw?.unified_memory ? 'Memory' : 'VRAM'}
+                usedMb={vramUsedMb + vramEst.totalMb}
+                totalMb={vramTotalMb}
+                note={`+${Math.round(vramEst.totalMb / 1024 * 10) / 10} GB (model ${Math.round(vramEst.modelMb / 1024 * 10) / 10} + kv ${Math.round(vramEst.kvMb / 1024 * 10) / 10})`}
+              />
+              {vramEst.layersOnCpu > 0 && (
+                <div className="text-xs text-warning flex items-center gap-1">
+                  <AlertCircle className="w-3 h-3" />
+                  {vramEst.layersOnCpu} layer{vramEst.layersOnCpu !== 1 ? 's' : ''} on CPU — inference will be slower
+                </div>
+              )}
+              {vramEst.layersOnCpu === 0 && (
+                <div className="text-xs text-success flex items-center gap-1">
+                  <CheckCircle className="w-3 h-3" />
+                  All layers fit in {hw?.unified_memory ? 'memory' : 'VRAM'}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Status messages */}
           {loadStatus === 'loading' && (
@@ -318,6 +446,152 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
             className="px-4 py-2 rounded text-sm font-medium bg-accent text-bg-base hover:opacity-90 disabled:opacity-50"
           >
             {loadStatus === 'loading' ? 'Loading…' : 'Load Model'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Benchmark Panel ───────────────────────────────────────────────────────────
+function BenchmarkPanel({ worker, onClose }: { worker: WorkerInfo; onClose: () => void }) {
+  const qc = useQueryClient()
+  const [result, setResult] = useState<BenchmarkResult | null>(null)
+  const [running, setRunning] = useState(false)
+  const [err, setErr] = useState('')
+
+  const applyMut = useMutation({
+    mutationFn: (params: Record<string, unknown>) =>
+      workersApi.loadModel(worker.label, params as Parameters<typeof workersApi.loadModel>[1]),
+    onSuccess: () => qc.invalidateQueries({ queryKey: QK.workers() }),
+  })
+
+  const run = async () => {
+    setRunning(true)
+    setErr('')
+    setResult(null)
+    try {
+      const r = await workersApi.benchmark(worker.label)
+      if (r.error) setErr(r.error)
+      else setResult(r)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Unknown error')
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  const applyRecommended = () => {
+    if (!result) return
+    const p = result.recommended_params
+    const body: Record<string, unknown> = {
+      backend_type:   worker.backend_type || 'llamacpp',
+      batch_size:     p.batch_size,
+      n_ctx:          p.n_ctx,
+      n_batch:        p.n_batch,
+      n_gpu_layers:   -1,
+      max_new_tokens: 2048,
+    }
+    applyMut.mutate(body)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+      <div className="bg-bg-card border border-border-subtle rounded-lg w-full max-w-lg shadow-2xl">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border-subtle">
+          <h2 className="font-semibold text-text-main">Benchmark — {worker.label}</h2>
+          <button onClick={onClose} className="text-text-muted hover:text-text-main">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {!result && !running && (
+            <p className="text-sm text-text-muted">
+              Runs 3 sample batches (short strings, medium sentences, token-heavy text),
+              measures TPS, and checks translation quality.
+            </p>
+          )}
+          {running && (
+            <div className="flex items-center gap-2 text-accent">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              <span className="text-sm">Running benchmark — may take 1–3 minutes…</span>
+            </div>
+          )}
+          {err && (
+            <div className="flex items-center gap-2 text-sm text-danger">
+              <AlertCircle className="w-3 h-3" />
+              {err}
+            </div>
+          )}
+          {result && (
+            <div className="space-y-3">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs text-text-muted border-b border-border-subtle">
+                    <th className="py-1 text-left">Sample</th>
+                    <th className="py-1 text-right">Time</th>
+                    <th className="py-1 text-right">TPS</th>
+                    <th className="py-1 text-center">Cyrillic</th>
+                    <th className="py-1 text-center">Tokens</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.results.map((r) => (
+                    <tr key={r.label} className="border-b border-border-subtle/40">
+                      <td className="py-1.5 text-text-main capitalize">{r.label}</td>
+                      <td className="py-1.5 text-right text-text-muted">{r.elapsed_sec}s</td>
+                      <td className="py-1.5 text-right text-text-main font-mono">{r.tps}</td>
+                      <td className="py-1.5 text-center">
+                        {r.cyrillic_ok
+                          ? <CheckCircle className="w-3.5 h-3.5 text-success mx-auto" />
+                          : <AlertCircle className="w-3.5 h-3.5 text-danger mx-auto" />}
+                      </td>
+                      <td className="py-1.5 text-center">
+                        {r.token_preserved
+                          ? <CheckCircle className="w-3.5 h-3.5 text-success mx-auto" />
+                          : <AlertCircle className="w-3.5 h-3.5 text-warning mx-auto" />}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="text-sm text-text-main">
+                Average TPS: <span className="font-mono font-semibold">{result.tps_avg}</span>
+              </div>
+              {result.recommended_params && (
+                <div className="text-xs text-text-muted bg-bg-base rounded p-2 font-mono">
+                  Recommended: batch_size={result.recommended_params.batch_size}&nbsp;
+                  n_ctx={result.recommended_params.n_ctx}&nbsp;
+                  n_batch={result.recommended_params.n_batch}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 px-5 py-4 border-t border-border-subtle">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 rounded text-sm text-text-muted hover:text-text-main bg-bg-card2 border border-border-subtle"
+          >
+            Close
+          </button>
+          {result?.recommended_params && (
+            <button
+              onClick={applyRecommended}
+              disabled={applyMut.isPending}
+              className="px-4 py-2 rounded text-sm bg-bg-card2 border border-border-subtle text-text-main hover:bg-bg-card disabled:opacity-50"
+            >
+              {applyMut.isPending ? 'Applying…' : 'Apply Recommended'}
+            </button>
+          )}
+          <button
+            onClick={run}
+            disabled={running || !worker.model}
+            className="px-4 py-2 rounded text-sm font-medium bg-accent text-bg-base hover:opacity-90 disabled:opacity-50"
+          >
+            {running ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Run Benchmark'}
           </button>
         </div>
       </div>
@@ -367,10 +641,12 @@ function SetupReportRow({ report }: { report: SetupReport }) {
 interface WorkerRowProps {
   worker: WorkerInfo
   onLoad: (worker: WorkerInfo) => void
+  onBenchmark: (worker: WorkerInfo) => void
 }
 
-function WorkerRow({ worker, onLoad }: WorkerRowProps) {
+function WorkerRow({ worker, onLoad, onBenchmark }: WorkerRowProps) {
   const qc = useQueryClient()
+  const hw  = worker.hardware
   const unloadMut = useMutation({
     mutationFn: () => workersApi.unloadModel(worker.label),
     onSuccess: () => qc.invalidateQueries({ queryKey: QK.workers() }),
@@ -391,7 +667,33 @@ function WorkerRow({ worker, onLoad }: WorkerRowProps) {
       </td>
       <td className="px-4 py-3 text-xs text-text-muted font-mono">{worker.url}</td>
       <td className="px-4 py-3 text-xs text-text-main">{worker.model ?? '—'}</td>
-      <td className="px-4 py-3 text-xs text-text-muted">{worker.gpu ?? '—'}</td>
+      <td className="px-4 py-3">
+        {hw ? (
+          <div className="space-y-1 min-w-[160px]">
+            <div className="flex items-center gap-1 text-[10px] text-text-muted mb-0.5">
+              <Cpu className="w-2.5 h-2.5" />
+              <span className="truncate max-w-[140px]" title={hw.cpu_name}>{hw.cpu_name}</span>
+              {hw.unified_memory && (
+                <span className="px-1 rounded text-[9px] bg-accent/20 text-accent">unified</span>
+              )}
+            </div>
+            <ResourceBar
+              label={hw.unified_memory ? 'Mem' : 'RAM'}
+              usedMb={hw.ram_total_mb - hw.ram_free_mb}
+              totalMb={hw.ram_total_mb}
+            />
+            {!hw.unified_memory && hw.vram_total_mb > 0 && (
+              <ResourceBar
+                label="VRAM"
+                usedMb={hw.vram_total_mb - hw.vram_free_mb}
+                totalMb={hw.vram_total_mb}
+              />
+            )}
+          </div>
+        ) : (
+          <span className="text-xs text-text-muted">{worker.gpu ?? '—'}</span>
+        )}
+      </td>
       <td className="px-4 py-3">
         <span
           className={cn(
@@ -412,25 +714,34 @@ function WorkerRow({ worker, onLoad }: WorkerRowProps) {
         {worker.current_task ?? '—'}
       </td>
       <td className="px-4 py-3">
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-1.5">
           <button
             onClick={() => onLoad(worker)}
             className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-accent/20 text-accent border border-accent/30 hover:bg-accent/30 transition-colors"
           >
             <Upload className="w-3 h-3" />
-            Load Model
+            Load
           </button>
           {worker.model && (
-            <button
-              onClick={() => unloadMut.mutate()}
-              disabled={unloadMut.isPending}
-              className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-danger/20 text-danger border border-danger/30 hover:bg-danger/30 disabled:opacity-50 transition-colors"
-            >
-              {unloadMut.isPending
-                ? <Loader2 className="w-3 h-3 animate-spin" />
-                : <PowerOff className="w-3 h-3" />}
-              Unload
-            </button>
+            <>
+              <button
+                onClick={() => unloadMut.mutate()}
+                disabled={unloadMut.isPending}
+                className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-danger/20 text-danger border border-danger/30 hover:bg-danger/30 disabled:opacity-50 transition-colors"
+              >
+                {unloadMut.isPending
+                  ? <Loader2 className="w-3 h-3 animate-spin" />
+                  : <PowerOff className="w-3 h-3" />}
+                Unload
+              </button>
+              <button
+                onClick={() => onBenchmark(worker)}
+                className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-bg-card2 text-text-muted border border-border-subtle hover:text-text-main transition-colors"
+              >
+                <Play className="w-3 h-3" />
+                Benchmark
+              </button>
+            </>
           )}
         </div>
       </td>
@@ -441,7 +752,8 @@ function WorkerRow({ worker, onLoad }: WorkerRowProps) {
 // ── Main Page ─────────────────────────────────────────────────────────────────
 function ServersPage() {
   const qc = useQueryClient()
-  const [loadModalWorker, setLoadModalWorker] = useState<WorkerInfo | null>(null)
+  const [loadModalWorker, setLoadModalWorker]       = useState<WorkerInfo | null>(null)
+  const [benchmarkWorker, setBenchmarkWorker] = useState<WorkerInfo | null>(null)
   const [scanPoll, setScanPoll] = useState(false)
   const scanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -520,14 +832,19 @@ function ServersPage() {
             <table className="w-full text-left">
               <thead>
                 <tr className="text-xs text-text-muted">
-                  {['Label', 'URL', 'Model', 'GPU', 'Backend', 'Last Seen', 'Current Task', 'Actions'].map((h) => (
+                  {['Label', 'URL', 'Model', 'Resources', 'Backend', 'Last Seen', 'Current Task', 'Actions'].map((h) => (
                     <th key={h} className="px-4 py-3 font-medium whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {workers.map((w) => (
-                  <WorkerRow key={w.label} worker={w} onLoad={setLoadModalWorker} />
+                  <WorkerRow
+                    key={w.label}
+                    worker={w}
+                    onLoad={setLoadModalWorker}
+                    onBenchmark={setBenchmarkWorker}
+                  />
                 ))}
               </tbody>
             </table>
@@ -617,6 +934,14 @@ function ServersPage() {
         <LoadModelDialog
           worker={loadModalWorker}
           onClose={() => setLoadModalWorker(null)}
+        />
+      )}
+
+      {/* Benchmark Modal */}
+      {benchmarkWorker && (
+        <BenchmarkPanel
+          worker={benchmarkWorker}
+          onClose={() => setBenchmarkWorker(null)}
         />
       )}
     </div>

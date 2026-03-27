@@ -59,6 +59,7 @@ class ModelConfig:
     top_p:              float = 0.9
     repetition_penalty: float = 1.05
     batch_size:         int   = 12
+    n_batch:            int   = 512   # llama.cpp: tokens processed in parallel during prefill
     flash_attn:         bool  = False
     cpu_offload:        bool  = False
     max_memory:         dict  = field(default_factory=dict)

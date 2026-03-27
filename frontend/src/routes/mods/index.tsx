@@ -1,7 +1,10 @@
 import { useState, useEffect, useMemo } from 'react'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Search, RefreshCw, Play, FileText, Archive } from 'lucide-react'
+import {
+  Search, RefreshCw, Play, FileText, Archive,
+  ArrowUpDown, CheckSquare, Square, X, ChevronDown,
+} from 'lucide-react'
 import { modsApi } from '@/api/mods'
 import { jobsApi } from '@/api/jobs'
 import { QK } from '@/lib/queryKeys'
@@ -11,10 +14,14 @@ import { ProgressBar } from '@/components/shared/ProgressBar'
 import { useMachines } from '@/hooks/useMachines'
 import type { ModInfo } from '@/types'
 
+type SortBy = 'status' | 'name' | 'pct' | 'pending'
+
 export const Route = createFileRoute('/mods/')({
   validateSearch: (search: Record<string, unknown>) => ({
-    status: (search.status as string) || 'all',
-    q: (search.q as string) || '',
+    status:  (search.status  as string)  || 'all',
+    q:       (search.q       as string)  || '',
+    sort_by: (search.sort_by as SortBy)  || 'status',
+    page:    Number(search.page)         || 0,
   }),
   component: ModsPage,
 })
@@ -27,6 +34,13 @@ const STATUS_TABS = [
   { value: 'error',   label: 'Error' },
 ] as const
 
+const SORT_OPTIONS: { value: SortBy; label: string }[] = [
+  { value: 'status',  label: 'Status' },
+  { value: 'name',    label: 'Name' },
+  { value: 'pct',     label: '% Done' },
+  { value: 'pending', label: 'Pending strings' },
+]
+
 const STATUS_SORT_ORDER: Record<string, number> = {
   error:      0,
   pending:    1,
@@ -36,12 +50,26 @@ const STATUS_SORT_ORDER: Record<string, number> = {
   done:       5,
 }
 
-function sortMods(mods: ModInfo[]): ModInfo[] {
+function sortMods(mods: ModInfo[], sortBy: SortBy): ModInfo[] {
   return [...mods].sort((a, b) => {
-    const ao = STATUS_SORT_ORDER[a.status] ?? 2
-    const bo = STATUS_SORT_ORDER[b.status] ?? 2
-    if (ao !== bo) return ao - bo
-    return a.folder_name.localeCompare(b.folder_name)
+    switch (sortBy) {
+      case 'name':
+        return a.folder_name.localeCompare(b.folder_name)
+      case 'pct':
+        return (b.pct ?? 0) - (a.pct ?? 0)
+      case 'pending': {
+        const aPending = (a.total_strings ?? 0) - (a.translated_strings ?? 0)
+        const bPending = (b.total_strings ?? 0) - (b.translated_strings ?? 0)
+        if (bPending !== aPending) return bPending - aPending
+        return a.folder_name.localeCompare(b.folder_name)
+      }
+      default: { // status
+        const ao = STATUS_SORT_ORDER[a.status] ?? 2
+        const bo = STATUS_SORT_ORDER[b.status] ?? 2
+        if (ao !== bo) return ao - bo
+        return a.folder_name.localeCompare(b.folder_name)
+      }
+    }
   })
 }
 
@@ -61,10 +89,17 @@ function SkeletonCard() {
   )
 }
 
-function ModCard({ mod }: { mod: ModInfo }) {
+interface ModCardProps {
+  mod: ModInfo
+  selected: boolean
+  onToggleSelect: (name: string) => void
+}
+
+function ModCard({ mod, selected, onToggleSelect }: ModCardProps) {
   const navigate = useNavigate()
   const machines = useMachines()
   const queryClient = useQueryClient()
+  const pendingCount = (mod.total_strings ?? 0) - (mod.translated_strings ?? 0)
 
   const translateMutation = useMutation({
     mutationFn: () =>
@@ -86,13 +121,32 @@ function ModCard({ mod }: { mod: ModInfo }) {
   const isActionable = mod.status !== 'no_strings' && mod.status !== 'done'
 
   return (
-    <div className="card p-5 flex flex-col gap-3 hover:bg-bg-card2/50 transition-colors">
+    <div
+      className={cn(
+        'card p-5 flex flex-col gap-3 hover:bg-bg-card2/50 transition-colors relative',
+        selected && 'ring-2 ring-accent/60',
+      )}
+    >
+      {/* Selection checkbox */}
+      <button
+        onClick={() => onToggleSelect(mod.folder_name)}
+        className={cn(
+          'absolute top-3 right-3 transition-opacity',
+          selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
+        )}
+        aria-label={selected ? 'Deselect' : 'Select'}
+      >
+        {selected
+          ? <CheckSquare size={16} className="text-accent" />
+          : <Square size={16} className="text-text-muted/40 hover:text-text-muted" />}
+      </button>
+
       {/* Header */}
-      <div className="flex items-start justify-between gap-2 min-w-0">
+      <div className="flex items-start gap-2 min-w-0 pr-5">
         <Link
           to="/mods/$modName"
           params={{ modName: encodeURIComponent(mod.folder_name) }}
-          className="text-sm font-semibold text-text-main hover:text-accent transition-colors truncate leading-snug"
+          className="text-sm font-semibold text-text-main hover:text-accent transition-colors truncate leading-snug flex-1"
           title={mod.folder_name}
         >
           {mod.folder_name}
@@ -113,6 +167,9 @@ function ModCard({ mod }: { mod: ModInfo }) {
             {' / '}
             <span className="text-text-main font-medium">{mod.total_strings}</span>
             {' strings'}
+            {pendingCount > 0 && (
+              <span className="ml-1.5 text-warning/80">({pendingCount} pending)</span>
+            )}
           </span>
         ) : (
           <span className="italic">No strings</span>
@@ -167,31 +224,76 @@ function ModCard({ mod }: { mod: ModInfo }) {
   )
 }
 
+function BatchToolbar({
+  selected,
+  onClear,
+  onTranslate,
+  onApply,
+  isBusy,
+}: {
+  selected: string[]
+  onClear: () => void
+  onTranslate: () => void
+  onApply: () => void
+  isBusy: boolean
+}) {
+  return (
+    <div className="flex items-center gap-3 px-4 py-2.5 rounded-lg bg-accent/10 border border-accent/30 text-sm">
+      <span className="text-accent font-medium">{selected.length} selected</span>
+      <div className="flex-1" />
+      <button
+        onClick={onTranslate}
+        disabled={isBusy}
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-accent text-bg-base font-medium hover:bg-accent/90 disabled:opacity-50 transition-colors"
+      >
+        {isBusy ? <RefreshCw size={13} className="animate-spin" /> : <Play size={13} />}
+        Translate selected
+      </button>
+      <button
+        onClick={onApply}
+        disabled={isBusy}
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-bg-card border border-border-default text-text-main hover:bg-bg-card2 disabled:opacity-50 transition-colors"
+      >
+        Apply selected
+      </button>
+      <button
+        onClick={onClear}
+        className="text-text-muted hover:text-text-main transition-colors p-1"
+        title="Clear selection"
+      >
+        <X size={15} />
+      </button>
+    </div>
+  )
+}
+
 const PER_PAGE = 100
 
 function ModsPage() {
   const navigate = useNavigate({ from: '/mods/' })
-  const { status, q } = Route.useSearch()
+  const { status, q, sort_by, page } = Route.useSearch()
   const queryClient = useQueryClient()
+  const machines = useMachines()
 
-  // Local debounced search input
   const [inputValue, setInputValue] = useState(q)
-  const [page, setPage] = useState(0)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [batchBusy, setBatchBusy] = useState(false)
+  const [showSortMenu, setShowSortMenu] = useState(false)
 
-  useEffect(() => {
-    setInputValue(q)
-  }, [q])
+  useEffect(() => { setInputValue(q) }, [q])
   useEffect(() => {
     const timer = setTimeout(() => {
-      navigate({ search: (prev) => ({ ...prev, q: inputValue, page: undefined as never }) })
+      navigate({ search: (prev) => ({ ...prev, q: inputValue, page: 0 }) })
     }, 300)
     return () => clearTimeout(timer)
   }, [inputValue]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Reset page when filters change
-  useEffect(() => { setPage(0) }, [q, status])
+  // Reset page & selection when filters change
+  useEffect(() => {
+    navigate({ search: (prev) => ({ ...prev, page: 0 }) })
+    setSelected(new Set())
+  }, [q, status, sort_by]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Load all mods once — filter/search client-side (backend ignores q/status params anyway)
   const { data: allMods, isLoading, isFetching, refetch } = useQuery({
     queryKey: QK.mods(),
     queryFn: () => modsApi.list(),
@@ -206,12 +308,74 @@ function ModsPage() {
       if (needle && !m.folder_name.toLowerCase().includes(needle)) return false
       return true
     })
-    return sortMods(filtered)
-  }, [allMods, q, status])
+    return sortMods(filtered, sort_by)
+  }, [allMods, q, status, sort_by])
 
   const totalPages = Math.max(1, Math.ceil(sorted.length / PER_PAGE))
   const safePage   = Math.min(page, totalPages - 1)
   const visible    = sorted.slice(safePage * PER_PAGE, (safePage + 1) * PER_PAGE)
+
+  function toggleSelect(name: string) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      return next
+    })
+  }
+
+  function toggleSelectAll() {
+    const visibleNames = visible.map((m) => m.folder_name)
+    const allSelected = visibleNames.every((n) => selected.has(n))
+    if (allSelected) {
+      setSelected((prev) => {
+        const next = new Set(prev)
+        visibleNames.forEach((n) => next.delete(n))
+        return next
+      })
+    } else {
+      setSelected((prev) => {
+        const next = new Set(prev)
+        visibleNames.forEach((n) => next.add(n))
+        return next
+      })
+    }
+  }
+
+  async function handleBatchTranslate() {
+    const mods = Array.from(selected)
+    if (!mods.length) return
+    setBatchBusy(true)
+    try {
+      await jobsApi.create({ type: 'translate_mod', mods, options: { machines } })
+      queryClient.invalidateQueries({ queryKey: QK.jobs() })
+      setSelected(new Set())
+      navigate({ to: '/jobs' })
+    } finally {
+      setBatchBusy(false)
+    }
+  }
+
+  async function handleBatchApply() {
+    const mods = Array.from(selected)
+    if (!mods.length) return
+    setBatchBusy(true)
+    try {
+      await jobsApi.create({ type: 'apply_mod', mods })
+      queryClient.invalidateQueries({ queryKey: QK.jobs() })
+      setSelected(new Set())
+      navigate({ to: '/jobs' })
+    } finally {
+      setBatchBusy(false)
+    }
+  }
+
+  const selectedArr = Array.from(selected)
+  const visibleNames = visible.map((m) => m.folder_name)
+  const allVisibleSelected = visibleNames.length > 0 && visibleNames.every((n) => selected.has(n))
+  const someVisibleSelected = visibleNames.some((n) => selected.has(n))
+
+  const sortLabel = SORT_OPTIONS.find((o) => o.value === sort_by)?.label ?? 'Sort'
 
   return (
     <div className="space-y-5">
@@ -247,7 +411,7 @@ function ModsPage() {
           {STATUS_TABS.map((tab) => (
             <button
               key={tab.value}
-              onClick={() => navigate({ search: (prev) => ({ ...prev, status: tab.value }) })}
+              onClick={() => navigate({ search: (prev) => ({ ...prev, status: tab.value, page: 0 }) })}
               className={cn(
                 'px-3 py-1 text-sm rounded-md font-medium transition-colors',
                 status === tab.value
@@ -264,6 +428,7 @@ function ModsPage() {
         <div className="relative flex-1 min-w-48 max-w-sm">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" />
           <input
+            id="mods-search"
             type="text"
             placeholder="Search mods…"
             value={inputValue}
@@ -274,12 +439,79 @@ function ModsPage() {
             <button
               onClick={() => setInputValue('')}
               className="absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-main"
+              aria-label="Clear search"
             >
-              ×
+              <X size={14} />
             </button>
           )}
         </div>
+
+        {/* Sort dropdown */}
+        <div className="relative">
+          <button
+            onClick={() => setShowSortMenu((v) => !v)}
+            className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg bg-bg-card border border-border-subtle text-text-muted hover:text-text-main hover:bg-bg-card2 transition-colors"
+          >
+            <ArrowUpDown size={13} />
+            {sortLabel}
+            <ChevronDown size={13} />
+          </button>
+          {showSortMenu && (
+            <>
+              <div
+                className="fixed inset-0 z-40"
+                onClick={() => setShowSortMenu(false)}
+              />
+              <div className="absolute right-0 mt-1 w-44 bg-bg-card border border-border-default rounded-lg shadow-lg z-50 py-1 overflow-hidden">
+                {SORT_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    onClick={() => {
+                      navigate({ search: (prev) => ({ ...prev, sort_by: opt.value, page: 0 }) })
+                      setShowSortMenu(false)
+                    }}
+                    className={cn(
+                      'w-full text-left px-3 py-2 text-sm transition-colors',
+                      sort_by === opt.value
+                        ? 'text-accent bg-accent/10'
+                        : 'text-text-muted hover:text-text-main hover:bg-bg-card2',
+                    )}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Select all toggle */}
+        {!isLoading && visible.length > 0 && (
+          <button
+            onClick={toggleSelectAll}
+            className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg bg-bg-card border border-border-subtle text-text-muted hover:text-text-main hover:bg-bg-card2 transition-colors"
+            title={allVisibleSelected ? 'Deselect all visible' : 'Select all visible'}
+          >
+            {allVisibleSelected
+              ? <CheckSquare size={13} className="text-accent" />
+              : someVisibleSelected
+                ? <CheckSquare size={13} className="text-text-muted/60" />
+                : <Square size={13} />}
+            Select
+          </button>
+        )}
       </div>
+
+      {/* Batch toolbar */}
+      {selectedArr.length > 0 && (
+        <BatchToolbar
+          selected={selectedArr}
+          onClear={() => setSelected(new Set())}
+          onTranslate={handleBatchTranslate}
+          onApply={handleBatchApply}
+          isBusy={batchBusy}
+        />
+      )}
 
       {/* Grid */}
       {isLoading ? (
@@ -294,7 +526,7 @@ function ModsPage() {
           <p className="text-base">No mods found</p>
           {(q || status !== 'all') && (
             <button
-              onClick={() => navigate({ search: () => ({ status: 'all', q: '' }) })}
+              onClick={() => navigate({ search: () => ({ status: 'all', q: '', sort_by: 'status', page: 0 }) })}
               className="mt-3 text-sm text-accent hover:underline"
             >
               Clear filters
@@ -305,14 +537,19 @@ function ModsPage() {
         <>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {visible.map((mod) => (
-              <ModCard key={mod.folder_name} mod={mod} />
+              <ModCard
+                key={mod.folder_name}
+                mod={mod}
+                selected={selected.has(mod.folder_name)}
+                onToggleSelect={toggleSelect}
+              />
             ))}
           </div>
 
           {totalPages > 1 && (
             <div className="flex items-center justify-center gap-2 pt-2">
               <button
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                onClick={() => navigate({ search: (prev) => ({ ...prev, page: Math.max(0, safePage - 1) }) })}
                 disabled={safePage === 0}
                 className="px-3 py-1.5 rounded text-sm bg-bg-card border border-border-subtle text-text-muted hover:text-text-main disabled:opacity-40 transition-colors"
               >
@@ -322,7 +559,7 @@ function ModsPage() {
                 {safePage + 1} / {totalPages}
               </span>
               <button
-                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                onClick={() => navigate({ search: (prev) => ({ ...prev, page: Math.min(totalPages - 1, safePage + 1) }) })}
                 disabled={safePage === totalPages - 1}
                 className="px-3 py-1.5 rounded text-sm bg-bg-card border border-border-subtle text-text-muted hover:text-text-main disabled:opacity-40 transition-colors"
               >

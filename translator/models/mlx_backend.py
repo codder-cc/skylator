@@ -62,18 +62,23 @@ class MlxBackend(BaseBackend):
         top_p: float = 0.9,
         repetition_penalty: float = 1.05,
         local_cache_dir: Optional[str] = None,
+        draft_repo_id: Optional[str] = None,
+        num_draft_tokens: int = 3,
     ):
         super().__init__()
-        self._repo_id           = repo_id
-        self._source_lang       = source_lang
-        self._target_lang       = target_lang
-        self._max_tokens        = max_tokens
-        self._temperature       = temperature
-        self._top_p             = top_p
+        self._repo_id            = repo_id
+        self._source_lang        = source_lang
+        self._target_lang        = target_lang
+        self._max_tokens         = max_tokens
+        self._temperature        = temperature
+        self._top_p              = top_p
         self._repetition_penalty = repetition_penalty
-        self._local_cache_dir   = local_cache_dir
-        self._model             = None
-        self._tokenizer         = None
+        self._local_cache_dir    = local_cache_dir
+        self._draft_repo_id      = draft_repo_id
+        self._num_draft_tokens   = num_draft_tokens
+        self._model              = None
+        self._tokenizer          = None
+        self._draft_model        = None
         # Synthetic label for EnsemblePipeline._backend_label() compatibility
         self._label = f"mlx:{repo_id}"
 
@@ -109,10 +114,36 @@ class MlxBackend(BaseBackend):
         self._state = ModelState.LOADED
         log.info("MlxBackend: model loaded into unified memory")
 
+        if self._draft_repo_id:
+            log.info("MlxBackend: loading draft model %s for speculative decoding...",
+                     self._draft_repo_id)
+            try:
+                draft_path = self._draft_repo_id
+                if self._local_cache_dir:
+                    local_draft = _find_cached_snapshot(self._draft_repo_id, self._local_cache_dir)
+                    if local_draft:
+                        draft_path = local_draft
+                        log.info("MlxBackend: draft model found at %s", local_draft)
+                    else:
+                        log.info("MlxBackend: draft model not cached — downloading...")
+                        from huggingface_hub import snapshot_download
+                        draft_path = snapshot_download(
+                            self._draft_repo_id,
+                            cache_dir=str(self._local_cache_dir),
+                        )
+                draft_model, _ = mlx_lm.load(draft_path)
+                self._draft_model = draft_model
+                log.info("MlxBackend: draft model loaded — speculative decoding active "
+                         "(num_draft_tokens=%d)", self._num_draft_tokens)
+            except Exception as exc:
+                log.warning("MlxBackend: draft model load failed (%s) — "
+                            "continuing without speculative decoding", exc)
+
     def _do_unload(self) -> None:
         """Delete model references and clear MLX cache."""
-        self._model     = None
-        self._tokenizer = None
+        self._model       = None
+        self._tokenizer   = None
+        self._draft_model = None
         try:
             import mlx.core as mx
             mx.clear_cache()
@@ -167,14 +198,20 @@ class MlxBackend(BaseBackend):
                     system_prompt = params.system_prompt,
                     thinking      = params.thinking,
                 )
-                raw = mlx_lm.generate(
-                    self._model,
-                    self._tokenizer,
-                    prompt            = formatted,
+                gen_kwargs: dict = dict(
                     max_tokens        = max_tokens,
                     sampler           = sampler,
                     logits_processors = logits_processors,
                     verbose           = False,
+                )
+                if self._draft_model is not None:
+                    gen_kwargs["draft_model"]      = self._draft_model
+                    gen_kwargs["num_draft_tokens"] = self._num_draft_tokens
+                raw = mlx_lm.generate(
+                    self._model,
+                    self._tokenizer,
+                    prompt = formatted,
+                    **gen_kwargs,
                 )
                 parsed = parse_numbered_output(raw, len(batch))
                 results.extend(parsed)
@@ -211,15 +248,16 @@ class MlxBackend(BaseBackend):
         sampler           = make_sampler(temp=temperature, top_p=top_p)
         logits_processors = make_logits_processors(repetition_penalty=repetition_penalty)
 
-        return mlx_lm.generate(
-            self._model,
-            self._tokenizer,
-            prompt            = prompt,
+        gen_kwargs: dict = dict(
             max_tokens        = max_tokens,
             sampler           = sampler,
             logits_processors = logits_processors,
             verbose           = False,
         )
+        if self._draft_model is not None:
+            gen_kwargs["draft_model"]      = self._draft_model
+            gen_kwargs["num_draft_tokens"] = self._num_draft_tokens
+        return mlx_lm.generate(self._model, self._tokenizer, prompt=prompt, **gen_kwargs)
 
     def _chat(self, prompt: str, temperature: float = 0.2) -> str:
         """

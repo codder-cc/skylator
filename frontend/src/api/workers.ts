@@ -1,5 +1,5 @@
 import { apiFetch, apiPost } from './client'
-import type { WorkerInfo, SetupReport, CachedModel } from '@/types'
+import type { WorkerInfo, SetupReport, CachedModel, BenchmarkResult } from '@/types'
 
 interface ModelLoadBody {
   model: string
@@ -40,6 +40,9 @@ export const workersApi = {
     apiPost<{ ok: boolean }>(
       `/api/workers/${encodeURIComponent(label)}/model/unload`,
     ),
+
+  benchmark: (label: string) =>
+    apiPost<BenchmarkResult>(`/api/workers/${encodeURIComponent(label)}/benchmark`, {}),
 
   scanLan: () =>
     apiPost<{ servers: LanServer[] }>('/servers/scan'),

@@ -164,6 +164,51 @@ def cancel_job(job_id: str):
     return jsonify({"ok": True})
 
 
+@bp.route("/<job_id>/retry", methods=["POST"])
+def retry_job(job_id: str):
+    """Re-create an identical job from a failed/cancelled job's stored params."""
+    jm  = current_app.config["JOB_MANAGER"]
+    cfg = current_app.config.get("TRANSLATOR_CFG")
+    job = jm.get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    jtype    = job.job_type
+    params   = job.params or {}
+    mod_name = params.get("mod_name")
+    # Reconstruct options from stored params (minus mod_name)
+    options  = {k: v for k, v in params.items() if k not in ("mod_name", "esp")}
+
+    if jtype in ("translate_mod", "translate_strings") and mod_name:
+        new_job = _create_translate_mod_job(jm, cfg, mod_name, options)
+    elif jtype == "apply_mod" and mod_name:
+        new_job = _create_apply_mod_job(jm, cfg, mod_name, options)
+    elif jtype == "translate_bsa" and mod_name:
+        new_job = _create_translate_bsa_job(jm, cfg, mod_name, options)
+    elif jtype in ("scan", "scan_mods"):
+        new_job = _create_scan_job(
+            jm, current_app.config["SCANNER"],
+            mod_name  = mod_name,
+            bsa_cache = current_app.config.get("BSA_CACHE"),
+            swf_cache = current_app.config.get("SWF_CACHE"),
+            repo      = current_app.config.get("STRING_REPO"),
+            cfg       = cfg,
+        )
+    elif jtype == "validate" and mod_name:
+        new_job = _create_validate_job(jm, cfg, mod_name)
+    elif jtype == "fetch_nexus" and mod_name:
+        new_job = _create_fetch_nexus_job(jm, cfg, mod_name)
+    elif jtype == "translate_all":
+        new_job = _create_translate_all_job(jm, cfg, options)
+    elif jtype == "batch_translate":
+        mods = params.get("mods", [])
+        new_job = _create_batch_job(jm, cfg, mods, options)
+    else:
+        return jsonify({"error": f"Cannot retry job type: {jtype}"}), 400
+
+    return jsonify({"ok": True, "job_id": new_job.id})
+
+
 @bp.route("/<job_id>/resume", methods=["POST"])
 def resume_job(job_id: str):
     """Create a new job that continues where a failed/cancelled translate job left off.
@@ -563,11 +608,12 @@ def _create_recompute_scores_job(jm, cfg, mod_name: str = None, repo=None):
 
 
 def _create_validate_job(jm, cfg, mod_name: str):
-    repo = current_app.config.get("STRING_REPO")
+    repo      = current_app.config.get("STRING_REPO")
+    stats_mgr = current_app.config.get("STATS_MGR")
 
     def run(job):
         from translator.web.workers import validate_translations_worker
-        validate_translations_worker(job, cfg, mod_name, repo=repo)
+        validate_translations_worker(job, cfg, mod_name, repo=repo, stats_mgr=stats_mgr)
 
     return jm.create(
         name     = f"Validate: {mod_name}",

@@ -267,9 +267,12 @@ def translate_one(session_id: str):
             for label in data_machines:
                 worker = registry.get(label)
                 if worker and (_time.time() - worker.last_seen) < WorkerRegistry.HEARTBEAT_TTL:
+                    _max_tok = params.max_tokens or getattr(getattr(cfg, "model", None), "max_new_tokens", 2048)
+                    _timeout = max(300.0, _max_tok / 5.0 + 120.0)
                     pull_backend = RegistryPullBackend(
                         label=label, registry=registry,
-                        source_lang=src_lang, target_lang=tgt_lang)
+                        source_lang=src_lang, target_lang=tgt_lang,
+                        timeout_sec=_timeout)
                     xlogs.append(f"backend: pull-mode [{label}]")
                     break
 

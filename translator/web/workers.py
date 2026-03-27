@@ -238,10 +238,10 @@ def swf_compile_worker(job, ffdec_jar: str, src_dir: str, swf_path: str):
     job.result = f"Compiled: {swf_path}"
 
 
-def validate_translations_worker(job, cfg, mod_name: str, repo=None):
+def validate_translations_worker(job, cfg, mod_name: str, repo=None, stats_mgr=None):
     """Validate translated strings — delegates to ValidatePipeline."""
     from translator.pipeline.validate_pipeline import ValidatePipeline
-    ValidatePipeline(cfg, repo).run(job, mod_name)
+    ValidatePipeline(cfg, repo, stats_mgr=stats_mgr).run(job, mod_name)
 
 
 def recompute_scores_worker(job, cfg, mod_name: str = None, repo=None):

@@ -56,4 +56,9 @@ export const workersApi = {
 
   clearSetupReports: () =>
     apiPost<{ ok: boolean }>('/api/setup-reports/clear'),
+
+  requestOtaUpdate: (label: string) =>
+    apiPost<{ ok: boolean; chunk_id?: string }>(
+      `/api/workers/${encodeURIComponent(label)}/ota-update`,
+    ),
 }

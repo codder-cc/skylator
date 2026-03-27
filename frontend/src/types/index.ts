@@ -75,6 +75,8 @@ export interface ModInfo {
   has_meta_ini: boolean
   nexus_mod_id: number | null
   cached_at: number | null
+  has_validation_issues: boolean
+  validation_issues_count: number  // -1=not validated, 0=ok, >0=issue count
 }
 
 export interface StringEntry {
@@ -146,6 +148,7 @@ export interface WorkerInfo {
   stats: { tps_avg: number; tps_last: number; queue_depth: number; jobs_completed: number } | null
   hardware?: WorkerHardware
   alive: boolean
+  commit?: string
 }
 
 export interface BenchmarkSampleResult {

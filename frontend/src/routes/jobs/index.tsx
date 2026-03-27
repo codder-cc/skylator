@@ -1,5 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect } from 'react'
 import { QK } from '@/lib/queryKeys'
 import { jobsApi } from '@/api/jobs'
 import { StatusBadge } from '@/components/shared/StatusBadge'
@@ -9,10 +10,22 @@ import { Skeleton } from '@/components/shared/Skeleton'
 import { Link } from '@tanstack/react-router'
 
 function JobsPage() {
-  const { data: jobs, isLoading } = useQuery({
+  const qc = useQueryClient()
+
+  // Force fresh fetch on every visit so inline jobs (translate-one) appear immediately
+  useEffect(() => {
+    qc.invalidateQueries({ queryKey: QK.jobs() })
+  }, [qc])
+
+  const { data: jobs = [], isLoading } = useQuery({
     queryKey: QK.jobs(),
     queryFn: jobsApi.list,
-    refetchInterval: 5_000,
+    refetchInterval: (query) => {
+      const data = query.state.data ?? []
+      const hasActive = data.some((j) => j.status === 'running' || j.status === 'pending')
+      return hasActive ? 2_000 : 5_000
+    },
+    refetchOnMount: 'always',
   })
 
   return (
@@ -35,12 +48,12 @@ function JobsPage() {
         </div>
       )}
 
-      {!isLoading && jobs?.length === 0 && (
+      {!isLoading && jobs.length === 0 && (
         <div className="card p-6 text-text-muted text-center">No jobs yet.</div>
       )}
 
       <div className="space-y-2">
-        {(jobs ?? []).map((job) => (
+        {jobs.map((job) => (
           <Link
             key={job.id}
             to="/jobs/$jobId"

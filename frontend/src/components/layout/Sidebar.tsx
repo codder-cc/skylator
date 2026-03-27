@@ -11,20 +11,14 @@ import {
   ScrollText,
   Cpu,
   PackageOpen,
-  RefreshCw,
-  GitBranch,
-  ArrowDownCircle,
   PanelLeftClose,
   PanelLeftOpen,
 } from 'lucide-react'
-import { useState } from 'react'
-import { useQuery, useMutation } from '@tanstack/react-query'
 import * as Tooltip from '@radix-ui/react-tooltip'
 import { cn } from '@/lib/utils'
 import { useMachinesStore } from '@/stores/machinesStore'
 import { useJobsStore } from '@/stores/jobsStore'
 import { useUiStore } from '@/stores/uiStore'
-import { otaApi } from '@/api/ota'
 
 interface NavItem {
   to: string
@@ -46,70 +40,6 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/logs',        label: 'Logs',        icon: <ScrollText className="w-4 h-4" /> },
 ]
 
-function OtaPanel() {
-  const [log, setLog] = useState<string | null>(null)
-
-  const statusQ = useQuery({
-    queryKey: ['ota', 'status'],
-    queryFn: otaApi.status,
-    staleTime: 60_000,
-    refetchOnWindowFocus: false,
-  })
-
-  const updateMut = useMutation({
-    mutationFn: otaApi.update,
-    onSuccess: (data) => {
-      if (data.restarting) {
-        setLog('Restarting… page will reload in 5s')
-        setTimeout(() => window.location.reload(), 5000)
-      } else {
-        setLog(data.steps.map((s) => `${s.ok ? '✓' : '✗'} ${s.step}`).join('\n'))
-      }
-    },
-    onError: (e: Error) => setLog(`Error: ${e.message}`),
-  })
-
-  const s = statusQ.data
-  const behind = s?.behind ?? 0
-
-  return (
-    <div className="px-3 py-2 border-t border-border-default">
-      <div className="flex items-center gap-1.5 mb-1">
-        <GitBranch size={11} className="text-text-muted/60 shrink-0" />
-        <span className="text-[11px] text-text-muted/60 font-mono truncate">
-          {s ? `${s.branch} · ${s.commit}` : '…'}
-        </span>
-        <button
-          onClick={() => statusQ.refetch()}
-          disabled={statusQ.isFetching}
-          className="ml-auto text-text-muted/40 hover:text-text-muted transition-colors"
-          title="Check for updates"
-        >
-          <RefreshCw size={11} className={statusQ.isFetching ? 'animate-spin' : ''} />
-        </button>
-      </div>
-
-      {behind > 0 && (
-        <button
-          onClick={() => { setLog(null); updateMut.mutate() }}
-          disabled={updateMut.isPending}
-          className="w-full flex items-center justify-center gap-1.5 px-2 py-1 rounded text-[11px] font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors disabled:opacity-50"
-        >
-          {updateMut.isPending
-            ? <RefreshCw size={11} className="animate-spin" />
-            : <ArrowDownCircle size={11} />}
-          {updateMut.isPending ? 'Updating…' : `Update (${behind} commit${behind !== 1 ? 's' : ''})`}
-        </button>
-      )}
-
-      {log && (
-        <pre className="mt-1 text-[10px] text-text-muted/70 whitespace-pre-wrap leading-tight">
-          {log}
-        </pre>
-      )}
-    </div>
-  )
-}
 
 function NavTooltip({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -236,9 +166,6 @@ export function Sidebar() {
             </div>
           </div>
         )}
-
-        {/* OTA update panel (hide when collapsed) */}
-        {!collapsed && <OtaPanel />}
       </aside>
     </Tooltip.Provider>
   )

@@ -20,6 +20,9 @@ export const jobsApi = {
   resume: (id: string) =>
     apiPost<{ ok: boolean; job_id: string }>(`/jobs/${id}/resume`),
 
+  retry: (id: string) =>
+    apiPost<{ ok: boolean; job_id: string }>(`/jobs/${id}/retry`),
+
   clear: () =>
     apiPost<{ ok: boolean }>('/jobs/clear'),
 }

@@ -38,6 +38,13 @@ MIGRATION_STEPS: list[tuple[int, str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_strings_source ON strings(mod_name, source)",
         ],
     ),
+    (
+        4,
+        "Add validation_issues_count to mod_stats_cache (-1=not validated, 0=ok, >0=issues)",
+        [
+            "ALTER TABLE mod_stats_cache ADD COLUMN validation_issues_count INTEGER DEFAULT -1",
+        ],
+    ),
 ]
 
 

@@ -34,6 +34,7 @@ import { StatusBadge } from '@/components/shared/StatusBadge'
 import { ProgressBar } from '@/components/shared/ProgressBar'
 import { TimeAgo } from '@/components/shared/TimeAgo'
 import { useMachines } from '@/hooks/useMachines'
+import { useJobsStore } from '@/stores/jobsStore'
 import {
   TRANSLATION_MODES, DEPLOY_MODES,
   type TranslationMode, type DeployMode,
@@ -118,6 +119,57 @@ function PipelineSteps({ steps }: { steps: PipelineStep[] }) {
                 )}
               />
             )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── Conflict row ─────────────────────────────────────────────────────────────
+
+function ConflictRow({
+  conflict,
+  modName,
+  onResolved,
+}: {
+  conflict: { original: string; translations: string; variant_count: number; occurrence_count: number }
+  modName: string
+  onResolved: () => void
+}) {
+  const [resolving, setResolving] = useState<string | null>(null)
+  const variants = conflict.translations.split(',').map((t) => t.trim()).filter(Boolean)
+
+  const handleResolve = async (translation: string) => {
+    setResolving(translation)
+    try {
+      await modsApi.resolveConflict(modName, conflict.original, translation)
+      onResolved()
+    } finally {
+      setResolving(null)
+    }
+  }
+
+  return (
+    <div className="text-xs border border-warning/20 rounded p-2 bg-warning/5">
+      <div className="text-text-muted/70 truncate mb-1.5" title={conflict.original}>
+        <span className="font-medium text-text-main">{conflict.variant_count} variants</span>
+        {' · '}
+        {conflict.occurrence_count} strings
+        {' · '}
+        <span className="font-mono">{conflict.original.slice(0, 60)}{conflict.original.length > 60 ? '…' : ''}</span>
+      </div>
+      <div className="space-y-1">
+        {variants.map((t, ti) => (
+          <div key={ti} className="flex items-center gap-2">
+            <span className="text-warning/80 font-mono text-[11px] truncate flex-1" title={t}>→ {t}</span>
+            <button
+              onClick={() => void handleResolve(t)}
+              disabled={resolving !== null}
+              className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-accent/15 text-accent hover:bg-accent/25 disabled:opacity-40 transition-colors"
+            >
+              {resolving === t ? '…' : 'Use this'}
+            </button>
           </div>
         ))}
       </div>
@@ -456,6 +508,17 @@ function ModDetailPage() {
     refetchInterval: 10_000,
   })
 
+  // Live active job for this mod from SSE-backed store
+  const activeJob = useJobsStore((s) => {
+    const all = Object.values(s.jobs)
+    return all.find((j) =>
+      (j.status === 'running' || j.status === 'pending') &&
+      (j.mod_name === decodedName ||
+        (j.params?.mod_name as string | undefined) === decodedName ||
+        (j.params?.mods as string[] | undefined)?.includes(decodedName))
+    )
+  })
+
   const recentJobs = allJobs
     .filter((j) => {
       const mods = ((j as unknown as Record<string, unknown>)['mods'] as string[] | undefined) ?? []
@@ -656,6 +719,31 @@ function ModDetailPage() {
         </div>
       )}
 
+      {/* Live job progress banner */}
+      {activeJob && (
+        <div className="card p-4 border-l-2 border-l-accent flex items-center gap-3">
+          <RefreshCw
+            size={14}
+            className={cn('shrink-0', activeJob.status === 'running' ? 'animate-spin text-accent' : 'text-text-muted/50')}
+          />
+          <div className="flex-1 min-w-0">
+            <div className="text-xs font-medium text-accent mb-1">
+              {activeJob.status === 'pending' ? 'Job queued' : activeJob.name}
+            </div>
+            {activeJob.status === 'running' && activeJob.progress && (
+              <ProgressBar pct={activeJob.pct} message={activeJob.progress.message} />
+            )}
+          </div>
+          <Link
+            to="/jobs/$jobId"
+            params={{ jobId: activeJob.id }}
+            className="text-xs text-accent/70 hover:text-accent shrink-0 transition-colors"
+          >
+            View →
+          </Link>
+        </div>
+      )}
+
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard label="Total Strings" value={mod.total_strings} />
@@ -720,22 +808,14 @@ function ModDetailPage() {
                   No conflicts — all originals have consistent translations.
                 </div>
               ) : (
-                <div className="space-y-2 max-h-64 overflow-y-auto">
+                <div className="space-y-2 max-h-96 overflow-y-auto">
                   {conflicts.map((c, i) => (
-                    <div key={i} className="text-xs border border-warning/20 rounded p-2 bg-warning/5">
-                      <div className="text-text-muted/70 truncate mb-1" title={c.original}>
-                        <span className="font-medium text-text-main">{c.variant_count} variants</span>
-                        {' · '}
-                        {c.occurrence_count} strings
-                        {' · '}
-                        <span className="font-mono">{c.original.slice(0, 60)}{c.original.length > 60 ? '…' : ''}</span>
-                      </div>
-                      <div className="text-warning/80 font-mono text-[11px] leading-relaxed">
-                        {c.translations.split(',').map((t, ti) => (
-                          <div key={ti} className="truncate" title={t}>→ {t.trim()}</div>
-                        ))}
-                      </div>
-                    </div>
+                    <ConflictRow
+                      key={i}
+                      conflict={c}
+                      modName={decodedName}
+                      onResolved={() => void refetchConflicts()}
+                    />
                   ))}
                   <button
                     onClick={() => void refetchConflicts()}

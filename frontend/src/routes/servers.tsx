@@ -29,7 +29,11 @@ import {
   Cpu,
   MemoryStick,
   Play,
+  ArrowDownCircle,
+  GitCommit,
+  GitBranch,
 } from 'lucide-react'
+import { otaApi } from '@/api/ota'
 
 // ── Resource bar ──────────────────────────────────────────────────────────────
 function ResourceBar({
@@ -640,17 +644,25 @@ function SetupReportRow({ report }: { report: SetupReport }) {
 // ── Worker Row ────────────────────────────────────────────────────────────────
 interface WorkerRowProps {
   worker: WorkerInfo
+  hostCommit: string
   onLoad: (worker: WorkerInfo) => void
   onBenchmark: (worker: WorkerInfo) => void
 }
 
-function WorkerRow({ worker, onLoad, onBenchmark }: WorkerRowProps) {
+function WorkerRow({ worker, hostCommit, onLoad, onBenchmark }: WorkerRowProps) {
   const qc = useQueryClient()
   const hw  = worker.hardware
   const unloadMut = useMutation({
     mutationFn: () => workersApi.unloadModel(worker.label),
     onSuccess: () => qc.invalidateQueries({ queryKey: QK.workers() }),
   })
+  const otaMut = useMutation({
+    mutationFn: () => workersApi.requestOtaUpdate(worker.label),
+    onSuccess: () => setTimeout(() => qc.invalidateQueries({ queryKey: QK.workers() }), 8000),
+  })
+
+  const workerCommit = worker.commit ?? ''
+  const needsUpdate = hostCommit && workerCommit && workerCommit !== hostCommit
 
   return (
     <tr className="border-t border-border-subtle hover:bg-bg-card2/50 transition-colors">
@@ -706,6 +718,38 @@ function WorkerRow({ worker, onLoad, onBenchmark }: WorkerRowProps) {
           {worker.backend_type || 'llamacpp'}
         </span>
       </td>
+      {/* OTA / version */}
+      <td className="px-4 py-3">
+        <div className="flex flex-col gap-1 min-w-[110px]">
+          {workerCommit ? (
+            <span className="flex items-center gap-1 text-[11px] font-mono text-text-muted">
+              <GitCommit size={10} className="shrink-0" />
+              {workerCommit}
+            </span>
+          ) : (
+            <span className="text-[11px] text-text-muted/40">—</span>
+          )}
+          {workerCommit && !needsUpdate && (
+            <span className="text-[10px] text-success">up to date</span>
+          )}
+          {needsUpdate && (
+            <button
+              onClick={() => { if (!otaMut.isPending) otaMut.mutate() }}
+              disabled={otaMut.isPending || !worker.alive}
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-warning/20 text-warning border border-warning/30 hover:bg-warning/30 disabled:opacity-50 transition-colors"
+              title={`Worker is on ${workerCommit}, host is on ${hostCommit}`}
+            >
+              {otaMut.isPending
+                ? <Loader2 size={9} className="animate-spin" />
+                : <ArrowDownCircle size={9} />}
+              {otaMut.isPending ? 'Updating…' : 'Update'}
+            </button>
+          )}
+          {otaMut.isSuccess && !otaMut.isPending && (
+            <span className="text-[10px] text-success">update sent ✓</span>
+          )}
+        </div>
+      </td>
       <td className="px-4 py-3 text-xs text-text-muted">{timeAgo(worker.last_seen)}</td>
       <td
         className="px-4 py-3 text-xs text-text-muted max-w-[160px] truncate"
@@ -746,6 +790,97 @@ function WorkerRow({ worker, onLoad, onBenchmark }: WorkerRowProps) {
         </div>
       </td>
     </tr>
+  )
+}
+
+// ── Host OTA Card ─────────────────────────────────────────────────────────────
+function HostOtaCard() {
+  const [log, setLog] = useState<string | null>(null)
+
+  const statusQ = useQuery({
+    queryKey: ['ota', 'status'],
+    queryFn: otaApi.status,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  })
+
+  const updateMut = useMutation({
+    mutationFn: otaApi.update,
+    onSuccess: (data) => {
+      if (data.restarting) {
+        setLog('Restarting… page will reload in 5 s')
+        setTimeout(() => window.location.reload(), 5000)
+      } else {
+        setLog(data.steps.map((s) => `${s.ok ? '✓' : '✗'} ${s.step}`).join('\n'))
+      }
+    },
+    onError: (e: Error) => setLog(`Error: ${e.message}`),
+  })
+
+  const s = statusQ.data
+  const behind = s?.behind ?? 0
+
+  return (
+    <div className="bg-bg-card border border-border-subtle rounded-lg">
+      <div className="flex items-center gap-2 px-5 py-4 border-b border-border-subtle">
+        <Server className="w-4 h-4 text-accent" />
+        <h2 className="font-semibold text-text-main">Host Server</h2>
+        <span className="ml-1 text-xs text-text-muted/60 font-mono">
+          {s ? `${s.branch} · ${s.commit}` : '…'}
+        </span>
+        {behind === 0 && s && (
+          <span className="ml-1 text-[10px] text-success">up to date</span>
+        )}
+        {behind > 0 && (
+          <span className="ml-1 px-1.5 py-0.5 rounded text-[10px] bg-warning/20 text-warning border border-warning/30">
+            {behind} commit{behind !== 1 ? 's' : ''} behind
+          </span>
+        )}
+        <button
+          onClick={() => { setLog(null); statusQ.refetch() }}
+          disabled={statusQ.isFetching}
+          className="ml-auto text-text-muted hover:text-text-main transition-colors"
+          title="Check for updates"
+        >
+          <RefreshCw size={14} className={statusQ.isFetching ? 'animate-spin' : ''} />
+        </button>
+      </div>
+
+      <div className="px-5 py-4 space-y-3">
+        {/* Pending commits */}
+        {s && s.pending_commits.length > 0 && (
+          <div className="space-y-1">
+            {s.pending_commits.map((c, i) => (
+              <div key={i} className="flex items-start gap-1.5 text-xs text-text-muted font-mono">
+                <GitBranch size={11} className="mt-0.5 shrink-0 text-warning" />
+                {c}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Update button */}
+        {behind > 0 && (
+          <button
+            onClick={() => { setLog(null); updateMut.mutate() }}
+            disabled={updateMut.isPending}
+            className="flex items-center gap-2 px-4 py-2 rounded text-sm font-medium bg-accent/20 text-accent border border-accent/30 hover:bg-accent/30 disabled:opacity-50 transition-colors"
+          >
+            {updateMut.isPending
+              ? <Loader2 size={14} className="animate-spin" />
+              : <ArrowDownCircle size={14} />}
+            {updateMut.isPending ? 'Updating…' : 'Update + Restart'}
+          </button>
+        )}
+
+        {/* Output log */}
+        {log && (
+          <pre className="text-xs font-mono text-text-muted whitespace-pre-wrap bg-bg-base rounded p-3 border border-border-subtle max-h-48 overflow-auto leading-relaxed">
+            {log}
+          </pre>
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -796,9 +931,17 @@ function ServersPage() {
     }
   }, [])
 
+  const hostCommitQ = useQuery({
+    queryKey: ['ota', 'host-commit'],
+    queryFn: otaApi.hostCommit,
+    staleTime: 300_000,
+    refetchOnWindowFocus: false,
+  })
+
   const workers = workersQ.data ?? []
   const servers = serversQ.data ?? []
   const reports = reportsQ.data ?? []
+  const hostCommit = hostCommitQ.data?.commit ?? ''
 
   return (
     <div className="space-y-6">
@@ -813,6 +956,9 @@ function ServersPage() {
           Refresh
         </button>
       </div>
+
+      {/* Host Server OTA */}
+      <HostOtaCard />
 
       {/* Registered Workers card */}
       <div className="bg-bg-card border border-border-subtle rounded-lg">
@@ -832,7 +978,7 @@ function ServersPage() {
             <table className="w-full text-left">
               <thead>
                 <tr className="text-xs text-text-muted">
-                  {['Label', 'URL', 'Model', 'Resources', 'Backend', 'Last Seen', 'Current Task', 'Actions'].map((h) => (
+                  {['Label', 'URL', 'Model', 'Resources', 'Backend', 'Version', 'Last Seen', 'Current Task', 'Actions'].map((h) => (
                     <th key={h} className="px-4 py-3 font-medium whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -842,6 +988,7 @@ function ServersPage() {
                   <WorkerRow
                     key={w.label}
                     worker={w}
+                    hostCommit={hostCommit}
                     onLoad={setLoadModalWorker}
                     onBenchmark={setBenchmarkWorker}
                   />

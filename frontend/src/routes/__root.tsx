@@ -19,7 +19,7 @@ function AppShell() {
   const queryClient = useQueryClient()
   const upsertJob = useJobsStore((s) => s.upsertJob)
 
-  useSSE('/api/jobs/stream-all', (data) => {
+  useSSE('/jobs/stream-all', (data) => {
     let job: Job
     try {
       job = JSON.parse(data) as Job

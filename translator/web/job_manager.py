@@ -167,6 +167,123 @@ class JobManager:
         self._notify(job)
         return job
 
+    def begin_inline_job(
+        self,
+        name:     str,
+        job_type: str,
+        params:   dict,
+        worker_label: str = "",
+    ) -> "Job":
+        """Create a RUNNING job for a synchronous (inline) operation.
+        The caller must call finish_inline_job() when done.
+        Immediately broadcasts via SSE so the job appears in the Jobs list.
+        """
+        now = time.time()
+        job = Job(
+            id         = str(uuid.uuid4()),
+            name       = name,
+            job_type   = job_type,
+            params     = params,
+            status     = JobStatus.RUNNING,
+            started_at = now,
+        )
+        job.progress.total   = 1
+        job.progress.current = 0
+        job.progress.message = "Running…"
+        if worker_label:
+            job._worker_statuses = {worker_label: {
+                "label":        worker_label,
+                "done":         0,
+                "current_key":  "",
+                "current_text": "",
+                "tps":          0.0,
+                "errors":       0,
+                "alive":        True,
+            }}
+        with self._lock:
+            self._jobs[job.id] = job
+        self._notify(job)
+        self._persist()   # ensure it shows in GET /api/jobs immediately
+        return job
+
+    def update_inline_job(
+        self,
+        job:          "Job",
+        log_line:     str  = "",
+        progress_msg: str  = "",
+        worker_label: str  = "",
+        tps:          float = 0.0,
+        current_text: str  = "",
+        tokens_done:  int  = 0,
+        tokens_total: int  = 0,
+    ) -> None:
+        """Push an intermediate SSE update for a running inline job.
+        Feeding tokens_done/tokens_total populates _timing so ETA is computed.
+        """
+        if log_line:
+            job.add_log(log_line)
+        if progress_msg:
+            job.progress.message = progress_msg
+        # Update token-based progress for ETA (use tokens as the unit)
+        if tokens_total > 0 and job.progress.total != tokens_total:
+            job.progress.total = tokens_total
+        if tokens_done > 0:
+            job.progress.current = min(tokens_done, max(job.progress.total, 1))
+            now = time.time()
+            job._timing.append(now)
+            job._timing_counts.append(job.progress.current)
+            if len(job._timing) > 20:
+                job._timing = job._timing[-20:]
+                job._timing_counts = job._timing_counts[-20:]
+        if worker_label:
+            ws = job._worker_statuses.get(worker_label, {
+                "label": worker_label, "done": 0, "tps": 0.0,
+                "current_text": "", "errors": 0, "alive": True,
+            })
+            if tps > 0:
+                ws["tps"] = round(tps, 2)
+                job.tps_avg = round(tps, 2)   # live avg shown in job header
+            if current_text:
+                ws["current_text"] = current_text
+            job._worker_statuses[worker_label] = ws
+        self._notify(job, include_logs=bool(log_line))
+
+    def finish_inline_job(
+        self,
+        job:             "Job",
+        result:          str   = "",
+        error:           str   = "",
+        log_lines:       list  = None,
+        string_updates:  list  = None,
+        tokens_generated: int  = 0,
+        tps_avg:         float = 0.0,
+        worker_label:    str   = "",
+    ) -> None:
+        """Mark an inline job as DONE or FAILED and broadcast the final state."""
+        now = time.time()
+        job.status           = JobStatus.FAILED if error else JobStatus.DONE
+        job.finished_at      = now
+        job.result           = result or None
+        job.error            = error or None
+        job.log_lines        = list(log_lines or [])
+        job.string_updates   = list(string_updates or [])
+        job.tokens_generated = tokens_generated
+        job.tps_avg          = tps_avg
+        job.progress.current = 1
+        job.progress.message = "Done" if not error else f"Failed: {error[:60]}"
+        if worker_label:
+            job._worker_statuses = {worker_label: {
+                "label":        worker_label,
+                "done":         1 if not error else 0,
+                "current_key":  "",
+                "current_text": "",
+                "tps":          round(tps_avg, 2),
+                "errors":       1 if error else 0,
+                "alive":        False,
+            }}
+        self._persist()
+        self._notify(job)
+
     def record_completed_job(
         self,
         name:             str,

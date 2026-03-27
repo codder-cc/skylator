@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Search, RefreshCw, Play, FileText, Archive,
   ArrowUpDown, CheckSquare, Square, X, ChevronDown,
+  AlertTriangle, Clock,
 } from 'lucide-react'
 import { modsApi } from '@/api/mods'
 import { jobsApi } from '@/api/jobs'
@@ -12,6 +13,7 @@ import { cn } from '@/lib/utils'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { ProgressBar } from '@/components/shared/ProgressBar'
 import { useMachines } from '@/hooks/useMachines'
+import { useJobsStore } from '@/stores/jobsStore'
 import type { ModInfo } from '@/types'
 
 type SortBy = 'status' | 'name' | 'pct' | 'pending'
@@ -27,11 +29,13 @@ export const Route = createFileRoute('/mods/')({
 })
 
 const STATUS_TABS = [
-  { value: 'all',     label: 'All' },
-  { value: 'pending', label: 'Pending' },
-  { value: 'partial', label: 'Partial' },
-  { value: 'done',    label: 'Done' },
-  { value: 'error',   label: 'Error' },
+  { value: 'all',          label: 'All' },
+  { value: 'pending',      label: 'Pending' },
+  { value: 'partial',      label: 'Partial' },
+  { value: 'done',         label: 'Done' },
+  { value: 'error',        label: 'Error' },
+  { value: 'needs_review', label: 'Needs Review' },
+  { value: 'validation',   label: 'Validation Issues' },
 ] as const
 
 const SORT_OPTIONS: { value: SortBy; label: string }[] = [
@@ -101,6 +105,17 @@ function ModCard({ mod, selected, onToggleSelect }: ModCardProps) {
   const queryClient = useQueryClient()
   const pendingCount = (mod.total_strings ?? 0) - (mod.translated_strings ?? 0)
 
+  // Live job state for this mod from SSE-backed store
+  const activeJob = useJobsStore((s) => {
+    const all = Object.values(s.jobs)
+    return all.find((j) =>
+      (j.status === 'running' || j.status === 'pending') &&
+      (j.mod_name === mod.folder_name ||
+        (j.params?.mod_name as string | undefined) === mod.folder_name ||
+        (j.params?.mods as string[] | undefined)?.includes(mod.folder_name))
+    )
+  })
+
   const translateMutation = useMutation({
     mutationFn: () =>
       jobsApi.create({
@@ -151,7 +166,27 @@ function ModCard({ mod, selected, onToggleSelect }: ModCardProps) {
         >
           {mod.folder_name}
         </Link>
-        <StatusBadge status={mod.status} className="shrink-0" />
+        <div className="flex items-center gap-1 shrink-0">
+          {mod.needs_review_strings > 0 && (
+            <span
+              className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-warning/20 text-warning"
+              title={`${mod.needs_review_strings} string${mod.needs_review_strings !== 1 ? 's' : ''} need review`}
+            >
+              <Clock size={9} />
+              {mod.needs_review_strings}
+            </span>
+          )}
+          {mod.has_validation_issues && (
+            <span
+              className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-danger/20 text-danger"
+              title={`${mod.validation_issues_count} validation issue${mod.validation_issues_count !== 1 ? 's' : ''}`}
+            >
+              <AlertTriangle size={9} />
+              {mod.validation_issues_count}
+            </span>
+          )}
+          <StatusBadge status={mod.status} className="shrink-0" />
+        </div>
       </div>
 
       {/* Progress bar */}
@@ -188,6 +223,21 @@ function ModCard({ mod, selected, onToggleSelect }: ModCardProps) {
           </span>
         )}
       </div>
+
+      {/* Live job status */}
+      {activeJob && (
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-accent/8 border border-accent/20 text-[10px]">
+          <RefreshCw size={9} className={cn('shrink-0', activeJob.status === 'running' ? 'animate-spin text-accent' : 'text-text-muted/60')} />
+          <span className="text-accent/80 truncate flex-1 min-w-0">
+            {activeJob.status === 'pending'
+              ? 'Queued…'
+              : activeJob.progress?.message || 'Translating…'}
+          </span>
+          {activeJob.status === 'running' && activeJob.pct > 0 && (
+            <span className="font-mono text-accent/60 shrink-0">{activeJob.pct.toFixed(0)}%</span>
+          )}
+        </div>
+      )}
 
       {/* Action row */}
       <div className="flex items-center gap-2 pt-1 border-t border-border-subtle">
@@ -304,7 +354,13 @@ function ModsPage() {
     if (!allMods) return []
     const needle = q.toLowerCase()
     const filtered = allMods.filter((m) => {
-      if (status !== 'all' && m.status !== status) return false
+      if (status === 'needs_review') {
+        if (m.needs_review_strings <= 0) return false
+      } else if (status === 'validation') {
+        if (!m.has_validation_issues) return false
+      } else if (status !== 'all' && m.status !== status) {
+        return false
+      }
       if (needle && !m.folder_name.toLowerCase().includes(needle)) return false
       return true
     })

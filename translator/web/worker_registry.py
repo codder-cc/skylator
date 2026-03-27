@@ -33,6 +33,7 @@ class WorkerInfo:
     stats:        dict = field(default_factory=dict)  # tps_avg, tps_last, queue_depth, jobs_completed
     hardware:     dict = field(default_factory=dict)  # ram_total_mb, vram_total_mb, cpu_name, etc.
     host_reachable_url: str = ""  # host URL as seen by this worker (set from request.host_url at register time)
+    commit:       str = ""        # short git commit hash reported by the worker
 
     def to_dict(self) -> dict:
         return {
@@ -49,6 +50,7 @@ class WorkerInfo:
             "stats":        self.stats,
             "hardware":     self.hardware,
             "alive":        (time.time() - self.last_seen) < WorkerRegistry.HEARTBEAT_TTL,
+            "commit":       self.commit,
         }
 
 
@@ -83,7 +85,8 @@ class WorkerRegistry:
 
     def heartbeat(self, label: str, models: list | None = None,
                   model: str | None = None, backend_type: str | None = None,
-                  stats: dict | None = None, hardware: dict | None = None) -> bool:
+                  stats: dict | None = None, hardware: dict | None = None,
+                  commit: str | None = None) -> bool:
         """Update last_seen and any pushed fields.
         Returns False if unknown (caller should ask remote to re-register)."""
         with self._lock:
@@ -96,6 +99,7 @@ class WorkerRegistry:
             if backend_type is not None: w.backend_type = backend_type
             if stats        is not None: w.stats        = stats
             if hardware     is not None: w.hardware     = hardware
+            if commit       is not None: w.commit       = commit
             return True
 
     def remove(self, label: str) -> None:
@@ -174,3 +178,29 @@ class WorkerRegistry:
             result = self._result_values.pop(chunk_id, None)
             self._result_events.pop(chunk_id, None)
         return result if arrived else None
+
+    def collect_result_poll(self, chunk_id: str, timeout: float = 300.0,
+                            poll_interval: float = 3.0,
+                            poll_cb=None) -> str | None:
+        """Like collect_result but calls poll_cb() every poll_interval seconds.
+        Use for long-running inference where you want live progress updates."""
+        event = self.register_chunk_wait(chunk_id)
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                with self._lock:
+                    self._result_values.pop(chunk_id, None)
+                    self._result_events.pop(chunk_id, None)
+                return None
+            arrived = event.wait(timeout=min(poll_interval, remaining))
+            if arrived:
+                with self._lock:
+                    result = self._result_values.pop(chunk_id, None)
+                    self._result_events.pop(chunk_id, None)
+                return result
+            if poll_cb:
+                try:
+                    poll_cb()
+                except Exception:
+                    pass

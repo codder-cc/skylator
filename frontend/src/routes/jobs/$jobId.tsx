@@ -23,6 +23,7 @@ import {
   XCircle,
   RefreshCw,
   SkipForward,
+  RotateCcw,
 } from 'lucide-react'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -363,6 +364,31 @@ function ResumeButton({ jobId }: { jobId: string }) {
   )
 }
 
+function RetryButton({ jobId }: { jobId: string }) {
+  const navigate = useNavigate()
+  const qc = useQueryClient()
+  const mut = useMutation({
+    mutationFn: () => jobsApi.retry(jobId),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: QK.jobs() })
+      if (data.ok && data.job_id) {
+        navigate({ to: '/jobs/$jobId', params: { jobId: data.job_id } })
+      }
+    },
+  })
+
+  return (
+    <button
+      onClick={() => mut.mutate()}
+      disabled={mut.isPending}
+      className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-warning/20 text-warning border border-warning/30 hover:bg-warning/30 disabled:opacity-50 transition-colors"
+    >
+      {mut.isPending ? <RefreshCw size={11} className="animate-spin" /> : <RotateCcw size={11} />}
+      Retry
+    </button>
+  )
+}
+
 // ── Job detail page ───────────────────────────────────────────────────────────
 
 function JobDetailPage() {
@@ -405,8 +431,11 @@ function JobDetailPage() {
         </h1>
         <StatusBadge status={job.status} />
         {job.status === 'running' && <CancelButton jobId={jobId} />}
-        {(job.status === 'failed' || job.status === 'cancelled') && job.job_type === 'translate_mod' && (
-          <ResumeButton jobId={jobId} />
+        {(job.status === 'failed' || job.status === 'cancelled') && (
+          <>
+            <RetryButton jobId={jobId} />
+            {job.job_type === 'translate_mod' && <ResumeButton jobId={jobId} />}
+          </>
         )}
       </div>
 

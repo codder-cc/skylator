@@ -142,8 +142,21 @@ class RegistryPullBackend:
             log.debug("PullBackend [%s]: enqueued chunk %s (%d strings)",
                       self._label, chunk_id[:8], len(batch))
 
-            # Wait for the remote to post the inference result back
-            raw = self._registry.collect_result(chunk_id, timeout=self._timeout)
+            # Wait for the remote to post the inference result back.
+            # If a progress_cb is provided, poll every 3 s and feed live stats
+            # from the worker's heartbeat (tps_last, elapsed estimate).
+            if progress_cb:
+                def _poll_cb(_t0=t_chunk, _label=self._label):
+                    w = self._registry.get(_label)
+                    if w and w.stats:
+                        elapsed = _time.monotonic() - _t0
+                        tps = float(w.stats.get("tps_last") or w.stats.get("tps_avg") or 0.0)
+                        tokens_done = int(elapsed * tps) if tps > 0 else 0
+                        progress_cb({"tps_last": tps, "tokens_done": tokens_done, "elapsed": elapsed})
+                raw = self._registry.collect_result_poll(
+                    chunk_id, timeout=self._timeout, poll_interval=3.0, poll_cb=_poll_cb)
+            else:
+                raw = self._registry.collect_result(chunk_id, timeout=self._timeout)
 
             if raw is None:
                 log.error("PullBackend [%s]: chunk %s timed out after %.0fs — marking dead",

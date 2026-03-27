@@ -33,6 +33,7 @@ import { useMachines } from '@/hooks/useMachines'
 import { useReservations } from '@/hooks/useReservations'
 import { SCOPES, type StringStatus } from '@/lib/constants'
 import { useModLiveUpdates, useClearModLiveUpdates } from '@/hooks/useModLiveUpdates'
+import { useJobsStore } from '@/stores/jobsStore'
 import type { StringEntry, StringUpdate } from '@/types'
 
 const PER_PAGE = 100
@@ -147,7 +148,8 @@ function TranslationCell({ entry, modName, onSaved }: TranslationCellProps) {
           }}
           autoFocus
         />
-        <div className="absolute top-1 right-1 flex items-center gap-1">
+        <div className="absolute top-1 right-1 flex items-center gap-1.5">
+          <span className="text-[10px] text-text-muted/50 tabular-nums">{draft.length}</span>
           {saveMutation.isPending ? (
             <RefreshCw size={10} className="text-text-muted animate-spin" />
           ) : (
@@ -266,6 +268,11 @@ function StringRow({
           <div className="text-xs text-text-muted max-h-40 overflow-y-auto leading-relaxed whitespace-pre-wrap">
             {entry.original || <span className="italic opacity-40">empty</span>}
           </div>
+          {entry.original.length > 0 && (
+            <div className="text-[10px] text-text-muted/40 mt-0.5 tabular-nums">
+              {entry.original.length}
+            </div>
+          )}
         </td>
         {/* Translation */}
         <td className="px-2 py-2 align-top min-w-[200px]">
@@ -278,6 +285,18 @@ function StringRow({
             </div>
           ) : (
             <TranslationCell entry={entry} modName={modName} onSaved={onSaved} />
+          )}
+          {entry.translation.length > 0 && (
+            <div className="text-[10px] mt-0.5 tabular-nums">
+              <span className={cn(
+                entry.original.length > 0 && (
+                  entry.translation.length > entry.original.length * 3 ||
+                  entry.translation.length < entry.original.length * 0.2
+                ) ? 'text-warning/70' : 'text-text-muted/40'
+              )}>
+                {entry.translation.length}
+              </span>
+            </div>
           )}
         </td>
         {/* Status + Source */}
@@ -555,6 +574,20 @@ function ModStringsPage() {
 
   // Per-key translate spinner tracking
   const [translatingKeys, setTranslatingKeys] = useState<Set<string>>(new Set())
+
+  // Detect any active translate-one job for this mod (persists across navigation)
+  const activeTranslateOneKey = useJobsStore((s) => {
+    const job = Object.values(s.jobs).find(
+      (j) =>
+        j.job_type === 'translate_one' &&
+        (j.status === 'running' || j.status === 'pending') &&
+        (j.mod_name === decodedName || (j.params?.mod_name as string | undefined) === decodedName),
+    )
+    if (!job) return null
+    const esp = job.params?.esp as string | undefined
+    const key = job.params?.key as string | undefined
+    return esp && key ? `${esp}::${key}` : null
+  })
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({})
 
   // Bulk selection for approve
@@ -689,6 +722,7 @@ function ModStringsPage() {
         const translated = r['translation'] as string | undefined
         const serverStatus = r['status'] as string | undefined
         const serverScore = r['quality_score'] as number | null | undefined
+        const truncated = r['truncated'] as boolean | undefined
 
         if (translated !== undefined) {
           queryClient.setQueryData<StringsPage>(queryKey, (old) => {
@@ -707,6 +741,12 @@ function ModStringsPage() {
             })
             return { ...old, strings, scope_counts }
           })
+          if (truncated) {
+            setRowErrors((prev) => ({
+              ...prev,
+              [rowKey]: '⚠ Translation may be truncated — string too long for current n_ctx/max_tokens',
+            }))
+          }
           invalidateModData()
         }
       } catch (err) {
@@ -1116,7 +1156,7 @@ function ModStringsPage() {
                     entry={entry}
                     index={offset + i + 1}
                     modName={decodedName}
-                    isTranslating={translatingKeys.has(rowKey)}
+                    isTranslating={translatingKeys.has(rowKey) || activeTranslateOneKey === rowKey}
                     isReserved={reservedKeys.has(entry.key)}
                     onTranslateOne={handleTranslateOne}
                     onSaved={handleStringSaved}

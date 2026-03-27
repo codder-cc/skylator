@@ -43,6 +43,7 @@ class ModStats:
     reserved: int
     last_computed_at: float
     status: str  # no_strings | unknown | pending | partial | done
+    validation_issues_count: int = -1  # -1=not validated, 0=ok, >0=issue count
 
 
 @dataclass
@@ -142,6 +143,19 @@ class StatsManager:
             pct_complete=round(pct, 2),
         )
 
+    def save_validation_result(self, mod_name: str, issues_count: int) -> None:
+        """Persist validation result into mod_stats_cache.validation_issues_count.
+        Creates a minimal row if one doesn't exist yet.
+        """
+        self._db.execute("""
+            INSERT INTO mod_stats_cache (mod_name, validation_issues_count)
+            VALUES (?, ?)
+            ON CONFLICT(mod_name) DO UPDATE SET
+                validation_issues_count = excluded.validation_issues_count
+        """, (mod_name, issues_count))
+        self._db.commit()
+        log.debug("StatsManager: saved validation result for %s: %d issues", mod_name, issues_count)
+
     # ── Invalidate / recompute ────────────────────────────────────────────────
 
     def invalidate(self, mod_name: Optional[str] = None) -> None:
@@ -201,6 +215,8 @@ class StatsManager:
             untranslatable   = excluded.untranslatable,
             reserved         = excluded.reserved,
             last_computed_at = excluded.last_computed_at
+            -- validation_issues_count intentionally NOT updated here;
+            -- it is written only by validate_pipeline via save_validation_result()
         """
         self._db.execute(sql, (mod_name,))
         self._db.commit()
@@ -221,14 +237,21 @@ class StatsManager:
             needs_review=needs_review,
             has_esp=(total > 0),
         )
+        # validation_issues_count may be absent on older rows (column added via migration)
+        try:
+            val_issues = row["validation_issues_count"]
+            val_issues = val_issues if val_issues is not None else -1
+        except (IndexError, KeyError):
+            val_issues = -1
         return ModStats(
-            mod_name         = row["mod_name"],
-            total            = total,
-            translated       = translated,
-            pending          = pending,
-            needs_review     = needs_review,
-            untranslatable   = row["untranslatable"] or 0,
-            reserved         = row["reserved"] or 0,
-            last_computed_at = row["last_computed_at"] or 0.0,
-            status           = status,
+            mod_name                 = row["mod_name"],
+            total                    = total,
+            translated               = translated,
+            pending                  = pending,
+            needs_review             = needs_review,
+            untranslatable           = row["untranslatable"] or 0,
+            reserved                 = row["reserved"] or 0,
+            last_computed_at         = row["last_computed_at"] or 0.0,
+            status                   = status,
+            validation_issues_count  = val_issues,
         )

@@ -53,17 +53,39 @@ def stats():
 
 @bp.route("/mods")
 def mods():
-    scanner = current_app.config["SCANNER"]
-    mods    = scanner.scan_all()
+    scanner   = current_app.config["SCANNER"]
+    stats_mgr = current_app.config.get("STATS_MGR")
+    all_mods  = scanner.scan_all()
 
     status_filter = request.args.get("status", "")
     q_filter      = request.args.get("q", "").lower()
     if status_filter:
-        mods = [m for m in mods if m.status == status_filter]
+        all_mods = [m for m in all_mods if m.status == status_filter]
     if q_filter:
-        mods = [m for m in mods if q_filter in m.folder_name.lower()]
+        all_mods = [m for m in all_mods if q_filter in m.folder_name.lower()]
 
-    return jsonify([m.to_dict() for m in mods])
+    # Load validation issue counts from DB in one SELECT (no file I/O)
+    validation_map: dict[str, int] = {}
+    if stats_mgr:
+        try:
+            rows = stats_mgr._db.execute(
+                "SELECT mod_name, validation_issues_count FROM mod_stats_cache"
+                " WHERE validation_issues_count IS NOT NULL"
+            ).fetchall()
+            for row in rows:
+                if row["validation_issues_count"] is not None:
+                    validation_map[row["mod_name"]] = row["validation_issues_count"]
+        except Exception:
+            pass
+
+    result = []
+    for m in all_mods:
+        d = m.to_dict()
+        issues = validation_map.get(m.folder_name, -1)
+        d["validation_issues_count"] = issues
+        d["has_validation_issues"]   = issues > 0
+        result.append(d)
+    return jsonify(result)
 
 
 @bp.route("/mods/<path:mod_name>")
@@ -712,6 +734,44 @@ def translate_one_string(mod_name: str):
     if not original or original.startswith("[LOC:"):
         return jsonify({"ok": False, "error": "Cannot translate this string"}), 400
 
+    def _bust_caches():
+        """Invalidate scanner + stats caches so next mod fetch returns fresh counts."""
+        _sc = current_app.config.get("SCANNER")
+        if _sc:
+            _sc.invalidate(mod_name)
+        _sm = current_app.config.get("STATS_MGR")
+        if _sm:
+            try:
+                _sm.invalidate(mod_name)
+                _sm.recompute(mod_name)
+            except Exception:
+                pass
+
+    # Create a RUNNING job immediately so it appears in the Jobs list while translating
+    _jm          = current_app.config.get("JOB_MANAGER")
+    _inline_job  = None
+    _job_params  = {"mod_name": mod_name, "esp": esp_name, "key": key_str}
+    _job_name    = f"Translate: {original[:60]}"
+    if _jm:
+        try:
+            _inline_job = _jm.begin_inline_job(
+                name=_job_name, job_type="translate_one", params=_job_params)
+        except Exception:
+            pass
+
+    def _finish(result="", error="", log_lines=None, string_updates=None,
+                tokens_generated=0, tps_avg=0.0, worker_label=""):
+        if _inline_job and _jm:
+            try:
+                _jm.finish_inline_job(
+                    _inline_job, result=result, error=error,
+                    log_lines=log_lines, string_updates=string_updates,
+                    tokens_generated=tokens_generated, tps_avg=tps_avg,
+                    worker_label=worker_label,
+                )
+            except Exception:
+                pass
+
     from scripts.esp_engine import needs_translation as _needs_translation
     if not _needs_translation(original):
         log.info("[translate-one] %s | untranslatable — setting translation=original", key_str)
@@ -721,6 +781,13 @@ def translate_one_string(mod_name: str):
         save_translation(_mp.parent if _mp else cfg.paths.mods_dir, mod_name,
                          cfg.paths.translation_cache,
                          esp_name, key_str, original, cfg=cfg, repo=_repo)
+        _bust_caches()
+        _finish(result=original,
+                log_lines=["untranslatable — kept original"],
+                string_updates=[{"key": key_str, "esp": esp_name,
+                                 "translation": original,
+                                 "status": "translated", "quality_score": 100,
+                                 "source": "untranslatable"}])
         return jsonify({"ok": True, "translation": original,
                         "quality_score": 100, "status": "translated",
                         "source": "untranslatable"})
@@ -749,20 +816,11 @@ def translate_one_string(mod_name: str):
                 save_translation(_mp.parent if _mp else cfg.paths.mods_dir, mod_name,
                                  cfg.paths.translation_cache,
                                  esp_name, key_str, existing, cfg=cfg, repo=_repo)
-                try:
-                    jm = current_app.config["JOB_MANAGER"]
-                    jm.record_completed_job(
-                        name           = f"Translate: {original[:60]}",
-                        job_type       = "translate_one",
-                        params         = {"mod_name": mod_name, "esp": esp_name, "key": key_str},
-                        result         = existing,
-                        log_lines      = xlogs,
-                        string_updates = [{"key": key_str, "esp": esp_name,
-                                           "translation": existing,
-                                           "status": "translated", "quality_score": None}],
-                    )
-                except Exception:
-                    pass
+                _bust_caches()
+                _finish(result=existing, log_lines=xlogs,
+                        string_updates=[{"key": key_str, "esp": esp_name,
+                                         "translation": existing,
+                                         "status": "translated", "quality_score": None}])
                 return jsonify({"ok": True, "translation": existing,
                                 "quality_score": None, "from_dict": True,
                                 "logs": xlogs})
@@ -781,16 +839,32 @@ def translate_one_string(mod_name: str):
         log.info("[translate-one] %s | input: %s", key_str, original[:200])
 
         mod_folder = get_mod_path(mod_name)
+        if _inline_job and _jm:
+            _jm.update_inline_job(_inline_job, log_line="Building context...", progress_msg="Building context...")
         context    = ContextBuilder().get_mod_context(mod_folder, force=False) if mod_folder else ""
 
-        # Build translation memory from existing .trans.json for consistency
+        # Estimate input token budget (1 token ≈ 4 chars; system+context overhead ≈ 600 tokens)
+        _n_ctx         = getattr(getattr(cfg, "model", None), "n_ctx", 8192)
+        _cfg_max_out   = getattr(getattr(cfg, "model", None), "max_new_tokens", 2048)
+        _input_est     = len(original) // 4 + 600
+        _is_long       = len(original) > 1500   # skip TM for long strings to free context
+
+        # Auto-scale max_tokens for long strings; cap at half n_ctx
+        if params.max_tokens is None:
+            _auto = min(max(_cfg_max_out, _n_ctx - _input_est - 200), _n_ctx // 2)
+            if _auto > _cfg_max_out:
+                params.max_tokens = _auto
+                xlogs.append(f"max_tokens auto-scaled to {_auto} (input ~{_input_est} tokens, n_ctx={_n_ctx})")
+                log.info("[translate-one] %s | max_tokens auto-scaled to %d", key_str, _auto)
+
+        # Build translation memory (skip for very long strings — wastes input context)
         esp_stem   = Path(esp_name).stem
         trans_json = mod_folder / (esp_stem + ".trans.json") if mod_folder else None
         if trans_json and not trans_json.exists():
             hits = list(mod_folder.rglob(esp_stem + ".trans.json")) if mod_folder else []
             trans_json = hits[0] if hits else None
         tm_pairs: dict = {}
-        if trans_json and trans_json.exists():
+        if not _is_long and trans_json and trans_json.exists():
             try:
                 saved = _json.loads(trans_json.read_text(encoding="utf-8"))
                 tm_pairs = {s["text"]: s["translation"]
@@ -799,6 +873,8 @@ def translate_one_string(mod_name: str):
                             and s["translation"] != s["text"]}
             except Exception:
                 pass
+        elif _is_long:
+            xlogs.append(f"TM skipped (long string: {len(original)} chars)")
         context = enrich_context(context, build_tm_block(tm_pairs, [original]), [original])
 
         # Log masked form for debugging (compute before calling core)
@@ -820,32 +896,74 @@ def translate_one_string(mod_name: str):
             for label in data_machines:
                 worker = registry.get(label)
                 if worker and (_time.time() - worker.last_seen) < WorkerRegistry.HEARTBEAT_TTL:
+                    # Scale timeout: max_tokens / 5 tok/s + 120s safety margin
+                    _max_tok = params.max_tokens or getattr(getattr(cfg, "model", None), "max_new_tokens", 2048)
+                    _timeout = max(300.0, _max_tok / 5.0 + 120.0)
                     pull_backend = RegistryPullBackend(
                         label=label, registry=registry,
-                        source_lang=src_lang, target_lang=tgt_lang)
+                        source_lang=src_lang, target_lang=tgt_lang,
+                        timeout_sec=_timeout)
                     xlogs.append(f"backend: pull-mode [{label}]")
                     log.info("[translate-one] %s | using pull backend: %s", key_str, label)
+                    # Update the running job to show which machine is working
+                    if _inline_job:
+                        _inline_job._worker_statuses = {label: {
+                            "label": label, "done": 0, "current_key": key_str,
+                            "current_text": original[:80], "tps": 0.0,
+                            "errors": 0, "alive": True,
+                        }}
+                        _jm.update_inline_job(
+                            _inline_job,
+                            log_line=f"Sending to {label}...",
+                            progress_msg=f"Inferring on {label}...",
+                            worker_label=label,
+                        )
                     break
 
         if pull_backend is None:
-            return jsonify({"ok": False,
-                            "error": "No inference workers online. Start a worker server and connect it to this host.",
-                            "logs": xlogs}), 503
+            _err = "No inference workers online. Start a worker server and connect it to this host."
+            _finish(error=_err, log_lines=xlogs)
+            return jsonify({"ok": False, "error": _err, "logs": xlogs}), 503
 
         # ── Core translation ───────────────────────────────────────────────────
         ai_texts, ai_meta = prepare_for_ai([original])
+        _backend_label = getattr(pull_backend, "_label", "")
+        _max_tok_est   = params.max_tokens or _cfg_max_out
+
+        def _translate_progress_cb(info: dict):
+            """Called every ~3 s during the blocking translate wait with live worker stats."""
+            if _inline_job and _jm:
+                _jm.update_inline_job(
+                    _inline_job,
+                    worker_label = _backend_label,
+                    tps          = info.get("tps_last", 0.0),
+                    tokens_done  = info.get("tokens_done", 0),
+                    tokens_total = _max_tok_est,
+                )
+
         _t_translate = _time.monotonic()
-        raw = pull_backend.translate(ai_texts, context=context, params=params)
+        raw = pull_backend.translate(ai_texts, context=context, params=params,
+                                     progress_cb=_translate_progress_cb)
         _elapsed_translate = _time.monotonic() - _t_translate
         trans_list = restore_from_ai(raw, ai_meta)
         trans = trans_list[0] if trans_list else ""
+        _tps_mid = round(getattr(pull_backend, "_last_tps", 0.0), 2)
+        if _inline_job and _jm:
+            _jm.update_inline_job(
+                _inline_job,
+                log_line=f"Result received — {len(trans)} chars in {_elapsed_translate:.1f}s",
+                progress_msg="Scoring result...",
+                worker_label=_backend_label,
+                tps=_tps_mid,
+                current_text=trans[:80],
+            )
         qs_r, tok_ok, tok_issues_r, status_r = _css(original, trans)
         r = {"translation": trans, "status": status_r, "quality_score": qs_r,
              "token_issues": tok_issues_r, "skipped": False}
         # ──────────────────────────────────────────────────────────────────────
 
         if r["skipped"]:
-            # needs_translation() returned False — shouldn't happen (checked above)
+            _finish(error="String skipped by pipeline", log_lines=xlogs)
             return jsonify({"ok": False, "error": "String skipped by pipeline", "logs": xlogs}), 400
 
         translated  = r["translation"]
@@ -855,13 +973,25 @@ def translate_one_string(mod_name: str):
 
         if not translated:
             log.error("[translate-one] %s | empty response from AI", key_str)
+            _finish(error="Empty response from AI", log_lines=xlogs)
             return jsonify({"ok": False, "error": "Empty response from AI", "logs": xlogs}), 500
 
         # Detect silent remote failure: backend returned masked input unchanged
         if translated.strip() == masked and masked != original.strip():
             xlogs.append("error: remote returned masked input unchanged — translation failed silently")
             log.error("[translate-one] %s | remote backend returned input unchanged (silent failure)", key_str)
+            _finish(error="Remote server failed — returned input unchanged", log_lines=xlogs)
             return jsonify({"ok": False, "error": "Remote server failed — returned input unchanged", "logs": xlogs}), 500
+
+        # Detect likely truncation: long input but short output (< 30% of expected length)
+        _likely_truncated = (
+            len(original) > 1500
+            and len(translated) < len(original) * 0.3
+        )
+        if _likely_truncated:
+            xlogs.append(f"WARNING: output may be truncated (input {len(original)} chars, output {len(translated)} chars)")
+            log.warning("[translate-one] %s | likely truncated — input %d chars, output %d chars",
+                        key_str, len(original), len(translated))
 
         xlogs.append(f"translated: {translated[:120]}")
         if tok_issues:
@@ -876,41 +1006,38 @@ def translate_one_string(mod_name: str):
                          cfg.paths.translation_cache,
                          esp_name, key_str, translated, cfg=cfg,
                          quality_score=qs, status=status, repo=repo)
+        # Bust scanner + stats caches so next mod fetch returns fresh counts
+        _bust_caches()
+
         # Add to global dict so future identical strings skip AI
         gd = current_app.config.get("GLOBAL_DICT")
         if gd:
             gd.add(original, translated)
             gd.save()
 
-        # Record completed job for history / stats
+        # Finish the inline job with full stats
         _tps = round(getattr(pull_backend, "_last_tps", 0.0), 2)
         _tokens = max(1, round(_elapsed_translate * _tps)) if _tps > 0 else 0
-        _backend_label = getattr(pull_backend, "_label", "")
-        try:
-            jm = current_app.config["JOB_MANAGER"]
-            jm.record_completed_job(
-                name             = f"Translate: {original[:60]}",
-                job_type         = "translate_one",
-                params           = {"mod_name": mod_name, "esp": esp_name, "key": key_str},
-                result           = translated,
-                log_lines        = xlogs,
-                string_updates   = [{"key": key_str, "esp": esp_name,
-                                     "translation": translated,
-                                     "status": status, "quality_score": qs}],
-                tokens_generated = _tokens,
-                tps_avg          = _tps,
-                worker_label     = _backend_label,
-                elapsed_sec      = _elapsed_translate,
-            )
-        except Exception:
-            pass  # job history is non-critical
+        _finish(
+            result           = translated,
+            log_lines        = xlogs,
+            string_updates   = [{"key": key_str, "esp": esp_name,
+                                 "translation": translated,
+                                 "status": status, "quality_score": qs,
+                                 "source": "ai", "machine_label": _backend_label}],
+            tokens_generated = _tokens,
+            tps_avg          = _tps,
+            worker_label     = _backend_label,
+        )
 
         return jsonify({"ok": True, "translation": translated, "quality_score": qs,
                         "status": status, "token_issues": tok_issues,
-                        "from_dict": False, "logs": xlogs})
+                        "from_dict": False, "truncated": _likely_truncated,
+                        "logs": xlogs})
     except Exception as exc:
         xlogs.append(f"exception: {exc}")
         log.exception("[translate-one] %s | unhandled exception: %s", key_str, exc)
+        _finish(error=str(exc), log_lines=xlogs)
         return jsonify({"ok": False, "error": str(exc), "logs": xlogs}), 500
 
 
@@ -1009,6 +1136,7 @@ def workers_register():
         platform           = data.get("platform", ""),
         model              = data.get("model", ""),
         gpu                = data.get("gpu", ""),
+        commit             = data.get("commit", ""),
         host_reachable_url = request.host_url.rstrip("/"),  # LAN IP as seen by the remote
     )
     registry.register(info)
@@ -1031,8 +1159,9 @@ def workers_heartbeat():
     backend_type = data.get("backend_type")  # llamacpp | mlx
     stats        = data.get("stats")         # {tps_avg, tps_last, queue_depth, jobs_completed}
     hardware     = data.get("hardware")      # {ram_total_mb, vram_total_mb, cpu_name, …}
+    commit       = data.get("commit")        # short git commit hash
     found = registry.heartbeat(label, models=models, model=model, backend_type=backend_type,
-                               stats=stats, hardware=hardware)
+                               stats=stats, hardware=hardware, commit=commit)
     if not found:
         return jsonify({"ok": False, "reregister": True}), 404
     return jsonify({"ok": True})
@@ -1109,6 +1238,22 @@ def workers_benchmark(label: str):
     except Exception:
         result = {"raw": raw}
     return jsonify(result)
+
+
+@bp.route("/workers/<label>/ota-update", methods=["POST"])
+def workers_ota_update(label: str):
+    """Trigger OTA update on a remote pull-mode worker by queuing an ota_update chunk."""
+    import uuid
+    registry = current_app.config.get("WORKER_REGISTRY")
+    if registry is None:
+        return jsonify({"ok": False, "error": "Registry not initialized"}), 500
+    worker = registry.get(label)
+    if worker is None:
+        return jsonify({"ok": False, "error": "Worker not found"}), 404
+    chunk_id = str(uuid.uuid4())
+    registry.enqueue_chunk(label, {"chunk_id": chunk_id, "type": "ota_update"})
+    log.info("OTA update queued for worker %s (chunk %s)", label, chunk_id[:8])
+    return jsonify({"ok": True, "chunk_id": chunk_id})
 
 
 @bp.route("/model-transfer/file")

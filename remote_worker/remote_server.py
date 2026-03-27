@@ -38,9 +38,24 @@ import time
 import uuid
 from collections import deque
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Optional
 
 log = logging.getLogger(__name__)
+
+
+def _get_git_commit() -> str:
+    """Return short git commit hash of this repo, or '' if not in a git repo."""
+    try:
+        import subprocess
+        r = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(Path(__file__).parent),
+            capture_output=True, text=True, timeout=5,
+        )
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
 
 
 # ── File transfer helper ───────────────────────────────────────────────────────
@@ -772,6 +787,7 @@ async def _async_register(client, host_url: str, my_url: str,
                 "model":        state.model_label,
                 "gpu":          state.gpu_label,
                 "capabilities": caps,
+                "commit":       _get_git_commit(),
             },
             timeout=10.0,
         )
@@ -823,6 +839,7 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
                     "backend_type": state.backend_type,
                     "models":       _get_cached_models(),
                     "hardware":     state.hardware,
+                    "commit":       _get_git_commit(),
                     "stats": {
                         "tps_avg":        state.tps_avg,
                         "tps_last":       state.tps_last,
@@ -999,6 +1016,41 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                     }
                 await _post_result(state.http_client, base, label, chunk_id,
                                    json.dumps(result_data), attempts=3)
+                continue
+
+            # ── OTA update ────────────────────────────────────────────────────
+            if chunk_type == "ota_update":
+                log.info("Pull worker: OTA update requested")
+                try:
+                    import subprocess, os, sys
+                    r = await loop.run_in_executor(
+                        None,
+                        lambda: subprocess.run(
+                            ["git", "pull", "--ff-only"],
+                            cwd=str(Path(__file__).parent),
+                            capture_output=True, text=True, timeout=120,
+                        ),
+                    )
+                    out = (r.stdout + r.stderr).strip()
+                    ok  = r.returncode == 0
+                    log.info("Pull worker OTA git pull: %s", out)
+                    result_data = {"ok": ok, "output": out}
+                except Exception as exc:
+                    log.error("Pull worker OTA update failed: %s", exc)
+                    result_data = {"ok": False, "error": str(exc)}
+
+                # Post result back before restarting
+                await loop.run_in_executor(
+                    None,
+                    lambda: httpx.post(f"{base}/api/workers/{label}/result",
+                                       json={"chunk_id": chunk_id,
+                                             "result": _json.dumps(result_data)},
+                                       timeout=15.0),
+                )
+                if result_data.get("ok"):
+                    log.info("Pull worker OTA: restarting process…")
+                    await asyncio.sleep(1)
+                    os.execv(sys.executable, [sys.executable] + sys.argv)
                 continue
 
             # ── Inference ─────────────────────────────────────────────────────

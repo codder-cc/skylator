@@ -29,6 +29,13 @@ def _run(cmd: list[str], cwd: Path | None = None) -> tuple[int, str]:
         return 1, str(exc)
 
 
+@bp.route("/host-commit")
+def host_commit():
+    """Return the host's current git commit hash."""
+    code, commit = _run(["git", "rev-parse", "--short", "HEAD"])
+    return jsonify({"commit": commit if code == 0 else ""})
+
+
 @bp.route("/status")
 def status():
     """Return current git state and how many commits behind origin/main."""

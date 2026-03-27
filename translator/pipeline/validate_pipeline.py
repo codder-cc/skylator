@@ -23,9 +23,10 @@ _LENGTH_LIMITS = {
 class ValidatePipeline:
     """Validates translated strings for a single mod."""
 
-    def __init__(self, cfg, repo):
-        self._cfg  = cfg
-        self._repo = repo
+    def __init__(self, cfg, repo, stats_mgr=None):
+        self._cfg       = cfg
+        self._repo      = repo
+        self._stats_mgr = stats_mgr
 
     def run(self, job, mod_name: str) -> None:
         from scripts.esp_engine import validate_tokens as _vt, quality_score as _qs
@@ -88,15 +89,22 @@ class ValidatePipeline:
         jm.update_progress(job, 1, 1, f"{len(issues)} issues in {checked} strings")
         job.result = f"{len(issues)} validation issues"
 
-        # Persist results
+        # Persist results to DB (primary) and JSON (legacy fallback for detail view)
+        issues_count = len(issues)
+        if self._stats_mgr:
+            try:
+                self._stats_mgr.save_validation_result(mod_name, issues_count)
+                log.info("Validation result saved to DB for %s: %d issues", mod_name, issues_count)
+            except Exception as exc:
+                log.warning("Could not save validation result to DB: %s", exc)
         try:
             result_data = {
                 "timestamp":    time.time(),
                 "mod_name":     mod_name,
                 "checked":      checked,
-                "issues_count": len(issues),
+                "issues_count": issues_count,
                 "issues":       issues[:200],
-                "ok":           len(issues) == 0,
+                "ok":           issues_count == 0,
             }
             out_path = self._cfg.paths.translation_cache.parent / f"{mod_name}_validation.json"
             out_path.write_text(
@@ -104,4 +112,4 @@ class ValidatePipeline:
             )
             log.info("Validation results saved to %s", out_path.name)
         except Exception as exc:
-            log.warning("Could not save validation results: %s", exc)
+            log.warning("Could not save validation results to JSON: %s", exc)

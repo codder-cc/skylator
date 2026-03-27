@@ -17,4 +17,5 @@ export interface OtaUpdateResult {
 export const otaApi = {
   status: () => apiFetch<OtaStatus>('/api/ota/status'),
   update: () => apiPost<OtaUpdateResult>('/api/ota/update', {}),
+  hostCommit: () => apiFetch<{ commit: string }>('/api/ota/host-commit'),
 }

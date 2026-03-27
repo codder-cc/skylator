@@ -658,19 +658,13 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark }: WorkerRowProps) 
   })
   const otaMut = useMutation({
     mutationFn: () => workersApi.requestOtaUpdate(worker.label),
-    onSuccess: () => {
-      // Poll workers every 5 s for up to 90 s waiting for worker to come back
-      let attempts = 0
-      const poll = setInterval(() => {
-        attempts++
-        qc.invalidateQueries({ queryKey: QK.workers() })
-        if (attempts >= 18) clearInterval(poll)
-      }, 5000)
-    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: QK.workers() }),
   })
 
   const workerCommit = worker.commit ?? ''
   const upToDate = hostCommit && workerCommit && workerCommit === hostCommit
+  const otaStatus = worker.ota_status ?? 'idle'
+  const isUpdating = otaStatus === 'updating' || otaMut.isPending
 
   return (
     <tr className="border-t border-border-subtle hover:bg-bg-card2/50 transition-colors">
@@ -728,36 +722,58 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark }: WorkerRowProps) 
       </td>
       {/* OTA / version */}
       <td className="px-4 py-3">
-        <div className="flex flex-col gap-1 min-w-[120px]">
+        <div className="flex flex-col gap-1 min-w-[130px]">
+          {/* Commit hash */}
           <span className="flex items-center gap-1 text-[11px] font-mono text-text-muted">
             <GitCommit size={10} className="shrink-0" />
             {workerCommit || 'unknown'}
           </span>
-          {upToDate && (
+
+          {/* Status line */}
+          {isUpdating && (
+            <span className="flex items-center gap-1 text-[10px] text-accent">
+              <Loader2 size={9} className="animate-spin" />
+              updating…
+            </span>
+          )}
+          {!isUpdating && otaStatus === 'success' && upToDate && (
             <span className="text-[10px] text-success">up to date</span>
           )}
-          {!upToDate && workerCommit && hostCommit && (
+          {!isUpdating && otaStatus === 'failed' && (
+            <span
+              className="text-[10px] text-danger cursor-help"
+              title={(worker.ota_steps ?? []).join('\n') || 'OTA failed'}
+            >
+              update failed ✗
+            </span>
+          )}
+          {!isUpdating && otaStatus === 'idle' && upToDate && (
+            <span className="text-[10px] text-success">up to date</span>
+          )}
+          {!isUpdating && otaStatus === 'idle' && !upToDate && workerCommit && hostCommit && (
             <span className="text-[10px] text-warning">behind</span>
           )}
-          {otaMut.isError && (
-            <span className="text-[10px] text-danger" title={otaMut.error?.message}>failed ✗</span>
+
+          {/* Steps log (after failed or success) */}
+          {!isUpdating && otaStatus !== 'idle' && (worker.ota_steps ?? []).length > 0 && (
+            <details className="text-[10px] text-text-muted/70">
+              <summary className="cursor-pointer hover:text-text-muted">details</summary>
+              <pre className="mt-1 whitespace-pre-wrap font-mono text-[9px] leading-tight max-h-20 overflow-auto">
+                {(worker.ota_steps ?? []).join('\n')}
+              </pre>
+            </details>
           )}
-          {otaMut.isSuccess && !upToDate ? (
-            <span className="flex items-center gap-1 text-[10px] text-text-muted">
-              <Loader2 size={9} className="animate-spin" />
-              restarting…
-            </span>
-          ) : (
+
+          {/* Update button — hidden while updating */}
+          {!isUpdating && (
             <button
               onClick={() => { if (!otaMut.isPending) otaMut.mutate() }}
-              disabled={otaMut.isPending || !worker.alive}
+              disabled={!worker.alive}
               className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-accent/15 text-accent border border-accent/20 hover:bg-accent/25 disabled:opacity-40 transition-colors"
               title={upToDate ? 'Force re-update' : 'Pull latest and restart worker'}
             >
-              {otaMut.isPending
-                ? <Loader2 size={9} className="animate-spin" />
-                : <ArrowDownCircle size={9} />}
-              {otaMut.isPending ? 'sending…' : upToDate ? 'Re-update' : 'Update'}
+              <ArrowDownCircle size={9} />
+              {upToDate ? 'Re-update' : 'Update'}
             </button>
           )}
         </div>

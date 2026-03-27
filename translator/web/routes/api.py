@@ -1243,16 +1243,40 @@ def workers_benchmark(label: str):
 @bp.route("/workers/<label>/ota-update", methods=["POST"])
 def workers_ota_update(label: str):
     """Trigger OTA update on a remote pull-mode worker by queuing an ota_update chunk."""
-    import uuid
+    import uuid, threading, json as _json
     registry = current_app.config.get("WORKER_REGISTRY")
     if registry is None:
         return jsonify({"ok": False, "error": "Registry not initialized"}), 500
     worker = registry.get(label)
     if worker is None:
         return jsonify({"ok": False, "error": "Worker not found"}), 404
+
     chunk_id = str(uuid.uuid4())
+    with registry._lock:
+        worker.ota_status = "updating"
+        worker.ota_steps  = []
     registry.enqueue_chunk(label, {"chunk_id": chunk_id, "type": "ota_update"})
     log.info("OTA update queued for worker %s (chunk %s)", label, chunk_id[:8])
+
+    def _collect():
+        raw = registry.collect_result(chunk_id, timeout=180.0)
+        with registry._lock:
+            w = registry._workers.get(label)
+            if w is None:
+                return
+            if raw is None:
+                w.ota_status = "failed"
+                w.ota_steps  = ["timed out waiting for worker response"]
+                return
+            try:
+                data = _json.loads(raw)
+                w.ota_status = "success" if data.get("ok") else "failed"
+                w.ota_steps  = data.get("steps", [])
+            except Exception:
+                w.ota_status = "failed"
+                w.ota_steps  = [raw[:200]]
+
+    threading.Thread(target=_collect, daemon=True, name=f"ota-collect-{label}").start()
     return jsonify({"ok": True, "chunk_id": chunk_id})
 
 

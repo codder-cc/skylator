@@ -34,6 +34,8 @@ class WorkerInfo:
     hardware:     dict = field(default_factory=dict)  # ram_total_mb, vram_total_mb, cpu_name, etc.
     host_reachable_url: str = ""  # host URL as seen by this worker (set from request.host_url at register time)
     commit:       str = ""        # short git commit hash reported by the worker
+    ota_status:   str = "idle"    # idle | updating | success | failed
+    ota_steps:    list = field(default_factory=list)  # step strings from last OTA run
 
     def to_dict(self) -> dict:
         return {
@@ -51,6 +53,8 @@ class WorkerInfo:
             "hardware":     self.hardware,
             "alive":        (time.time() - self.last_seen) < WorkerRegistry.HEARTBEAT_TTL,
             "commit":       self.commit,
+            "ota_status":   self.ota_status,
+            "ota_steps":    self.ota_steps,
         }
 
 

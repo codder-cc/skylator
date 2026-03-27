@@ -947,8 +947,7 @@ function ServersPage() {
   const hostCommitQ = useQuery({
     queryKey: ['ota', 'host-commit'],
     queryFn: otaApi.hostCommit,
-    staleTime: 300_000,
-    refetchOnWindowFocus: false,
+    staleTime: 30_000,
   })
 
   const workers = workersQ.data ?? []
@@ -962,7 +961,10 @@ function ServersPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-text-main">Servers</h1>
         <button
-          onClick={() => qc.invalidateQueries({ queryKey: QK.workers() })}
+          onClick={() => {
+            qc.invalidateQueries({ queryKey: QK.workers() })
+            qc.invalidateQueries({ queryKey: ['ota'] })
+          }}
           className="flex items-center gap-2 px-3 py-2 rounded text-sm bg-bg-card border border-border-subtle text-text-muted hover:text-text-main transition-colors"
         >
           <RefreshCw className={cn('w-4 h-4', workersQ.isFetching && 'animate-spin')} />

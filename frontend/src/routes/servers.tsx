@@ -662,7 +662,7 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark }: WorkerRowProps) 
   })
 
   const workerCommit = worker.commit ?? ''
-  const needsUpdate = hostCommit && workerCommit && workerCommit !== hostCommit
+  const upToDate = hostCommit && workerCommit && workerCommit === hostCommit
 
   return (
     <tr className="border-t border-border-subtle hover:bg-bg-card2/50 transition-colors">
@@ -720,33 +720,31 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark }: WorkerRowProps) 
       </td>
       {/* OTA / version */}
       <td className="px-4 py-3">
-        <div className="flex flex-col gap-1 min-w-[110px]">
-          {workerCommit ? (
-            <span className="flex items-center gap-1 text-[11px] font-mono text-text-muted">
-              <GitCommit size={10} className="shrink-0" />
-              {workerCommit}
-            </span>
-          ) : (
-            <span className="text-[11px] text-text-muted/40">—</span>
-          )}
-          {workerCommit && !needsUpdate && (
+        <div className="flex flex-col gap-1 min-w-[120px]">
+          <span className="flex items-center gap-1 text-[11px] font-mono text-text-muted">
+            <GitCommit size={10} className="shrink-0" />
+            {workerCommit || 'unknown'}
+          </span>
+          {upToDate && (
             <span className="text-[10px] text-success">up to date</span>
           )}
-          {needsUpdate && (
+          {!upToDate && workerCommit && hostCommit && (
+            <span className="text-[10px] text-warning">behind</span>
+          )}
+          {otaMut.isSuccess && !otaMut.isPending ? (
+            <span className="text-[10px] text-success">update sent ✓</span>
+          ) : (
             <button
               onClick={() => { if (!otaMut.isPending) otaMut.mutate() }}
               disabled={otaMut.isPending || !worker.alive}
-              className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-warning/20 text-warning border border-warning/30 hover:bg-warning/30 disabled:opacity-50 transition-colors"
-              title={`Worker is on ${workerCommit}, host is on ${hostCommit}`}
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-accent/15 text-accent border border-accent/20 hover:bg-accent/25 disabled:opacity-40 transition-colors"
+              title={upToDate ? 'Force re-update' : 'Pull latest and restart worker'}
             >
               {otaMut.isPending
                 ? <Loader2 size={9} className="animate-spin" />
                 : <ArrowDownCircle size={9} />}
-              {otaMut.isPending ? 'Updating…' : 'Update'}
+              {otaMut.isPending ? 'Updating…' : upToDate ? 'Re-update' : 'Update'}
             </button>
-          )}
-          {otaMut.isSuccess && !otaMut.isPending && (
-            <span className="text-[10px] text-success">update sent ✓</span>
           )}
         </div>
       </td>

@@ -1039,13 +1039,17 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                     steps.append(f"git pull: {out}")
                     log.info("Pull worker OTA git pull: %s", out)
 
-                    # 2. pip install -r requirements.txt (pick up new deps)
+                    # 2. pip install -r requirements*.txt (pick up new deps)
                     if ok:
+                        import platform as _pl
+                        _req = "requirements-metal.txt" \
+                            if (_pl.system() == "Darwin" and _pl.machine() == "arm64") \
+                            else "requirements.txt"
                         pip_r = await loop.run_in_executor(
                             None,
                             lambda: _sp.run(
                                 [sys.executable, "-m", "pip", "install", "-r",
-                                 str(Path(__file__).parent / "requirements.txt"),
+                                 str(Path(__file__).parent / _req),
                                  "--quiet"],
                                 cwd=str(Path(__file__).parent),
                                 capture_output=True, text=True, timeout=300,

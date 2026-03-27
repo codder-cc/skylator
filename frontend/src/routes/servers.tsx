@@ -696,168 +696,153 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark }: WorkerRowProps) 
   const upToDate = hostCommit && workerCommit && workerCommit === hostCommit
   const isUpdating = otaStatus === 'updating' || otaStatus === 'restarting' || otaMut.isPending || otaInFlight
 
+  const dotClass = worker.alive
+    ? 'bg-success'
+    : (otaStatus === 'restarting' || (otaInFlight && !worker.alive))
+      ? 'bg-warning animate-pulse'
+      : 'bg-danger'
+
   return (
-    <tr className="border-t border-border-subtle hover:bg-bg-card2/50 transition-colors">
-      <td className="px-4 py-3">
-        <div className="flex items-center gap-2">
-          <span
-            className={cn(
-              'w-2 h-2 rounded-full flex-shrink-0',
-              worker.alive
-                ? 'bg-success'
-                : (otaStatus === 'restarting' || (otaInFlight && !worker.alive))
-                  ? 'bg-warning animate-pulse'
-                  : 'bg-danger',
-            )}
-          />
-          <span className="text-sm font-medium text-text-main">{worker.label}</span>
-        </div>
-      </td>
-      <td className="px-4 py-3 text-xs text-text-muted font-mono">{worker.url}</td>
-      <td className="px-4 py-3 text-xs text-text-main">{worker.model ?? '—'}</td>
-      <td className="px-4 py-3">
-        {hw ? (
-          <div className="space-y-1 min-w-[160px]">
-            <div className="flex items-center gap-1 text-[10px] text-text-muted mb-0.5">
-              <Cpu className="w-2.5 h-2.5" />
-              <span className="truncate max-w-[140px]" title={hw.cpu_name}>{hw.cpu_name}</span>
-              {hw.unified_memory && (
-                <span className="px-1 rounded text-[9px] bg-accent/20 text-accent">unified</span>
-              )}
-            </div>
-            <ResourceBar
-              label={hw.unified_memory ? 'Mem' : 'RAM'}
-              usedMb={hw.ram_total_mb - hw.ram_free_mb}
-              totalMb={hw.ram_total_mb}
-            />
-            {!hw.unified_memory && hw.vram_total_mb > 0 && (
+    <div className="border-t border-border-subtle px-4 py-3 hover:bg-bg-card2/30 transition-colors">
+      {/* ── Row 1: label + status + last seen ── */}
+      <div className="flex items-center gap-2 mb-2">
+        <span className={cn('w-2 h-2 rounded-full flex-shrink-0', dotClass)} />
+        <span className="text-sm font-semibold text-text-main">{worker.label}</span>
+        <span className="text-[10px] font-mono text-text-muted/60">{worker.url}</span>
+        <span className="ml-auto text-[10px] text-text-muted whitespace-nowrap">{timeAgo(worker.last_seen)}</span>
+      </div>
+
+      {/* ── Row 2: hardware left · model+task right ── */}
+      <div className="flex gap-4 mb-2">
+        {/* Hardware */}
+        <div className="flex-1 min-w-0 space-y-1">
+          {hw ? (
+            <>
+              <div className="flex items-center gap-1 text-[10px] text-text-muted">
+                <Cpu className="w-2.5 h-2.5 shrink-0" />
+                <span className="truncate" title={hw.cpu_name}>{hw.cpu_name}</span>
+                {hw.cpu_cores > 0 && <span className="shrink-0">({hw.cpu_cores}c)</span>}
+                {hw.unified_memory && (
+                  <span className="px-1 rounded text-[9px] bg-accent/20 text-accent shrink-0">unified</span>
+                )}
+              </div>
               <ResourceBar
-                label="VRAM"
-                usedMb={hw.vram_total_mb - hw.vram_free_mb}
-                totalMb={hw.vram_total_mb}
+                label={hw.unified_memory ? 'Mem' : 'RAM'}
+                usedMb={hw.ram_total_mb - hw.ram_free_mb}
+                totalMb={hw.ram_total_mb}
               />
-            )}
+              {!hw.unified_memory && hw.vram_total_mb > 0 && (
+                <ResourceBar
+                  label="VRAM"
+                  usedMb={hw.vram_total_mb - hw.vram_free_mb}
+                  totalMb={hw.vram_total_mb}
+                />
+              )}
+            </>
+          ) : (
+            <span className="text-[10px] text-text-muted">{worker.gpu ?? '—'}</span>
+          )}
+        </div>
+
+        {/* Model + backend + task */}
+        <div className="flex-1 min-w-0 space-y-1">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-xs text-text-main truncate">{worker.model ?? <span className="text-text-muted">no model</span>}</span>
+            <span className={cn(
+              'px-1 py-0.5 rounded text-[9px] font-mono uppercase shrink-0',
+              worker.backend_type === 'mlx' ? 'bg-accent/20 text-accent' : 'bg-accent/10 text-accent',
+            )}>
+              {worker.backend_type || 'llamacpp'}
+            </span>
           </div>
-        ) : (
-          <span className="text-xs text-text-muted">{worker.gpu ?? '—'}</span>
-        )}
-      </td>
-      <td className="px-4 py-3">
-        <span
-          className={cn(
-            'px-1.5 py-0.5 rounded text-[10px] font-mono uppercase',
-            worker.backend_type === 'mlx'
-              ? 'bg-accent/20 text-accent'
-              : 'bg-accent/10 text-accent',
+          {worker.current_task && (
+            <div className="text-[10px] text-text-muted truncate" title={worker.current_task}>
+              ↳ {worker.current_task}
+            </div>
           )}
-        >
-          {worker.backend_type || 'llamacpp'}
+        </div>
+      </div>
+
+      {/* ── Row 3: OTA + actions ── */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {/* Commit */}
+        <span className="flex items-center gap-1 text-[10px] font-mono text-text-muted">
+          <GitCommit size={9} className="shrink-0" />
+          {workerCommit || 'unknown'}
         </span>
-      </td>
-      {/* OTA / version */}
-      <td className="px-4 py-3">
-        <div className="flex flex-col gap-1 min-w-[130px]">
-          {/* Commit hash */}
-          <span className="flex items-center gap-1 text-[11px] font-mono text-text-muted">
-            <GitCommit size={10} className="shrink-0" />
-            {workerCommit || 'unknown'}
+
+        {/* OTA status */}
+        {(otaStatus === 'updating' || (otaInFlight && otaStatus !== 'restarting')) && (
+          <span className="flex items-center gap-1 text-[10px] text-accent">
+            <Loader2 size={9} className="animate-spin" />updating…
           </span>
-
-          {/* Status line */}
-          {(otaStatus === 'updating' || (otaInFlight && otaStatus !== 'restarting')) && (
-            <span className="flex items-center gap-1 text-[10px] text-accent">
-              <Loader2 size={9} className="animate-spin" />
-              updating…
-            </span>
-          )}
-          {otaStatus === 'restarting' && (
-            <span className="flex items-center gap-1 text-[10px] text-warning">
-              <Loader2 size={9} className="animate-spin" />
-              restarting…
-            </span>
-          )}
-          {!isUpdating && otaStatus === 'success' && upToDate && (
-            <span className="text-[10px] text-success">up to date</span>
-          )}
-          {!isUpdating && otaStatus === 'failed' && (
-            <span
-              className="text-[10px] text-danger cursor-help"
-              title={(worker.ota_steps ?? []).join('\n') || 'OTA failed'}
-            >
-              update failed ✗
-            </span>
-          )}
-          {!isUpdating && otaStatus === 'idle' && upToDate && (
-            <span className="text-[10px] text-success">up to date</span>
-          )}
-          {!isUpdating && otaStatus === 'idle' && !upToDate && workerCommit && hostCommit && (
-            <span className="text-[10px] text-warning">behind</span>
-          )}
-
-          {/* Steps log (after failed or success) */}
-          {!isUpdating && otaStatus !== 'idle' && (worker.ota_steps ?? []).length > 0 && (
-            <details className="text-[10px] text-text-muted/70">
-              <summary className="cursor-pointer hover:text-text-muted">details</summary>
-              <pre className="mt-1 whitespace-pre-wrap font-mono text-[9px] leading-tight max-h-20 overflow-auto">
-                {(worker.ota_steps ?? []).join('\n')}
-              </pre>
-            </details>
-          )}
-
-          {/* Update button — hidden while updating */}
-          {!isUpdating && (
-            <button
-              onClick={() => { if (!otaMut.isPending) otaMut.mutate() }}
-              disabled={!worker.alive}
-              className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-accent/15 text-accent border border-accent/20 hover:bg-accent/25 disabled:opacity-40 transition-colors"
-              title={upToDate ? 'Force re-update' : 'Pull latest and restart worker'}
-            >
-              <ArrowDownCircle size={9} />
-              {upToDate ? 'Re-update' : 'Update'}
-            </button>
-          )}
-        </div>
-      </td>
-      <td className="px-4 py-3 text-xs text-text-muted">{timeAgo(worker.last_seen)}</td>
-      <td
-        className="px-4 py-3 text-xs text-text-muted max-w-[160px] truncate"
-        title={worker.current_task ?? ''}
-      >
-        {worker.current_task ?? '—'}
-      </td>
-      <td className="px-4 py-3">
-        <div className="flex flex-wrap gap-1.5">
+        )}
+        {otaStatus === 'restarting' && (
+          <span className="flex items-center gap-1 text-[10px] text-warning">
+            <Loader2 size={9} className="animate-spin" />restarting…
+          </span>
+        )}
+        {!isUpdating && (otaStatus === 'success' || otaStatus === 'idle') && upToDate && (
+          <span className="text-[10px] text-success">up to date</span>
+        )}
+        {!isUpdating && otaStatus === 'failed' && (
+          <span className="text-[10px] text-danger cursor-help" title={(worker.ota_steps ?? []).join('\n') || 'OTA failed'}>
+            failed ✗
+          </span>
+        )}
+        {!isUpdating && (otaStatus === 'idle' || otaStatus === 'success') && !upToDate && workerCommit && hostCommit && (
+          <span className="text-[10px] text-warning">behind</span>
+        )}
+        {!isUpdating && otaStatus !== 'idle' && (worker.ota_steps ?? []).length > 0 && (
+          <details className="text-[10px] text-text-muted/60">
+            <summary className="cursor-pointer hover:text-text-muted">log</summary>
+            <pre className="mt-1 whitespace-pre-wrap font-mono text-[9px] leading-tight max-h-16 overflow-auto bg-bg-base p-1 rounded">
+              {(worker.ota_steps ?? []).join('\n')}
+            </pre>
+          </details>
+        )}
+        {!isUpdating && (
           <button
-            onClick={() => onLoad(worker)}
-            className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-accent/20 text-accent border border-accent/30 hover:bg-accent/30 transition-colors"
+            onClick={() => { if (!otaMut.isPending) otaMut.mutate() }}
+            disabled={!worker.alive}
+            title={upToDate ? 'Force re-update' : 'Pull latest and restart worker'}
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-accent/15 text-accent border border-accent/20 hover:bg-accent/25 disabled:opacity-40 transition-colors"
           >
-            <Upload className="w-3 h-3" />
-            Load
+            <ArrowDownCircle size={9} />
+            {upToDate ? 'Re-update' : 'Update'}
           </button>
-          {worker.model && (
-            <button
-              onClick={() => unloadMut.mutate()}
-              disabled={unloadMut.isPending}
-              className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-danger/20 text-danger border border-danger/30 hover:bg-danger/30 disabled:opacity-50 transition-colors"
-            >
-              {unloadMut.isPending
-                ? <Loader2 className="w-3 h-3 animate-spin" />
-                : <PowerOff className="w-3 h-3" />}
-              Unload
-            </button>
-          )}
+        )}
+
+        {/* Divider */}
+        <span className="text-border-subtle">·</span>
+
+        {/* Actions */}
+        <button
+          onClick={() => onLoad(worker)}
+          className="flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-accent/20 text-accent border border-accent/30 hover:bg-accent/30 transition-colors"
+        >
+          <Upload className="w-3 h-3" />Load
+        </button>
+        {worker.model && (
           <button
-            onClick={() => onBenchmark(worker)}
-            disabled={!worker.model}
-            title={worker.model ? 'Run benchmark' : 'Load a model first'}
-            className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-bg-card2 text-text-muted border border-border-subtle hover:text-text-main disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            onClick={() => unloadMut.mutate()}
+            disabled={unloadMut.isPending}
+            className="flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-danger/20 text-danger border border-danger/30 hover:bg-danger/30 disabled:opacity-50 transition-colors"
           >
-            <Play className="w-3 h-3" />
-            Benchmark
+            {unloadMut.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <PowerOff className="w-3 h-3" />}
+            Unload
           </button>
-        </div>
-      </td>
-    </tr>
+        )}
+        <button
+          onClick={() => onBenchmark(worker)}
+          disabled={!worker.model}
+          title={worker.model ? 'Run benchmark' : 'Load a model first'}
+          className="flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-bg-card2 text-text-muted border border-border-subtle hover:text-text-main disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          <Play className="w-3 h-3" />Benchmark
+        </button>
+      </div>
+    </div>
   )
 }
 
@@ -1067,27 +1052,16 @@ function ServersPage() {
             {workersQ.isLoading ? 'Loading…' : 'No workers registered yet.'}
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead>
-                <tr className="text-xs text-text-muted">
-                  {['Label', 'URL', 'Model', 'Resources', 'Backend', 'Version', 'Last Seen', 'Current Task', 'Actions'].map((h) => (
-                    <th key={h} className="px-4 py-3 font-medium whitespace-nowrap">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {workers.map((w) => (
-                  <WorkerRow
-                    key={w.label}
-                    worker={w}
-                    hostCommit={hostCommit}
-                    onLoad={setLoadModalWorker}
-                    onBenchmark={setBenchmarkWorker}
-                  />
-                ))}
-              </tbody>
-            </table>
+          <div>
+            {workers.map((w) => (
+              <WorkerRow
+                key={w.label}
+                worker={w}
+                hostCommit={hostCommit}
+                onLoad={setLoadModalWorker}
+                onBenchmark={setBenchmarkWorker}
+              />
+            ))}
           </div>
         )}
       </div>

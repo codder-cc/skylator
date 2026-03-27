@@ -647,9 +647,10 @@ interface WorkerRowProps {
   hostCommit: string
   onLoad: (worker: WorkerInfo) => void
   onBenchmark: (worker: WorkerInfo) => void
+  onOtaActiveChange: (active: boolean) => void
 }
 
-function WorkerRow({ worker, hostCommit, onLoad, onBenchmark }: WorkerRowProps) {
+function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange }: WorkerRowProps) {
   const qc = useQueryClient()
   const hw  = worker.hardware
 
@@ -666,14 +667,12 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark }: WorkerRowProps) 
   const otaStatus = worker.ota_status ?? 'idle'
 
   useEffect(() => {
-    if (otaStatus === 'success' || otaStatus === 'failed') {
-      clearFlight()
-    } else if (otaStatus === 'idle' && otaInFlight && worker.alive) {
-      // Worker reconnected alive with idle status while OTA was in-flight.
-      // Means it restarted successfully but _collect missed the transition.
-      clearFlight()
-    }
-  }, [otaStatus, otaInFlight, worker.alive])
+    if (otaStatus === 'success' || otaStatus === 'failed') clearFlight()
+  }, [otaStatus])
+
+  useEffect(() => {
+    onOtaActiveChange(otaInFlight)
+  }, [otaInFlight])
 
   useEffect(() => () => { if (otaFlightTimer.current) clearTimeout(otaFlightTimer.current) }, [])
 
@@ -960,16 +959,12 @@ function ServersPage() {
   const [scanPoll, setScanPoll] = useState(false)
   const scanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  const [otaActive, setOtaActive] = useState(false)
+
   const workersQ = useQuery({
     queryKey: QK.workers(),
     queryFn: workersApi.list,
-    refetchInterval: (query) => {
-      const workers = query.state.data ?? []
-      const hasActiveOta = workers.some(
-        (w) => w.ota_status === 'updating' || w.ota_status === 'restarting',
-      )
-      return hasActiveOta ? 3_000 : 10_000
-    },
+    refetchInterval: otaActive ? 2_000 : 10_000,
   })
 
   const serversQ = useQuery({
@@ -1060,6 +1055,7 @@ function ServersPage() {
                 hostCommit={hostCommit}
                 onLoad={setLoadModalWorker}
                 onBenchmark={setBenchmarkWorker}
+                onOtaActiveChange={setOtaActive}
               />
             ))}
           </div>

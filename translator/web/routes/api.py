@@ -1273,7 +1273,11 @@ def workers_ota_update(label: str):
             try:
                 data = _json.loads(raw)
                 if data.get("ok"):
-                    # Worker will now restart — keep visible as 'restarting'
+                    if w.ota_status not in ("updating", "restarting"):
+                        # Worker already reconnected before _collect ran —
+                        # register() set status to 'success'; don't overwrite it.
+                        w.ota_steps = data.get("steps", [])
+                        return  # watchdog not needed
                     w.ota_status    = "restarting"
                     w.ota_steps     = data.get("steps", [])
                     w.ota_restart_at = _time.time()

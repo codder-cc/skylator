@@ -670,6 +670,23 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange 
     if (otaStatus === 'success' || otaStatus === 'failed') clearFlight()
   }, [otaStatus])
 
+  // Safety valve: if still in-flight 15 s after clicking, poll every 3 s and
+  // clear once the worker is alive with a settled (idle/success) status.
+  // Handles cases where the server-side OTA state machine misses the transition.
+  useEffect(() => {
+    if (!otaInFlight) return
+    const giveUpTimer = setTimeout(() => {
+      const poll = setInterval(() => {
+        if (worker.alive && (worker.ota_status === 'idle' || worker.ota_status === 'success' || !worker.ota_status)) {
+          clearFlight()
+          clearInterval(poll)
+        }
+      }, 3_000)
+      return () => clearInterval(poll)
+    }, 15_000)
+    return () => clearTimeout(giveUpTimer)
+  }, [otaInFlight])
+
   useEffect(() => {
     onOtaActiveChange(otaInFlight)
   }, [otaInFlight])

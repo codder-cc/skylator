@@ -652,19 +652,43 @@ interface WorkerRowProps {
 function WorkerRow({ worker, hostCommit, onLoad, onBenchmark }: WorkerRowProps) {
   const qc = useQueryClient()
   const hw  = worker.hardware
+
+  // Local flight flag — set on click, cleared only when server returns success/failed.
+  // Prevents button flickering during the gap between POST returning and first poll.
+  const [otaInFlight, setOtaInFlight] = useState(false)
+  const otaFlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const clearFlight = () => {
+    setOtaInFlight(false)
+    if (otaFlightTimer.current) clearTimeout(otaFlightTimer.current)
+  }
+
+  const otaStatus = worker.ota_status ?? 'idle'
+
+  useEffect(() => {
+    if (otaStatus === 'success' || otaStatus === 'failed') clearFlight()
+  }, [otaStatus])
+
+  useEffect(() => () => { if (otaFlightTimer.current) clearTimeout(otaFlightTimer.current) }, [])
+
   const unloadMut = useMutation({
     mutationFn: () => workersApi.unloadModel(worker.label),
     onSuccess: () => qc.invalidateQueries({ queryKey: QK.workers() }),
   })
   const otaMut = useMutation({
     mutationFn: () => workersApi.requestOtaUpdate(worker.label),
+    onMutate: () => {
+      setOtaInFlight(true)
+      // Safety: auto-clear after 3 min if server never responds
+      otaFlightTimer.current = setTimeout(() => setOtaInFlight(false), 180_000)
+    },
     onSuccess: () => qc.invalidateQueries({ queryKey: QK.workers() }),
+    onError: () => clearFlight(),
   })
 
   const workerCommit = worker.commit ?? ''
   const upToDate = hostCommit && workerCommit && workerCommit === hostCommit
-  const otaStatus = worker.ota_status ?? 'idle'
-  const isUpdating = otaStatus === 'updating' || otaStatus === 'restarting' || otaMut.isPending
+  const isUpdating = otaStatus === 'updating' || otaStatus === 'restarting' || otaMut.isPending || otaInFlight
 
   return (
     <tr className="border-t border-border-subtle hover:bg-bg-card2/50 transition-colors">
@@ -675,7 +699,7 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark }: WorkerRowProps) 
               'w-2 h-2 rounded-full flex-shrink-0',
               worker.alive
                 ? 'bg-success'
-                : otaStatus === 'restarting'
+                : (otaStatus === 'restarting' || (otaInFlight && !worker.alive))
                   ? 'bg-warning animate-pulse'
                   : 'bg-danger',
             )}
@@ -734,7 +758,7 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark }: WorkerRowProps) 
           </span>
 
           {/* Status line */}
-          {(otaStatus === 'updating' || otaMut.isPending) && (
+          {(otaStatus === 'updating' || (otaInFlight && otaStatus !== 'restarting')) && (
             <span className="flex items-center gap-1 text-[10px] text-accent">
               <Loader2 size={9} className="animate-spin" />
               updating…

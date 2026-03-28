@@ -197,7 +197,7 @@ class RegistryPullBackend:
             # ─────────────────────────────────────────────────────────────────
 
             if progress_cb:
-                progress_cb(min(i + batch_size, len(texts)), len(texts))
+                progress_cb({"tps_last": worker_tps, "tokens_done": approx_tokens, "elapsed": elapsed})
 
             self._registry.update_task(self._label, "")
 

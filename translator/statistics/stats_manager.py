@@ -200,7 +200,7 @@ class StatsManager:
             s.mod_name,
             COUNT(*)                                                    AS total,
             SUM(CASE WHEN s.status='translated'    THEN 1 ELSE 0 END)  AS translated,
-            SUM(CASE WHEN s.status='pending'        THEN 1 ELSE 0 END)  AS pending,
+            SUM(CASE WHEN s.status='pending' AND (s.source IS NULL OR s.source != 'untranslatable') THEN 1 ELSE 0 END) AS pending,
             SUM(CASE WHEN s.status='needs_review'   THEN 1 ELSE 0 END)  AS needs_review,
             SUM(CASE WHEN s.source='untranslatable' THEN 1 ELSE 0 END)  AS untranslatable,
             COUNT(DISTINCT sr.string_id)                                AS reserved,

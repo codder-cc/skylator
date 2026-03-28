@@ -58,6 +58,7 @@ class ModInfo:
     def to_dict(self) -> dict:
         d = asdict(self)
         d["pct"] = self.pct()
+        d["id"] = d.pop("mod_id")  # frontend expects "id", not "mod_id"
         return d
 
 

@@ -181,7 +181,7 @@ class StringRepo:
             SELECT
                 COUNT(*) AS total,
                 SUM(CASE WHEN status='translated'   THEN 1 ELSE 0 END) AS translated,
-                SUM(CASE WHEN status='pending'       THEN 1 ELSE 0 END) AS pending,
+                SUM(CASE WHEN status='pending' AND (source IS NULL OR source != 'untranslatable') THEN 1 ELSE 0 END) AS pending,
                 SUM(CASE WHEN status='needs_review'  THEN 1 ELSE 0 END) AS needs_review
             FROM strings WHERE mod_name=?
         """, (mod_name,)).fetchone()
@@ -201,7 +201,7 @@ class StringRepo:
                 mod_name,
                 COUNT(*) AS total,
                 SUM(CASE WHEN status='translated'   THEN 1 ELSE 0 END) AS translated,
-                SUM(CASE WHEN status='pending'       THEN 1 ELSE 0 END) AS pending,
+                SUM(CASE WHEN status='pending' AND (source IS NULL OR source != 'untranslatable') THEN 1 ELSE 0 END) AS pending,
                 SUM(CASE WHEN status='needs_review'  THEN 1 ELSE 0 END) AS needs_review
             FROM strings GROUP BY mod_name
         """).fetchall()

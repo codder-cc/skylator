@@ -45,6 +45,18 @@ MIGRATION_STEPS: list[tuple[int, str, list[str]]] = [
             "ALTER TABLE mod_stats_cache ADD COLUMN validation_issues_count INTEGER DEFAULT -1",
         ],
     ),
+    (
+        5,
+        "Add mods table for stable numeric ID routing (avoids URL encoding issues and same-name collisions)",
+        [
+            """CREATE TABLE IF NOT EXISTS mods (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                folder_name TEXT    UNIQUE NOT NULL,
+                created_at  REAL    DEFAULT (unixepoch('now', 'subsec'))
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_mods_folder ON mods(folder_name)",
+        ],
+    ),
 ]
 
 

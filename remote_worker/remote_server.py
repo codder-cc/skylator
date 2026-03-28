@@ -1023,10 +1023,25 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
             if chunk_type == "ota_update":
                 log.info("Pull worker: OTA update requested")
                 import subprocess as _sp, os as _os, sys as _sys
-                steps: list[str] = []
+
+                async def _ota_step(step_msg: str, status: str | None = None) -> None:
+                    """POST a single step to the host immediately so the UI updates live."""
+                    payload: dict = {"step": step_msg}
+                    if status:
+                        payload["status"] = status
+                    try:
+                        await state.http_client.post(
+                            f"{base}/api/workers/{label}/ota-step",
+                            json=payload,
+                            timeout=10.0,
+                        )
+                    except Exception as exc:
+                        log.warning("OTA step post failed: %s", exc)
+
                 ok = True
                 try:
                     # 1. git pull
+                    await _ota_step("pulling latest code…")
                     r = await loop.run_in_executor(
                         None,
                         lambda: _sp.run(
@@ -1037,7 +1052,7 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                     )
                     out = (r.stdout + r.stderr).strip()
                     ok  = r.returncode == 0
-                    steps.append(f"git pull: {out}")
+                    await _ota_step(f"git: {out}")
                     log.info("Pull worker OTA git pull: %s", out)
 
                     # 2. pip install -r requirements*.txt (pick up new deps)
@@ -1046,6 +1061,7 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                         _req = "requirements-metal.txt" \
                             if (_pl.system() == "Darwin" and _pl.machine() == "arm64") \
                             else "requirements.txt"
+                        await _ota_step("installing dependencies…")
                         pip_r = await loop.run_in_executor(
                             None,
                             lambda: _sp.run(
@@ -1056,31 +1072,24 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                                 capture_output=True, text=True, timeout=300,
                             ),
                         )
+                        pip_ok  = pip_r.returncode == 0
                         pip_out = (pip_r.stdout + pip_r.stderr).strip()
-                        steps.append(f"pip install: {'ok' if pip_r.returncode == 0 else pip_out[-500:]}")
+                        ok      = pip_ok
+                        await _ota_step(f"pip: {'ok' if pip_ok else pip_out[-300:]}")
                         log.info("Pull worker OTA pip install rc=%d", pip_r.returncode)
 
                 except Exception as exc:
                     log.error("Pull worker OTA update failed: %s", exc)
                     ok = False
-                    steps.append(f"error: {exc}")
-
-                result_data = {"ok": ok, "steps": steps}
-
-                # Post result back before restarting
-                try:
-                    await state.http_client.post(
-                        f"{base}/api/workers/{label}/result",
-                        json={"chunk_id": chunk_id, "result": _json.dumps(result_data)},
-                        timeout=15.0,
-                    )
-                except Exception:
-                    pass
+                    await _ota_step(f"error: {exc}", status="failed")
 
                 if ok:
                     log.info("Pull worker OTA: restarting process…")
-                    await asyncio.sleep(1)
+                    await _ota_step("restarting…", status="restarting")
+                    await asyncio.sleep(0.5)
                     _os.execv(_sys.executable, [_sys.executable] + _sys.argv)
+                else:
+                    await _ota_step("update failed", status="failed")
                 continue
 
             # ── Inference ─────────────────────────────────────────────────────

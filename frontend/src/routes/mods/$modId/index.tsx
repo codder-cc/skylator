@@ -34,13 +34,12 @@ import { StatusBadge } from '@/components/shared/StatusBadge'
 import { ProgressBar } from '@/components/shared/ProgressBar'
 import { TimeAgo } from '@/components/shared/TimeAgo'
 import { useMachines } from '@/hooks/useMachines'
-import { useJobsStore } from '@/stores/jobsStore'
 import {
   TRANSLATION_MODES, DEPLOY_MODES,
   type TranslationMode, type DeployMode,
 } from '@/lib/constants'
 
-export const Route = createFileRoute('/mods/$modName/')({
+export const Route = createFileRoute('/mods/$modId/')({
   component: ModDetailPage,
 })
 
@@ -303,7 +302,7 @@ function ValidationPanel({ modName }: { modName: string }) {
 
 // ── Nexus + Context panel ─────────────────────────────────────────────────────
 
-function NexusContextPanel({ modName, encodedName }: { modName: string; encodedName: string }) {
+function NexusContextPanel({ modName, modId }: { modName: string; modId: string }) {
   const [expanded, setExpanded] = useState(false)
   const [showRaw, setShowRaw] = useState(false)
   const qc = useQueryClient()
@@ -469,8 +468,8 @@ function NexusContextPanel({ modName, encodedName }: { modName: string; encodedN
               </p>
             </div>
             <Link
-              to="/mods/$modName/context"
-              params={{ modName: encodedName }}
+              to="/mods/$modId/context"
+              params={{ modId }}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs bg-accent/20 text-accent border border-accent/30 hover:bg-accent/30 transition-colors"
             >
               <BookOpen size={11} />
@@ -487,8 +486,7 @@ function NexusContextPanel({ modName, encodedName }: { modName: string; encodedN
 // ── Main page ────────────────────────────────────────────────────────────────
 
 function ModDetailPage() {
-  const { modName } = Route.useParams()
-  const decodedName = decodeURIComponent(modName)
+  const { modId } = Route.useParams()
   const navigate = useNavigate()
   const machines = useMachines()
   const queryClient = useQueryClient()
@@ -497,10 +495,11 @@ function ModDetailPage() {
   const [showConflicts, setShowConflicts] = useState(false)
 
   const { data: mod, isLoading } = useQuery({
-    queryKey: QK.mod(decodedName),
-    queryFn: () => modsApi.get(decodedName),
+    queryKey: QK.modById(Number(modId)),
+    queryFn: () => modsApi.getById(Number(modId)),
     staleTime: 5_000,
   })
+  const folderName = mod?.folder_name ?? ''
 
   const { data: allJobs = [] } = useQuery({
     queryKey: QK.jobs(),
@@ -508,28 +507,24 @@ function ModDetailPage() {
     refetchInterval: 10_000,
   })
 
-  // Live active job for this mod from SSE-backed store
-  const activeJob = useJobsStore((s) => {
-    const all = Object.values(s.jobs)
-    return all.find((j) =>
-      (j.status === 'running' || j.status === 'pending') &&
-      (j.mod_name === decodedName ||
-        (j.params?.mod_name as string | undefined) === decodedName ||
-        (j.params?.mods as string[] | undefined)?.includes(decodedName))
-    )
-  })
+  const activeJob = allJobs.find((j) =>
+    (j.status === 'running' || j.status === 'pending') &&
+    (j.mod_name === folderName ||
+      (j.params?.mod_name as string | undefined) === folderName ||
+      (j.params?.mods as string[] | undefined)?.includes(folderName))
+  )
 
   const recentJobs = allJobs
     .filter((j) => {
       const mods = ((j as unknown as Record<string, unknown>)['mods'] as string[] | undefined) ?? []
-      return mods.includes(decodedName) || j.name.includes(decodedName)
+      return mods.includes(folderName) || j.name.includes(folderName)
     })
     .sort((a, b) => b.created_at - a.created_at)
     .slice(0, 5)
 
   const { data: conflicts, isLoading: conflictsLoading, refetch: refetchConflicts } = useQuery({
-    queryKey: ['mods', decodedName, 'conflicts'],
-    queryFn: () => modsApi.getConflicts(decodedName),
+    queryKey: ['mods', folderName, 'conflicts'],
+    queryFn: () => modsApi.getConflicts(folderName),
     enabled: showConflicts,
     staleTime: 30_000,
   })
@@ -543,7 +538,7 @@ function ModDetailPage() {
         const isApply     = type === 'apply_mod'
         return jobsApi.create({
           type,
-          mods: [decodedName],
+          mods: [folderName],
           options: {
             machines,
             ...(isTranslate && { translation_mode: translationMode }),
@@ -572,17 +567,18 @@ function ModDetailPage() {
   const recomputeScoresMut = makeJobMutation('recompute_scores')
 
   const fixUntranslatableMut = useMutation({
-    mutationFn: () => modsApi.fixUntranslatable(decodedName),
+    mutationFn: () => modsApi.fixUntranslatable(folderName),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: QK.mod(decodedName) })
-      queryClient.invalidateQueries({ queryKey: ['mods', decodedName, 'strings'] })
+      queryClient.invalidateQueries({ queryKey: QK.mod(folderName) })
+      queryClient.invalidateQueries({ queryKey: QK.modById(Number(modId)) })
+      queryClient.invalidateQueries({ queryKey: ['mods', folderName, 'strings'] })
     },
   })
 
   const translateForceMut = useMutation({ // eslint-disable-line react-hooks/rules-of-hooks
     mutationFn: () =>
       jobsApi.create({
-        type: 'translate_mod', mods: [decodedName],
+        type: 'translate_mod', mods: [folderName],
         options: { machines, force: true, translation_mode: 'force_all' },
       }),
     onSuccess: (data) => {
@@ -594,10 +590,10 @@ function ModDetailPage() {
   })
 
   const resetTranslationsMut = useMutation({
-    mutationFn: () => modsApi.resetTranslations(decodedName),
+    mutationFn: () => modsApi.resetTranslations(folderName),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: QK.mod(decodedName) })
-      queryClient.invalidateQueries({ queryKey: ['mods', decodedName, 'strings'] })
+      queryClient.invalidateQueries({ queryKey: QK.mod(folderName) })
+      queryClient.invalidateQueries({ queryKey: ['mods', folderName, 'strings'] })
     },
   })
 
@@ -680,7 +676,7 @@ function ModDetailPage() {
     return (
       <div className="card p-8 text-center text-text-muted">
         <AlertTriangle size={32} className="mx-auto mb-3 text-warning" />
-        <p>Mod not found: <code className="text-text-main">{decodedName}</code></p>
+        <p>Mod not found: <code className="text-text-main">{folderName}</code></p>
         <Link to="/mods" search={{ status: 'all', q: '', sort_by: 'status', page: 0 }} className="mt-4 inline-block text-accent hover:underline text-sm">
           ← Back to mods
         </Link>
@@ -695,13 +691,13 @@ function ModDetailPage() {
       {/* Breadcrumbs */}
       <Breadcrumbs items={[
         { label: 'Mods', to: '/mods' },
-        { label: decodedName },
+        { label: folderName },
       ]} />
 
       {/* Page header */}
       <div className="flex items-center gap-3">
-        <h1 className="text-xl font-bold text-text-main truncate flex-1 min-w-0" title={decodedName}>
-          {decodedName}
+        <h1 className="text-xl font-bold text-text-main truncate flex-1 min-w-0" title={folderName}>
+          {folderName}
         </h1>
         <StatusBadge status={mod.status} />
       </div>
@@ -752,9 +748,9 @@ function ModDetailPage() {
           <StatCard label="Untranslatable" value={mod.untranslatable_strings} colorClass="text-text-muted" />
         )}
         <Link
-          to="/mods/$modName/strings"
-          params={{ modName }}
-          search={{ scope: 'all', status: 'needs_review', q: '', page: 1, sort_by: 'score', sort_dir: 'asc', rec_type: 'all' }}
+          to="/mods/$modId/strings"
+          params={{ modId }}
+          search={{ scope: 'all', status: 'needs_review', q: '', page: 1, sort_by: 'score', sort_dir: 'asc', rec_type: '' }}
           className={cn(
             'card p-4 block transition-colors',
             needsReview > 0 ? 'hover:bg-warning/5 cursor-pointer' : 'pointer-events-none',
@@ -813,7 +809,7 @@ function ModDetailPage() {
                     <ConflictRow
                       key={i}
                       conflict={c}
-                      modName={decodedName}
+                      modName={folderName}
                       onResolved={() => void refetchConflicts()}
                     />
                   ))}
@@ -963,7 +959,7 @@ function ModDetailPage() {
             />
             <ActionButton
               onClick={() => {
-                if (window.confirm(`Reset all translations for "${decodedName}" to pending? This cannot be undone.`))
+                if (window.confirm(`Reset all translations for "${folderName}" to pending? This cannot be undone.`))
                   resetTranslationsMut.mutate()
               }}
               isPending={resetTranslationsMut.isPending}
@@ -976,9 +972,9 @@ function ModDetailPage() {
               variant="danger"
             />
             <Link
-              to="/mods/$modName/strings"
-              params={{ modName }}
-              search={{ scope: 'all', status: 'all', q: '', page: 1, sort_by: 'score', sort_dir: 'asc', rec_type: 'all' }}
+              to="/mods/$modId/strings"
+              params={{ modId }}
+              search={{ scope: 'all', status: 'all', q: '', page: 1, sort_by: 'score', sort_dir: 'asc', rec_type: '' }}
               className={cn(
                 'flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors w-full',
                 'bg-bg-card2 text-text-muted hover:text-text-main hover:bg-bg-card2/80 border border-border-subtle',
@@ -988,8 +984,8 @@ function ModDetailPage() {
               View Strings
             </Link>
             <Link
-              to="/mods/$modName/context"
-              params={{ modName }}
+              to="/mods/$modId/context"
+              params={{ modId }}
               className={cn(
                 'flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors w-full',
                 'bg-bg-card2 text-text-muted hover:text-text-main hover:bg-bg-card2/80 border border-border-subtle',
@@ -1003,8 +999,8 @@ function ModDetailPage() {
       </div>
 
       {/* Collapsible panels */}
-      <NexusContextPanel modName={decodedName} encodedName={modName} />
-      <ValidationPanel modName={decodedName} />
+      <NexusContextPanel modName={folderName} modId={modId} />
+      <ValidationPanel modName={folderName} />
 
       {/* Recent jobs */}
       <div className="space-y-3">

@@ -5,7 +5,6 @@ import { Topbar } from '@/components/layout/Topbar'
 import { ErrorBoundary } from '@/components/shared/ErrorBoundary'
 import { useSSE } from '@/hooks/useSSE'
 import { useQueryClient } from '@tanstack/react-query'
-import { useJobsStore } from '@/stores/jobsStore'
 import { QK } from '@/lib/queryKeys'
 import { JOB_TERMINAL_STATUSES } from '@/lib/constants'
 import type { Job, StringUpdate } from '@/types'
@@ -17,7 +16,6 @@ interface RouterContext {
 
 function AppShell() {
   const queryClient = useQueryClient()
-  const upsertJob = useJobsStore((s) => s.upsertJob)
 
   useSSE('/jobs/stream-all', (data) => {
     let job: Job
@@ -26,7 +24,6 @@ function AppShell() {
     } catch {
       return
     }
-    upsertJob(job)
     queryClient.setQueryData<Job[]>(QK.jobs(), (old) => {
       if (!old) return [job]
       const idx = old.findIndex((j) => j.id === job.id)

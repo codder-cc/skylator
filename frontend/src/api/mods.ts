@@ -38,6 +38,9 @@ export const modsApi = {
   get: (name: string) =>
     apiFetch<ModInfo>(`/api/mods/${encodeURIComponent(name)}`),
 
+  getById: (id: number) =>
+    apiFetch<ModInfo>(`/api/mods/by-id/${id}`),
+
   getStrings: (name: string, params: ModStringsParams) => {
     const qs = new URLSearchParams()
     if (params.scope && params.scope !== 'all') qs.set('scope', params.scope)
@@ -47,7 +50,7 @@ export const modsApi = {
     if (params.per !== undefined) qs.set('per', String(params.per))
     if (params.sort_by) qs.set('sort_by', params.sort_by)
     if (params.sort_dir) qs.set('sort_dir', params.sort_dir)
-    if (params.rec_type) qs.set('rec_type', params.rec_type)
+    if (params.rec_type && params.rec_type !== 'all') qs.set('rec_type', params.rec_type)
     const query = qs.toString()
     return apiFetch<ModStringsResponse>(
       `/mods/${encodeURIComponent(name)}/strings${query ? `?${query}` : ''}`,

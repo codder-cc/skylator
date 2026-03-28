@@ -23,32 +23,26 @@ def clear_setup_reports():
 
 @bp.route("/stats")
 def stats():
-    scanner   = current_app.config["SCANNER"]
-    base      = scanner.get_stats()
     stats_mgr = current_app.config.get("STATS_MGR")
     if stats_mgr:
         try:
-            all_stats = stats_mgr.get_all_stats()
-            if all_stats:
-                translated    = sum(s.translated   for s in all_stats.values())
-                needs_review  = sum(s.needs_review for s in all_stats.values())
-                pending       = sum(s.pending       for s in all_stats.values())
-                mods_done     = sum(1 for s in all_stats.values() if s.status == "done")
-                mods_partial  = sum(1 for s in all_stats.values() if s.status == "partial")
-                mods_pending  = sum(1 for s in all_stats.values() if s.status == "pending")
-                total_str     = translated + needs_review + pending
-                base.update({
-                    "translated_strings":  translated,
-                    "pending_strings":     pending + needs_review,
-                    "needs_review":        needs_review,
-                    "pct_complete":        round(translated / max(total_str, 1) * 100, 1),
-                    "mods_translated":     mods_done,
-                    "mods_partial":        mods_partial,
-                    "mods_pending":        mods_pending,
-                })
+            g = stats_mgr.get_global_stats()
+            return jsonify({
+                "total_mods":          g.total_mods,
+                "mods_translated":     g.mods_done,
+                "mods_partial":        g.mods_partial,
+                "mods_pending":        g.mods_pending,
+                "mods_no_strings":     g.mods_no_strings,
+                "total_strings":       g.total_strings,
+                "translated_strings":  g.translated_strings,
+                "pending_strings":     g.pending_strings,
+                "needs_review":        g.needs_review,
+                "pct_complete":        g.pct_complete,
+            })
         except Exception:
             pass
-    return jsonify(base)
+    # Fallback: scanner aggregate (no DB required)
+    return jsonify(current_app.config["SCANNER"].get_stats())
 
 
 @bp.route("/mods")
@@ -86,6 +80,22 @@ def mods():
         d["has_validation_issues"]   = issues > 0
         result.append(d)
     return jsonify(result)
+
+
+@bp.route("/mods/by-id/<int:mod_id>")
+def mod_info_by_id(mod_id: int):
+    """Resolve a numeric mod ID to full ModInfo.  Used by ID-based frontend routes."""
+    repo = current_app.config.get("STRING_REPO")
+    if repo is None:
+        return jsonify({"error": "DB not ready"}), 503
+    folder_name = repo.db.get_mod_by_id(mod_id)
+    if folder_name is None:
+        return jsonify({"error": "not found"}), 404
+    scanner = current_app.config["SCANNER"]
+    mod = scanner.get_mod(folder_name)
+    if mod is None:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(mod.to_dict())
 
 
 @bp.route("/mods/<path:mod_name>")
@@ -1241,10 +1251,44 @@ def workers_benchmark(label: str):
     return jsonify(result)
 
 
+@bp.route("/workers/<label>/ota-step", methods=["POST"])
+def workers_ota_step(label: str):
+    """Worker POSTs each OTA step in real-time as it completes.
+
+    Body: {"step": "git: Already up to date.", "status": "restarting"|"failed"|null}
+    The host appends the step to ota_steps and optionally advances ota_status.
+    """
+    import time as _time
+    registry = current_app.config.get("WORKER_REGISTRY")
+    if registry is None:
+        return jsonify({"ok": False}), 500
+    data       = request.get_json(silent=True) or {}
+    step       = str(data.get("step", "")).strip()
+    new_status = data.get("status")  # "restarting" | "failed" | None
+    with registry._lock:
+        w = registry._workers.get(label)
+        if w is None:
+            return jsonify({"ok": False, "error": "unknown worker"}), 404
+        if step:
+            w.ota_steps.append(step)
+        if new_status == "restarting":
+            w.ota_status    = "restarting"
+            w.ota_restart_at = _time.time()
+        elif new_status == "failed":
+            w.ota_status = "failed"
+    log.debug("OTA step from %s [%s]: %s", label, new_status or "-", step)
+    return jsonify({"ok": True})
+
+
 @bp.route("/workers/<label>/ota-update", methods=["POST"])
 def workers_ota_update(label: str):
-    """Trigger OTA update on a remote pull-mode worker by queuing an ota_update chunk."""
-    import uuid, threading, json as _json
+    """Trigger OTA update on a remote pull-mode worker.
+
+    The remote worker streams each step back via POST /api/workers/<label>/ota-step
+    in real-time.  This endpoint just queues the chunk and starts a watchdog
+    that marks the job failed if the worker never enters a terminal state.
+    """
+    import uuid, threading
     registry = current_app.config.get("WORKER_REGISTRY")
     if registry is None:
         return jsonify({"ok": False, "error": "Registry not initialized"}), 500
@@ -1259,56 +1303,26 @@ def workers_ota_update(label: str):
     registry.enqueue_chunk(label, {"chunk_id": chunk_id, "type": "ota_update"})
     log.info("OTA update queued for worker %s (chunk %s)", label, chunk_id[:8])
 
-    def _collect():
+    def _watchdog():
+        """Wait up to 90 s for worker to complete OTA (via ota-step posts + reconnect)."""
         import time as _time
-        raw = registry.collect_result(chunk_id, timeout=180.0)
-        with registry._lock:
-            w = registry._workers.get(label)
-            if w is None:
-                return
-            if raw is None:
-                w.ota_status = "failed"
-                w.ota_steps  = ["timed out — worker never sent result"]
-                return
-            try:
-                data = _json.loads(raw)
-                if data.get("ok"):
-                    if w.ota_status not in ("updating", "restarting"):
-                        # Worker already reconnected before _collect ran —
-                        # register() set status to 'success'; don't overwrite it.
-                        w.ota_steps = data.get("steps", [])
-                        return  # watchdog not needed
-                    w.ota_status    = "restarting"
-                    w.ota_steps     = data.get("steps", [])
-                    w.ota_restart_at = _time.time()
-                else:
-                    w.ota_status = "failed"
-                    w.ota_steps  = data.get("steps", [])
-                    return
-            except Exception:
-                w.ota_status = "failed"
-                w.ota_steps  = [raw[:200]]
-                return
-
-        # Watchdog: if worker doesn't reconnect within 60 s, mark failed
-        deadline = _time.time() + 60
+        deadline = _time.time() + 90
         while _time.time() < deadline:
             _time.sleep(3)
             with registry._lock:
                 w = registry._workers.get(label)
-                if w is None or w.ota_status != "restarting":
-                    return  # reconnected (register() cleared it) or already failed
-            log.debug("OTA watchdog: still waiting for %s to reconnect…", label)
-
+                if w is None or w.ota_status not in ("updating", "restarting"):
+                    return  # success / failed / idle — done
+        # Still stuck — mark failed
         with registry._lock:
             w = registry._workers.get(label)
-            if w and w.ota_status == "restarting":
-                w.ota_status = "failed"
-                w.ota_steps  = (w.ota_steps or []) + ["worker did not reconnect within 60 s"]
+            if w and w.ota_status in ("updating", "restarting"):
+                w.ota_status    = "failed"
+                w.ota_steps     = (w.ota_steps or []) + ["timed out — worker did not respond"]
                 w.ota_restart_at = 0.0
-        log.warning("OTA watchdog: %s did not reconnect — marked failed", label)
+        log.warning("OTA watchdog: %s timed out — marked failed", label)
 
-    threading.Thread(target=_collect, daemon=True, name=f"ota-collect-{label}").start()
+    threading.Thread(target=_watchdog, daemon=True, name=f"ota-watchdog-{label}").start()
     return jsonify({"ok": True, "chunk_id": chunk_id})
 
 

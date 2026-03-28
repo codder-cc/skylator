@@ -65,6 +65,25 @@ class TranslationDB:
         row = self.execute("SELECT COUNT(*) FROM strings").fetchone()
         return row[0] == 0
 
+    def get_or_create_mod_id(self, folder_name: str) -> int:
+        """Return the stable numeric ID for a mod folder, creating one if new."""
+        conn = self._connect()
+        conn.execute(
+            "INSERT OR IGNORE INTO mods(folder_name) VALUES(?)", (folder_name,)
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT id FROM mods WHERE folder_name=?", (folder_name,)
+        ).fetchone()
+        return row[0]
+
+    def get_mod_by_id(self, mod_id: int) -> str | None:
+        """Return folder_name for a mod ID, or None if unknown."""
+        row = self.execute(
+            "SELECT folder_name FROM mods WHERE id=?", (mod_id,)
+        ).fetchone()
+        return row[0] if row else None
+
     def mod_row_count(self, mod_name: str) -> int:
         row = self.execute(
             "SELECT COUNT(*) FROM strings WHERE mod_name=?", (mod_name,)

@@ -21,9 +21,9 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as ModsIndexRouteImport } from './routes/mods/index'
 import { Route as JobsIndexRouteImport } from './routes/jobs/index'
 import { Route as JobsJobIdRouteImport } from './routes/jobs/$jobId'
-import { Route as ModsModNameIndexRouteImport } from './routes/mods/$modName/index'
-import { Route as ModsModNameStringsRouteImport } from './routes/mods/$modName/strings'
-import { Route as ModsModNameContextRouteImport } from './routes/mods/$modName/context'
+import { Route as ModsModIdIndexRouteImport } from './routes/mods/$modId/index'
+import { Route as ModsModIdStringsRouteImport } from './routes/mods/$modId/strings'
+import { Route as ModsModIdContextRouteImport } from './routes/mods/$modId/context'
 
 const ToolsRoute = ToolsRouteImport.update({
   id: '/tools',
@@ -85,19 +85,19 @@ const JobsJobIdRoute = JobsJobIdRouteImport.update({
   path: '/jobs/$jobId',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ModsModNameIndexRoute = ModsModNameIndexRouteImport.update({
-  id: '/mods/$modName/',
-  path: '/mods/$modName/',
+const ModsModIdIndexRoute = ModsModIdIndexRouteImport.update({
+  id: '/mods/$modId/',
+  path: '/mods/$modId/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ModsModNameStringsRoute = ModsModNameStringsRouteImport.update({
-  id: '/mods/$modName/strings',
-  path: '/mods/$modName/strings',
+const ModsModIdStringsRoute = ModsModIdStringsRouteImport.update({
+  id: '/mods/$modId/strings',
+  path: '/mods/$modId/strings',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ModsModNameContextRoute = ModsModNameContextRouteImport.update({
-  id: '/mods/$modName/context',
-  path: '/mods/$modName/context',
+const ModsModIdContextRoute = ModsModIdContextRouteImport.update({
+  id: '/mods/$modId/context',
+  path: '/mods/$modId/context',
   getParentRoute: () => rootRouteImport,
 } as any)
 
@@ -114,9 +114,9 @@ export interface FileRoutesByFullPath {
   '/jobs/$jobId': typeof JobsJobIdRoute
   '/jobs/': typeof JobsIndexRoute
   '/mods/': typeof ModsIndexRoute
-  '/mods/$modName/context': typeof ModsModNameContextRoute
-  '/mods/$modName/strings': typeof ModsModNameStringsRoute
-  '/mods/$modName/': typeof ModsModNameIndexRoute
+  '/mods/$modId/context': typeof ModsModIdContextRoute
+  '/mods/$modId/strings': typeof ModsModIdStringsRoute
+  '/mods/$modId/': typeof ModsModIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -131,9 +131,9 @@ export interface FileRoutesByTo {
   '/jobs/$jobId': typeof JobsJobIdRoute
   '/jobs': typeof JobsIndexRoute
   '/mods': typeof ModsIndexRoute
-  '/mods/$modName/context': typeof ModsModNameContextRoute
-  '/mods/$modName/strings': typeof ModsModNameStringsRoute
-  '/mods/$modName': typeof ModsModNameIndexRoute
+  '/mods/$modId/context': typeof ModsModIdContextRoute
+  '/mods/$modId/strings': typeof ModsModIdStringsRoute
+  '/mods/$modId': typeof ModsModIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -149,9 +149,9 @@ export interface FileRoutesById {
   '/jobs/$jobId': typeof JobsJobIdRoute
   '/jobs/': typeof JobsIndexRoute
   '/mods/': typeof ModsIndexRoute
-  '/mods/$modName/context': typeof ModsModNameContextRoute
-  '/mods/$modName/strings': typeof ModsModNameStringsRoute
-  '/mods/$modName/': typeof ModsModNameIndexRoute
+  '/mods/$modId/context': typeof ModsModIdContextRoute
+  '/mods/$modId/strings': typeof ModsModIdStringsRoute
+  '/mods/$modId/': typeof ModsModIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -168,9 +168,9 @@ export interface FileRouteTypes {
     | '/jobs/$jobId'
     | '/jobs/'
     | '/mods/'
-    | '/mods/$modName/context'
-    | '/mods/$modName/strings'
-    | '/mods/$modName/'
+    | '/mods/$modId/context'
+    | '/mods/$modId/strings'
+    | '/mods/$modId/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -185,9 +185,9 @@ export interface FileRouteTypes {
     | '/jobs/$jobId'
     | '/jobs'
     | '/mods'
-    | '/mods/$modName/context'
-    | '/mods/$modName/strings'
-    | '/mods/$modName'
+    | '/mods/$modId/context'
+    | '/mods/$modId/strings'
+    | '/mods/$modId'
   id:
     | '__root__'
     | '/'
@@ -202,9 +202,9 @@ export interface FileRouteTypes {
     | '/jobs/$jobId'
     | '/jobs/'
     | '/mods/'
-    | '/mods/$modName/context'
-    | '/mods/$modName/strings'
-    | '/mods/$modName/'
+    | '/mods/$modId/context'
+    | '/mods/$modId/strings'
+    | '/mods/$modId/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -220,9 +220,9 @@ export interface RootRouteChildren {
   JobsJobIdRoute: typeof JobsJobIdRoute
   JobsIndexRoute: typeof JobsIndexRoute
   ModsIndexRoute: typeof ModsIndexRoute
-  ModsModNameContextRoute: typeof ModsModNameContextRoute
-  ModsModNameStringsRoute: typeof ModsModNameStringsRoute
-  ModsModNameIndexRoute: typeof ModsModNameIndexRoute
+  ModsModIdContextRoute: typeof ModsModIdContextRoute
+  ModsModIdStringsRoute: typeof ModsModIdStringsRoute
+  ModsModIdIndexRoute: typeof ModsModIdIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -311,25 +311,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof JobsJobIdRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/mods/$modName/': {
-      id: '/mods/$modName/'
-      path: '/mods/$modName'
-      fullPath: '/mods/$modName/'
-      preLoaderRoute: typeof ModsModNameIndexRouteImport
+    '/mods/$modId/': {
+      id: '/mods/$modId/'
+      path: '/mods/$modId'
+      fullPath: '/mods/$modId/'
+      preLoaderRoute: typeof ModsModIdIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/mods/$modName/strings': {
-      id: '/mods/$modName/strings'
-      path: '/mods/$modName/strings'
-      fullPath: '/mods/$modName/strings'
-      preLoaderRoute: typeof ModsModNameStringsRouteImport
+    '/mods/$modId/strings': {
+      id: '/mods/$modId/strings'
+      path: '/mods/$modId/strings'
+      fullPath: '/mods/$modId/strings'
+      preLoaderRoute: typeof ModsModIdStringsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/mods/$modName/context': {
-      id: '/mods/$modName/context'
-      path: '/mods/$modName/context'
-      fullPath: '/mods/$modName/context'
-      preLoaderRoute: typeof ModsModNameContextRouteImport
+    '/mods/$modId/context': {
+      id: '/mods/$modId/context'
+      path: '/mods/$modId/context'
+      fullPath: '/mods/$modId/context'
+      preLoaderRoute: typeof ModsModIdContextRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
@@ -348,9 +348,9 @@ const rootRouteChildren: RootRouteChildren = {
   JobsJobIdRoute: JobsJobIdRoute,
   JobsIndexRoute: JobsIndexRoute,
   ModsIndexRoute: ModsIndexRoute,
-  ModsModNameContextRoute: ModsModNameContextRoute,
-  ModsModNameStringsRoute: ModsModNameStringsRoute,
-  ModsModNameIndexRoute: ModsModNameIndexRoute,
+  ModsModIdContextRoute: ModsModIdContextRoute,
+  ModsModIdStringsRoute: ModsModIdStringsRoute,
+  ModsModIdIndexRoute: ModsModIdIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

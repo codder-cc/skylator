@@ -61,6 +61,7 @@ export interface ModFileInfo {
 }
 
 export interface ModInfo {
+  id: number           // stable numeric ID (from `mods` DB table)
   folder_name: string
   total_strings: number
   translated_strings: number

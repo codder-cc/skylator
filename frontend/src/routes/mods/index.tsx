@@ -13,8 +13,7 @@ import { cn } from '@/lib/utils'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { ProgressBar } from '@/components/shared/ProgressBar'
 import { useMachines } from '@/hooks/useMachines'
-import { useJobsStore } from '@/stores/jobsStore'
-import type { ModInfo } from '@/types'
+import type { ModInfo, Job } from '@/types'
 
 type SortBy = 'status' | 'name' | 'pct' | 'pending'
 
@@ -97,24 +96,14 @@ interface ModCardProps {
   mod: ModInfo
   selected: boolean
   onToggleSelect: (name: string) => void
+  activeJob?: Job
 }
 
-function ModCard({ mod, selected, onToggleSelect }: ModCardProps) {
+function ModCard({ mod, selected, onToggleSelect, activeJob }: ModCardProps) {
   const navigate = useNavigate()
   const machines = useMachines()
   const queryClient = useQueryClient()
   const pendingCount = (mod.total_strings ?? 0) - (mod.translated_strings ?? 0)
-
-  // Live job state for this mod from SSE-backed store
-  const activeJob = useJobsStore((s) => {
-    const all = Object.values(s.jobs)
-    return all.find((j) =>
-      (j.status === 'running' || j.status === 'pending') &&
-      (j.mod_name === mod.folder_name ||
-        (j.params?.mod_name as string | undefined) === mod.folder_name ||
-        (j.params?.mods as string[] | undefined)?.includes(mod.folder_name))
-    )
-  })
 
   const translateMutation = useMutation({
     mutationFn: () =>
@@ -159,8 +148,8 @@ function ModCard({ mod, selected, onToggleSelect }: ModCardProps) {
       {/* Header */}
       <div className="flex items-start gap-2 min-w-0 pr-5">
         <Link
-          to="/mods/$modName"
-          params={{ modName: encodeURIComponent(mod.folder_name) }}
+          to="/mods/$modId"
+          params={{ modId: String(mod.id) }}
           className="text-sm font-semibold text-text-main hover:text-accent transition-colors truncate leading-snug flex-1"
           title={mod.folder_name}
         >
@@ -242,8 +231,8 @@ function ModCard({ mod, selected, onToggleSelect }: ModCardProps) {
       {/* Action row */}
       <div className="flex items-center gap-2 pt-1 border-t border-border-subtle">
         <Link
-          to="/mods/$modName"
-          params={{ modName: encodeURIComponent(mod.folder_name) }}
+          to="/mods/$modId"
+          params={{ modId: String(mod.id) }}
           className="flex-1 text-center text-xs px-2 py-1.5 rounded bg-bg-card2 hover:bg-bg-card2/80 text-text-muted hover:text-text-main transition-colors"
         >
           Details
@@ -349,6 +338,25 @@ function ModsPage() {
     queryFn: () => modsApi.list(),
     staleTime: 60_000,
   })
+
+  const { data: allJobs = [] } = useQuery({
+    queryKey: QK.jobs(),
+    queryFn: jobsApi.list,
+    staleTime: 5_000,
+  })
+  const activeJobByMod = useMemo(() => {
+    const map = new Map<string, Job>()
+    for (const j of allJobs) {
+      if (j.status !== 'running' && j.status !== 'pending') continue
+      const names: string[] = []
+      if (j.mod_name) names.push(j.mod_name)
+      const p = j.params as Record<string, unknown> | undefined
+      if (typeof p?.mod_name === 'string') names.push(p.mod_name)
+      if (Array.isArray(p?.mods)) names.push(...(p.mods as string[]))
+      for (const name of names) if (!map.has(name)) map.set(name, j)
+    }
+    return map
+  }, [allJobs])
 
   const sorted = useMemo(() => {
     if (!allMods) return []
@@ -598,6 +606,7 @@ function ModsPage() {
                 mod={mod}
                 selected={selected.has(mod.folder_name)}
                 onToggleSelect={toggleSelect}
+                activeJob={activeJobByMod.get(mod.folder_name)}
               />
             ))}
           </div>

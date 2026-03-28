@@ -56,6 +56,7 @@ class GlobalStats:
     total_strings: int
     translated_strings: int
     pending_strings: int
+    needs_review: int
     pct_complete: float
 
 
@@ -118,7 +119,7 @@ class StatsManager:
         """Aggregate statistics across all mod_stats_cache rows."""
         rows = self._db.execute("SELECT * FROM mod_stats_cache").fetchall()
         if not rows:
-            return GlobalStats(0, 0, 0, 0, 0, 0, 0, 0, 0.0)
+            return GlobalStats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0)
 
         total_mods    = len(rows)
         mods_done     = sum(1 for r in rows if r["translated"] == r["total"] and r["total"] > 0)
@@ -129,6 +130,7 @@ class StatsManager:
         total_str     = sum(r["total"] for r in rows)
         trans_str     = sum(r["translated"] for r in rows)
         pending_str   = sum(r["pending"] for r in rows)
+        needs_review  = sum(r["needs_review"] for r in rows)
         pct = (trans_str / total_str * 100) if total_str > 0 else 0.0
 
         return GlobalStats(
@@ -140,6 +142,7 @@ class StatsManager:
             total_strings=total_str,
             translated_strings=trans_str,
             pending_strings=pending_str,
+            needs_review=needs_review,
             pct_complete=round(pct, 2),
         )
 

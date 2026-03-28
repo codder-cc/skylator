@@ -28,6 +28,7 @@ class ModFileInfo:
 class ModInfo:
     folder_name:  str
     folder_path:  str
+    mod_id:       int = 0          # stable numeric ID from the `mods` DB table
     esp_files:    list[ModFileInfo] = field(default_factory=list)
     bsa_files:    list[ModFileInfo] = field(default_factory=list)
     mcm_loose:    list[ModFileInfo] = field(default_factory=list)  # loose _russian.txt
@@ -445,6 +446,13 @@ class ModScanner:
     def _scan_mod(self, folder: Path, trans_cache: dict,
                   counts_cache: dict | None = None) -> ModInfo:
         info = ModInfo(folder_name=folder.name, folder_path=str(folder))
+
+        # Assign stable numeric ID (creates row on first sight)
+        if self._repo is not None:
+            try:
+                info.mod_id = self._repo.db.get_or_create_mod_id(folder.name)
+            except Exception:
+                pass  # non-fatal; ID stays 0
 
         # meta.ini → nexus_mod_id
         meta = folder / "meta.ini"

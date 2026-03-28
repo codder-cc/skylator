@@ -3,6 +3,7 @@ export const QK = {
   gpu:             () => ['gpu'] as const,
   mods:            (filters?: Record<string, string>) => filters ? ['mods', filters] as const : ['mods'] as const,
   mod:             (name: string) => ['mods', name] as const,
+  modById:         (id: number)   => ['mods', 'by-id', id] as const,
   modStrings:      (name: string, params: Record<string, unknown>) => ['mods', name, 'strings', params] as const,
   modLiveUpdates:  (modName: string) => ['modLiveUpdates', modName] as const,
   jobs:            () => ['jobs'] as const,

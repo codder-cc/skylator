@@ -16,8 +16,10 @@ import {
 } from 'lucide-react'
 import * as Tooltip from '@radix-ui/react-tooltip'
 import { cn } from '@/lib/utils'
+import { useQuery } from '@tanstack/react-query'
+import { jobsApi } from '@/api/jobs'
+import { QK } from '@/lib/queryKeys'
 import { useMachinesStore } from '@/stores/machinesStore'
-import { useJobsStore } from '@/stores/jobsStore'
 import { useUiStore } from '@/stores/uiStore'
 
 interface NavItem {
@@ -63,10 +65,14 @@ export function Sidebar() {
   const routerState = useRouterState()
   const pathname = routerState.location.pathname
   const mode = useMachinesStore((s) => s.mode)
-  const jobs = useJobsStore((s) => s.jobs)
   const collapsed = useUiStore((s) => s.sidebarCollapsed)
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
-  const runningCount = Object.values(jobs).filter(
+  const { data: jobs = [] } = useQuery({
+    queryKey: QK.jobs(),
+    queryFn: jobsApi.list,
+    staleTime: 5_000,
+  })
+  const runningCount = jobs.filter(
     (j) => j.status === 'running' || j.status === 'pending',
   ).length
 

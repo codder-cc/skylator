@@ -91,10 +91,8 @@ class WorkerRegistry:
             existing = self._workers.get(info.label)
             if existing and existing.ota_status in ("restarting", "updating"):
                 # Worker came back after OTA restart — carry over steps, mark done.
-                # Also catches 'updating' for the race where the result arrived before
-                # _collect set the status to 'restarting'.
                 info.ota_status  = "success"
-                info.ota_steps   = existing.ota_steps
+                info.ota_steps   = existing.ota_steps + ["worker reconnected ✓"]
                 info.ota_restart_at = 0.0
             self._workers[info.label] = info
             # Ensure work queue exists

@@ -802,20 +802,10 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange 
           <span className="text-[10px] text-success">up to date</span>
         )}
         {!isUpdating && otaStatus === 'failed' && (
-          <span className="text-[10px] text-danger cursor-help" title={(worker.ota_steps ?? []).join('\n') || 'OTA failed'}>
-            failed ✗
-          </span>
+          <span className="text-[10px] text-danger">failed ✗</span>
         )}
         {!isUpdating && (otaStatus === 'idle' || otaStatus === 'success') && !upToDate && workerCommit && hostCommit && (
           <span className="text-[10px] text-warning">behind</span>
-        )}
-        {!isUpdating && otaStatus !== 'idle' && (worker.ota_steps ?? []).length > 0 && (
-          <details className="text-[10px] text-text-muted/60">
-            <summary className="cursor-pointer hover:text-text-muted">log</summary>
-            <pre className="mt-1 whitespace-pre-wrap font-mono text-[9px] leading-tight max-h-16 overflow-auto bg-bg-base p-1 rounded">
-              {(worker.ota_steps ?? []).join('\n')}
-            </pre>
-          </details>
         )}
         {!isUpdating && (
           <button
@@ -858,6 +848,13 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange 
           <Play className="w-3 h-3" />Benchmark
         </button>
       </div>
+
+      {/* ── OTA steps (live during update, persisted after) ── */}
+      {(worker.ota_steps ?? []).length > 0 && otaStatus !== 'idle' && (
+        <pre className="mt-1.5 whitespace-pre-wrap font-mono text-[9px] leading-relaxed text-text-muted/70 bg-bg-base/60 border border-border-subtle/50 px-2 py-1 rounded">
+          {(worker.ota_steps ?? []).map(s => `  ${s}`).join('\n')}
+        </pre>
+      )}
     </div>
   )
 }

@@ -6,18 +6,25 @@ import { modsApi } from '@/api/mods'
 import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/utils'
 
-export const Route = createFileRoute('/mods/$modName/context')({
+export const Route = createFileRoute('/mods/$modId/context')({
   component: ModContextPage,
 })
 
 function ModContextPage() {
-  const { modName } = Route.useParams()
-  const decodedName = decodeURIComponent(modName)
+  const { modId } = Route.useParams()
   const queryClient = useQueryClient()
 
+  const { data: modInfo } = useQuery({
+    queryKey: QK.modById(Number(modId)),
+    queryFn: () => modsApi.getById(Number(modId)),
+    staleTime: 60_000,
+  })
+  const folderName = modInfo?.folder_name ?? ''
+
   const { data, isLoading, isError } = useQuery({
-    queryKey: QK.modContext(decodedName),
-    queryFn: () => modsApi.getContext(decodedName),
+    queryKey: QK.modContext(folderName),
+    queryFn: () => modsApi.getContext(folderName),
+    enabled: !!folderName,
   })
 
   const [draft, setDraft] = useState('')
@@ -30,21 +37,21 @@ function ModContextPage() {
   }, [data?.context])
 
   const saveMutation = useMutation({
-    mutationFn: (context: string) => modsApi.saveContext(decodedName, context),
+    mutationFn: (context: string) => modsApi.saveContext(folderName, context),
     onSuccess: () => {
       setSaved(true)
-      void queryClient.invalidateQueries({ queryKey: QK.modContext(decodedName) })
+      void queryClient.invalidateQueries({ queryKey: QK.modContext(folderName) })
       setTimeout(() => setSaved(false), 2000)
     },
   })
 
   const regenerateMutation = useMutation({
-    mutationFn: () => modsApi.getContext(decodedName, true),
+    mutationFn: () => modsApi.getContext(folderName, true),
     onSuccess: (result) => {
       if (result?.context !== undefined) {
         setDraft(result.context)
       }
-      void queryClient.invalidateQueries({ queryKey: QK.modContext(decodedName) })
+      void queryClient.invalidateQueries({ queryKey: QK.modContext(folderName) })
     },
   })
 
@@ -62,12 +69,12 @@ function ModContextPage() {
       {/* Header */}
       <div className="flex items-center gap-3">
         <Link
-          to="/mods/$modName"
-          params={{ modName }}
+          to="/mods/$modId"
+          params={{ modId }}
           className="flex items-center gap-1 text-sm text-text-muted hover:text-text-main transition-colors"
         >
           <ChevronLeft size={16} />
-          {decodedName}
+          {folderName}
         </Link>
         <span className="text-border-subtle">/</span>
         <span className="text-text-main font-semibold">Context</span>

@@ -2,7 +2,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useSSE } from './useSSE'
 import { QK } from '@/lib/queryKeys'
 import { JOB_TERMINAL_STATUSES } from '@/lib/constants'
-import type { Job, StringUpdate } from '@/types'
+import type { Job } from '@/types'
 
 export function useJobStream(jobId: string, enabled: boolean): void {
   const queryClient = useQueryClient()
@@ -30,22 +30,10 @@ export function useJobStream(jobId: string, enabled: boolean): void {
         return next
       })
 
-      // Propagate new string updates to the mod's live update cache
-      const newUpdates = job.new_string_updates ?? []
-      const modName = job.mod_name || (job.params?.mod_name as string | undefined) || ''
-      if (newUpdates.length > 0 && modName) {
-        queryClient.setQueryData<StringUpdate[]>(
-          QK.modLiveUpdates(modName),
-          (old = []) => {
-            const next = [...old, ...newUpdates]
-            // Cap at 5000 to avoid memory bloat
-            return next.length > 5000 ? next.slice(next.length - 5000) : next
-          },
-        )
-      }
-
       // On terminal status: invalidate job + mod data so final state is refetched
+      // (modLiveUpdates and jobs list are handled by the global stream in __root.tsx)
       if (JOB_TERMINAL_STATUSES.includes(job.status as (typeof JOB_TERMINAL_STATUSES)[number])) {
+        const modName = job.mod_name || (job.params?.mod_name as string | undefined) || ''
         void queryClient.invalidateQueries({ queryKey: QK.job(jobId) })
         void queryClient.invalidateQueries({ queryKey: QK.stats() })
         void queryClient.invalidateQueries({ queryKey: QK.mods() })

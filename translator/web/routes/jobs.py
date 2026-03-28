@@ -8,6 +8,7 @@ from pathlib import Path
 from flask import (Blueprint, Response, abort, current_app,
                    jsonify, redirect, request, stream_with_context)
 from translator.web.routes.utils import get_mod_path
+from translator.web.job_hooks import post_job_hook
 
 log = logging.getLogger(__name__)
 
@@ -278,9 +279,7 @@ def _create_translate_mod_job(jm, cfg, mod_name: str, options: dict):
                                  stats_mgr=stats_mgr,
                                  reservation_mgr=reservation_mgr,
                                  translation_cache=translation_cache)
-        # Bust scan cache so mods list reflects new translation counts immediately
-        if scanner:
-            scanner.invalidate(mod_name)
+        post_job_hook(scanner, stats_mgr, mod_name)
 
     return jm.create(
         name     = f"Translate: {mod_name}",
@@ -322,9 +321,7 @@ def _create_batch_job(jm, cfg, mod_names: list, options: dict):
                                      stats_mgr=stats_mgr,
                                      reservation_mgr=reservation_mgr,
                                      translation_cache=translation_cache)
-            # Bust scan cache per-mod so the mods list reflects updated counts
-            if scanner:
-                scanner.invalidate(mod_name)
+            post_job_hook(scanner, stats_mgr, mod_name)
         jm.update_progress(job, total, total, "Done")
 
     return jm.create(
@@ -400,9 +397,7 @@ def _create_translate_all_job(jm, cfg, options: dict):
                              stats_mgr=stats_mgr,
                              reservation_mgr=reservation_mgr,
                              translation_cache=translation_cache)
-        # Clear entire scan cache so all updated mods show correct counts
-        if scanner:
-            scanner.invalidate()
+        post_job_hook(scanner, stats_mgr)  # None → recompute all mods
 
     scope_label = f" [{scope.upper()}]" if scope != "all" else ""
     return jm.create(
@@ -418,6 +413,7 @@ def _create_apply_mod_job(jm, cfg, mod_name: str, options: dict):
     dry_run   = options.get("dry_run", False)
     repo      = current_app.config.get("STRING_REPO")
     stats_mgr = current_app.config.get("STATS_MGR")
+    scanner   = current_app.config.get("SCANNER")
 
     def run(job):
         # Auto-checkpoint before applying ESP (modifies string state)
@@ -429,12 +425,7 @@ def _create_apply_mod_job(jm, cfg, mod_name: str, options: dict):
                 log.warning("Auto-checkpoint failed: %s", e)
         from translator.web.workers import apply_mod_worker
         apply_mod_worker(job, cfg, mod_name, dry_run=dry_run, repo=repo)
-        if stats_mgr:
-            try:
-                stats_mgr.invalidate(mod_name)
-                stats_mgr.recompute(mod_name)
-            except Exception as exc:
-                log.warning("stats recompute failed for %s: %s", mod_name, exc)
+        post_job_hook(scanner, stats_mgr, mod_name)
 
     return jm.create(
         name     = f"Apply ESP: {mod_name}",
@@ -448,16 +439,12 @@ def _create_translate_bsa_job(jm, cfg, mod_name: str, options: dict):
     dry_run   = options.get("dry_run", False)
     repo      = current_app.config.get("STRING_REPO")
     stats_mgr = current_app.config.get("STATS_MGR")
+    scanner   = current_app.config.get("SCANNER")
 
     def run(job):
         from translator.web.workers import translate_bsa_worker
         translate_bsa_worker(job, cfg, mod_name, dry_run=dry_run, repo=repo)
-        if stats_mgr:
-            try:
-                stats_mgr.invalidate(mod_name)
-                stats_mgr.recompute(mod_name)
-            except Exception as exc:
-                log.warning("stats recompute failed for %s: %s", mod_name, exc)
+        post_job_hook(scanner, stats_mgr, mod_name)
 
     return jm.create(
         name     = f"BSA/SWF: {mod_name}",
@@ -495,8 +482,7 @@ def _create_translate_strings_job(jm, cfg, mod_name: str,
                                  repo=repo, stats_mgr=stats_mgr,
                                  reservation_mgr=reservation_mgr,
                                  translation_cache=translation_cache)
-        if scanner:
-            scanner.invalidate(mod_name)
+        post_job_hook(scanner, stats_mgr, mod_name)
 
     if keys:
         n = len(keys)
@@ -516,6 +502,8 @@ def _create_translate_strings_job(jm, cfg, mod_name: str,
 
 def _create_scan_job(jm, scanner, mod_name: str | None = None,
                      bsa_cache=None, swf_cache=None, repo=None, cfg=None):
+    stats_mgr = current_app.config.get("STATS_MGR")
+
     def run(job):
         if mod_name:
             job.add_log(f"Scanning strings for mod: {mod_name}...")
@@ -536,13 +524,13 @@ def _create_scan_job(jm, scanner, mod_name: str | None = None,
         # untranslatable ones) appear in the strings page.
         if repo and cfg:
             from scripts.esp_engine import extract_all_strings, needs_translation, quality_score as _qs
-            scanner = current_app.config.get("SCANNER")
+            _scanner = current_app.config.get("SCANNER")  # local alias — don't shadow outer `scanner`
             if mod_name:
                 _mp = get_mod_path(mod_name)
                 target_folders = [_mp] if _mp and _mp.is_dir() else []
             else:
                 # Scan all mods across all mods_dirs
-                target_folders = scanner.scan_all() if scanner else []
+                target_folders = _scanner.scan_all() if _scanner else []
                 target_folders = [Path(m.folder_path) for m in target_folders]
             n_bootstrapped = 0
             for folder in target_folders:
@@ -572,7 +560,6 @@ def _create_scan_job(jm, scanner, mod_name: str | None = None,
                             job.add_log(f"Bootstrap failed for {esp_name}: {exc}")
             if n_bootstrapped:
                 job.add_log(f"Total bootstrapped into SQLite: {n_bootstrapped} strings")
-                scanner.invalidate(mod_name)
 
         msg = (f"Done: {result['scanned']} mods, "
                f"{result['esp_files']} ESP files, "
@@ -582,6 +569,7 @@ def _create_scan_job(jm, scanner, mod_name: str | None = None,
         job.add_log(msg)
         jm.update_progress(job, result["scanned"], result["scanned"], msg)
         job.result = msg
+        post_job_hook(scanner, stats_mgr, mod_name)
 
     name = f"Scan: {mod_name}" if mod_name else "Scan Mod Directory"
     return jm.create(
@@ -594,9 +582,12 @@ def _create_scan_job(jm, scanner, mod_name: str | None = None,
 
 def _create_recompute_scores_job(jm, cfg, mod_name: str = None, repo=None):
     from translator.web.workers import recompute_scores_worker
+    scanner   = current_app.config.get("SCANNER")
+    stats_mgr = current_app.config.get("STATS_MGR")
 
     def run(job):
         recompute_scores_worker(job, cfg, mod_name=mod_name, repo=repo)
+        post_job_hook(scanner, stats_mgr, mod_name)
 
     name = f"Recompute Scores: {mod_name}" if mod_name else "Recompute Scores (all mods)"
     return jm.create(
@@ -610,10 +601,12 @@ def _create_recompute_scores_job(jm, cfg, mod_name: str = None, repo=None):
 def _create_validate_job(jm, cfg, mod_name: str):
     repo      = current_app.config.get("STRING_REPO")
     stats_mgr = current_app.config.get("STATS_MGR")
+    scanner   = current_app.config.get("SCANNER")
 
     def run(job):
         from translator.web.workers import validate_translations_worker
         validate_translations_worker(job, cfg, mod_name, repo=repo, stats_mgr=stats_mgr)
+        post_job_hook(scanner, stats_mgr, mod_name)
 
     return jm.create(
         name     = f"Validate: {mod_name}",

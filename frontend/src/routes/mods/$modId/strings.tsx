@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -33,12 +33,11 @@ import { useMachines } from '@/hooks/useMachines'
 import { useReservations } from '@/hooks/useReservations'
 import { SCOPES, type StringStatus } from '@/lib/constants'
 import { useModLiveUpdates, useClearModLiveUpdates } from '@/hooks/useModLiveUpdates'
-import { useJobsStore } from '@/stores/jobsStore'
 import type { StringEntry, StringUpdate } from '@/types'
 
 const PER_PAGE = 100
 
-export const Route = createFileRoute('/mods/$modName/strings')({
+export const Route = createFileRoute('/mods/$modId/strings')({
   validateSearch: (search: Record<string, unknown>) => ({
     scope: (search.scope as string) || 'all',
     status: (search.status as string) || 'all',
@@ -280,7 +279,7 @@ function StringRow({
             <div className="flex items-center gap-1.5 px-2 py-1.5 rounded bg-accent/5 border border-accent/20">
               <Lock size={11} className="text-accent/60 shrink-0" />
               <span className="text-xs text-text-muted/60 italic truncate">
-                {entry.reserved_by ? `Reserved by ${entry.reserved_by}` : 'Being translated…'}
+                {entry.reserved_by ? `Reserved by ${entry.reserved_by}` : `Being translated…`}
               </span>
             </div>
           ) : (
@@ -421,7 +420,7 @@ function FindReplacePanel({ scope, modName, onClose, onDone }: FindReplacePanelP
         replace: replaceText,
         scope: scope !== 'all' ? scope : undefined,
       })
-      setReplaceResult(`Replaced ${r.count} translation${r.count !== 1 ? 's' : ''}`)
+      setReplaceResult(`Replaced ${r.count} translation${r.count !== 1 ? `s` : ``}`)
       onDone()
     } finally {
       setReplacing(false)
@@ -565,9 +564,15 @@ function patchReviewCount(
 // ── Main page ────────────────────────────────────────────────────────────────
 
 function ModStringsPage() {
-  const { modName } = Route.useParams()
-  const decodedName = decodeURIComponent(modName)
-  const navigate = useNavigate({ from: '/mods/$modName/strings' })
+  const { modId } = Route.useParams()
+  const navigate = useNavigate({ from: '/mods/$modId/strings' })
+
+  const { data: modInfo } = useQuery({
+    queryKey: QK.modById(Number(modId)),
+    queryFn: () => modsApi.getById(Number(modId)),
+    staleTime: 60_000,
+  })
+  const folderName = modInfo?.folder_name ?? ''
   const { scope, status, q, page, sort_by, sort_dir, rec_type } = Route.useSearch()
   const machines = useMachines()
   const queryClient = useQueryClient()
@@ -575,19 +580,22 @@ function ModStringsPage() {
   // Per-key translate spinner tracking
   const [translatingKeys, setTranslatingKeys] = useState<Set<string>>(new Set())
 
+  // Jobs — live via global SSE (setQueryData in __root.tsx)
+  const { data: allJobs = [] } = useQuery({ queryKey: QK.jobs(), queryFn: jobsApi.list })
+
   // Detect any active translate-one job for this mod (persists across navigation)
-  const activeTranslateOneKey = useJobsStore((s) => {
-    const job = Object.values(s.jobs).find(
+  const activeTranslateOneKey = useMemo(() => {
+    const job = allJobs.find(
       (j) =>
         j.job_type === 'translate_one' &&
         (j.status === 'running' || j.status === 'pending') &&
-        (j.mod_name === decodedName || (j.params?.mod_name as string | undefined) === decodedName),
+        (j.mod_name === folderName || (j.params?.mod_name as string | undefined) === folderName),
     )
     if (!job) return null
     const esp = job.params?.esp as string | undefined
     const key = job.params?.key as string | undefined
     return esp && key ? `${esp}::${key}` : null
-  })
+  }, [allJobs, folderName])
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({})
 
   // Bulk selection for approve
@@ -608,19 +616,19 @@ function ModStringsPage() {
     }, 300)
   }
 
-  const queryKey = QK.modStrings(decodedName, { scope, status, q, page, per: PER_PAGE, sort_by, sort_dir, rec_type })
+  const queryKey = QK.modStrings(folderName, { scope, status, q, page, per: PER_PAGE, sort_by, sort_dir, rec_type })
 
   // Invalidate all mod-related queries so every page reflects the new counts
   const invalidateModData = useCallback(() => {
-    void queryClient.invalidateQueries({ queryKey: QK.mod(decodedName) })
+    void queryClient.invalidateQueries({ queryKey: QK.mod(folderName) })
     void queryClient.invalidateQueries({ queryKey: QK.mods() })
     void queryClient.invalidateQueries({ queryKey: QK.stats() })
-  }, [queryClient, decodedName])
+  }, [queryClient, folderName])
 
   const { data, isLoading, isError } = useQuery({
     queryKey,
     queryFn: () =>
-      modsApi.getStrings(decodedName, {
+      modsApi.getStrings(folderName, {
         scope,
         status,
         q,
@@ -630,6 +638,7 @@ function ModStringsPage() {
         sort_dir: sort_dir || undefined,
         rec_type: rec_type || undefined,
       }),
+    enabled: !!folderName,
     staleTime: 60_000,
     retry: 1,
   })
@@ -637,27 +646,27 @@ function ModStringsPage() {
   // ── Rec type dropdown ──────────────────────────────────────────────────────
 
   const { data: recTypesData } = useQuery({
-    queryKey: ['recTypes', decodedName],
-    queryFn: () => modsApi.getRecTypes(decodedName),
+    queryKey: ['recTypes', folderName],
+    queryFn: () => modsApi.getRecTypes(folderName),
+    enabled: !!folderName,
     staleTime: 5 * 60_000,
   })
   const recTypes = recTypesData?.rec_types ?? []
 
   // ── Live updates ───────────────────────────────────────────────────────────
 
-  const liveUpdates = useModLiveUpdates(decodedName)
-  const clearLiveUpdates = useClearModLiveUpdates(decodedName)
+  const liveUpdates = useModLiveUpdates(folderName)
+  const clearLiveUpdates = useClearModLiveUpdates(folderName)
   const [flashedKeys, setFlashedKeys] = useState<Set<string>>(new Set())
   const processedCount = useRef(0)
 
   // Check if there's a running job for this mod
-  const { data: allJobs = [] } = useQuery({ queryKey: QK.jobs(), queryFn: jobsApi.list })
   const activeJob = allJobs.find(
-    (j) => j.mod_name === decodedName && ['running', 'pending'].includes(j.status),
+    (j) => j.mod_name === folderName && ['running', 'pending'].includes(j.status),
   )
 
   // Reservation polling — only when a job is active for this mod
-  const reservedKeys = useReservations(decodedName, allJobs)
+  const reservedKeys = useReservations(folderName, allJobs)
 
   // Apply new live updates to the current page cache
   useEffect(() => {
@@ -710,7 +719,7 @@ function ModStringsPage() {
       })
 
       try {
-        const result = await modsApi.translateOne(decodedName, {
+        const result = await modsApi.translateOne(folderName, {
           key: entry.key,
           esp: entry.esp,
           original: entry.original,
@@ -760,7 +769,7 @@ function ModStringsPage() {
         })
       }
     },
-    [decodedName, machines, queryClient, queryKey],
+    [folderName, machines, queryClient, queryKey],
   )
 
   // ── Update string (on blur) ────────────────────────────────────────────────
@@ -810,30 +819,30 @@ function ModStringsPage() {
   // ── Copy from source ─────────────────────────────────────────────────────
 
   const handleCopyFromSource = useCallback(async (entry: StringEntry) => {
-    await modsApi.updateString(decodedName, {
+    await modsApi.updateString(folderName, {
       key: entry.key, esp: entry.esp, translation: entry.original,
     })
     handleStringSaved(entry.key, entry.esp, entry.original, 100, 'translated')
-  }, [decodedName, handleStringSaved])
+  }, [folderName, handleStringSaved])
 
   // ── Sync duplicates ──────────────────────────────────────────────────────
 
   const handleSyncDuplicates = useCallback(async (entry: StringEntry) => {
-    const result = await modsApi.syncDuplicates(decodedName, {
+    const result = await modsApi.syncDuplicates(folderName, {
       original: entry.original,
       translation: entry.translation,
       status: entry.status,
       quality_score: entry.quality_score,
     })
     if (result.ok && result.count > 0) {
-      void queryClient.invalidateQueries({ queryKey: ['mods', decodedName, 'strings'] })
+      void queryClient.invalidateQueries({ queryKey: ['mods', folderName, 'strings'] })
     }
-  }, [decodedName, queryClient])
+  }, [folderName, queryClient])
 
   // ── Bulk approve mutation ─────────────────────────────────────────────────
 
   const bulkApproveMut = useMutation({
-    mutationFn: (ids: number[]) => modsApi.approveBulk(decodedName, ids),
+    mutationFn: (ids: number[]) => modsApi.approveBulk(folderName, ids),
     onSuccess: (result) => {
       if (!result.ok) return
       // Optimistically mark approved strings as translated in cache
@@ -858,7 +867,7 @@ function ModStringsPage() {
     mutationFn: () =>
       jobsApi.create({
         type: 'translate_strings',
-        mods: [decodedName],
+        mods: [folderName],
         scope,
         options: { machines },
       }),
@@ -901,13 +910,13 @@ function ModStringsPage() {
       <div className="flex flex-wrap items-center gap-2 px-5 py-3 bg-bg-card border-b border-border-subtle shrink-0">
         {/* Back */}
         <Link
-          to="/mods/$modName"
-          params={{ modName }}
+          to="/mods/$modId"
+          params={{ modId }}
           className="flex items-center gap-1 text-sm text-text-muted hover:text-text-main transition-colors shrink-0"
         >
           <ChevronLeft size={15} />
-          <span className="font-medium truncate max-w-[140px]" title={decodedName}>
-            {decodedName}
+          <span className="font-medium truncate max-w-[140px]" title={folderName}>
+            {folderName}
           </span>
         </Link>
 
@@ -962,9 +971,9 @@ function ModStringsPage() {
           <option value="all">All statuses</option>
           <option value="pending">Pending</option>
           <option value="translated">Translated</option>
-          <option value="needs_review">Needs Review {scopeCounts.review ? `(${scopeCounts.review})` : ''}</option>
-          <option value="untranslatable">Untranslatable {scopeCounts.untranslatable ? `(${scopeCounts.untranslatable})` : ''}</option>
-          <option value="reserved">Reserved {scopeCounts.reserved ? `(${scopeCounts.reserved})` : ''}</option>
+          <option value="needs_review">Needs Review {scopeCounts.review ? `(${scopeCounts.review})` : ""}</option>
+          <option value="untranslatable">Untranslatable {scopeCounts.untranslatable ? `(${scopeCounts.untranslatable})` : ""}</option>
+          <option value="reserved">Reserved {scopeCounts.reserved ? `(${scopeCounts.reserved})` : ""}</option>
         </select>
 
         {/* Record type filter */}
@@ -1042,9 +1051,9 @@ function ModStringsPage() {
       {findReplaceOpen && (
         <FindReplacePanel
           scope={scope}
-          modName={decodedName}
+          modName={folderName}
           onClose={() => setFindReplaceOpen(false)}
-          onDone={() => void queryClient.invalidateQueries({ queryKey: ['mods', decodedName, 'strings'] })}
+          onDone={() => void queryClient.invalidateQueries({ queryKey: ['mods', folderName, 'strings'] })}
         />
       )}
 
@@ -1155,7 +1164,7 @@ function ModStringsPage() {
                     key={rowKey}
                     entry={entry}
                     index={offset + i + 1}
-                    modName={decodedName}
+                    modName={folderName}
                     isTranslating={translatingKeys.has(rowKey) || activeTranslateOneKey === rowKey}
                     isReserved={reservedKeys.has(entry.key)}
                     onTranslateOne={handleTranslateOne}

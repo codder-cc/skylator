@@ -215,6 +215,35 @@ class MlxBackend(BaseBackend):
 
         return results
 
+    def _chat(self, prompt: str, temperature: float = 0.2) -> str:
+        """Raw chat inference — no translation prompt wrapping. Used by /chat endpoint."""
+        if not self.is_loaded:
+            self.load()
+        import mlx_lm
+        from mlx_lm.sample_utils import make_sampler, make_logits_processors
+
+        sampler = make_sampler(temp=temperature, top_p=self._mcfg.top_p)
+        logits_processors = make_logits_processors(
+            repetition_penalty=self._mcfg.repetition_penalty,
+        )
+        messages = [{"role": "user", "content": prompt}]
+        formatted = self._tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=False,
+        )
+        formatted += "</think>\n\n"
+        gen_kwargs: dict = dict(
+            max_tokens        = self._mcfg.max_new_tokens,
+            sampler           = sampler,
+            logits_processors = logits_processors,
+            verbose           = False,
+        )
+        if self._draft_model is not None:
+            gen_kwargs["draft_model"]      = self._draft_model
+            gen_kwargs["num_draft_tokens"] = self._num_draft_tokens
+        return mlx_lm.generate(self._model, self._tokenizer, prompt=formatted, **gen_kwargs)
+
     def _infer(self, prompt: str, params=None) -> str:
         """Raw inference on a pre-built prompt (pull-mode)."""
         if not self.is_loaded:

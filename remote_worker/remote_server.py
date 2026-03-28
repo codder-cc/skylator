@@ -285,6 +285,7 @@ class ServerState:
         self.jobs: dict[str, JobRecord] = {}
         self.completed_order: deque[str] = deque()
         self.tps_history: deque[float]   = deque(maxlen=20)
+        self.infer_started_at: float     = 0.0  # monotonic time when current _run_infer began (0 = idle)
         self._model_lock: asyncio.Lock   = None   # created in lifespan
         # [FIX #9, #10] Persistent async HTTP client — created in lifespan
         self.http_client = None
@@ -646,15 +647,19 @@ async def _run_infer(job: JobRecord, state: ServerState,
     job.total = 1
     log.info("Job %s (infer): prompt %d chars", job.job_id[:8], len(p["prompt"]))
 
-    t0     = time.time()
-    result = await loop.run_in_executor(
-        None,
-        lambda: state.backend._infer(p["prompt"], params=params),
-    )
-    elapsed = time.time() - t0
-    _record_tps(state, job, elapsed)
-    job.result   = result
-    job.progress = 1
+    state.infer_started_at = time.monotonic()
+    try:
+        t0     = time.time()
+        result = await loop.run_in_executor(
+            None,
+            lambda: state.backend._infer(p["prompt"], params=params),
+        )
+        elapsed = time.time() - t0
+        _record_tps(state, job, elapsed)
+        job.result   = result
+        job.progress = 1
+    finally:
+        state.infer_started_at = 0.0
 
 
 async def _run_chat(job: JobRecord, state: ServerState,
@@ -846,6 +851,13 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
                         "tps_last":       state.tps_last,
                         "queue_depth":    state.queue_depth,
                         "jobs_completed": len(state.completed_order),
+                        # Live estimate: tokens inferred so far based on elapsed × tps_avg.
+                        # Only set while _run_infer is active (infer_started_at > 0).
+                        "tokens_inferred_est": (
+                            int((time.monotonic() - state.infer_started_at) * state.tps_avg)
+                            if state.infer_started_at > 0 and state.tps_avg > 0
+                            else 0
+                        ),
                     },
                 },
                 timeout=8.0,

@@ -943,12 +943,16 @@ def translate_one_string(mod_name: str):
         def _translate_progress_cb(info: dict):
             """Called every ~3 s during the blocking translate wait with live worker stats."""
             if _inline_job and _jm:
+                _tps = info.get("tps_last", 0.0)
+                _done = info.get("tokens_done", 0)
+                # Only switch to token-based progress if we have real tps data;
+                # otherwise keep total=1 (1 string) to avoid a frozen "0/4096" display.
                 _jm.update_inline_job(
                     _inline_job,
                     worker_label = _backend_label,
-                    tps          = info.get("tps_last", 0.0),
-                    tokens_done  = info.get("tokens_done", 0),
-                    tokens_total = _max_tok_est,
+                    tps          = _tps,
+                    tokens_done  = _done if _tps > 0 else 0,
+                    tokens_total = _max_tok_est if _tps > 0 else 0,
                 )
 
         _t_translate = _time.monotonic()

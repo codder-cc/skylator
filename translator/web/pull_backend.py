@@ -151,7 +151,12 @@ class RegistryPullBackend:
                     if w and w.stats:
                         elapsed = _time.monotonic() - _t0
                         tps = float(w.stats.get("tps_last") or w.stats.get("tps_avg") or 0.0)
-                        tokens_done = int(elapsed * tps) if tps > 0 else 0
+                        if tps > 0:
+                            tokens_done = int(elapsed * tps)
+                        else:
+                            # Worker is inferring but has no tps history yet.
+                            # Use remote's live estimate (elapsed × tps_avg from its own history).
+                            tokens_done = int(w.stats.get("tokens_inferred_est") or 0)
                         progress_cb({"tps_last": tps, "tokens_done": tokens_done, "elapsed": elapsed})
                 raw = self._registry.collect_result_poll(
                     chunk_id, timeout=self._timeout, poll_interval=3.0, poll_cb=_poll_cb)

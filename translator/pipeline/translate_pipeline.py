@@ -157,9 +157,18 @@ class TranslatePipeline:
                     "No inference backends configured — register a worker first"
                 )
 
+            n_failed = [0]
+
             def _on_string_done(s: dict, r: dict) -> None:
                 nonlocal gd_dirty
-                if r.get("skipped") or not r.get("translation"):
+                if r.get("skipped"):
+                    return
+                if not r.get("translation"):
+                    n_failed[0] += 1
+                    job.add_log(
+                        f"[WARN] Empty AI response for {s.get('esp','?')} [{s.get('key','?')}]"
+                        f" — string left as pending (likely context overflow)"
+                    )
                     return
                 translation = r["translation"]
                 if r.get("token_issues"):
@@ -222,7 +231,17 @@ class TranslatePipeline:
                 gd.save()
 
             jm.update_progress(job, total, total, "Done")
-            job.result = f"Translated strings for {mod_name}"
+            if n_failed[0]:
+                job.result = (
+                    f"Translated strings for {mod_name} "
+                    f"({n_failed[0]} strings got empty AI response — re-run to retry)"
+                )
+                job.add_log(
+                    f"[WARN] {n_failed[0]} string(s) returned empty from AI and remain pending. "
+                    f"Cause: context overflow on very long strings. Re-run the job to retry."
+                )
+            else:
+                job.result = f"Translated strings for {mod_name}"
 
         finally:
             # Always release reservations (even on cancel / exception)

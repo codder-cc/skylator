@@ -103,6 +103,20 @@ class RegistryPullBackend:
         if not texts:
             return []
 
+        # ── Adaptive batch size based on input length ──────────────────────────
+        # Each char ≈ 0.25 tokens. Overhead: system prompt ~500 tok + context ~500 tok.
+        # Reserve half of n_ctx for output (max_tokens). Cap input at n_ctx // 2 - 1000.
+        _n_ctx     = 8192  # conservative default; overridden by model config if available
+        _max_input_tok = _n_ctx // 2 - 1000   # ~3096 tokens for input strings
+        _max_input_chars = _max_input_tok * 4  # ~12384 chars
+        _max_len   = max(len(t) for t in texts) if texts else 0
+        if _max_len > _max_input_chars // 2:   # single string already > half budget
+            batch_size = 1
+        elif _max_len > _max_input_chars // max(batch_size, 1):
+            # More than one string would overflow — reduce to fit
+            batch_size = max(1, _max_input_chars // max(_max_len, 1))
+        # ──────────────────────────────────────────────────────────────────────
+
         results: list[str] = []
         num_batches = (len(texts) + batch_size - 1) // batch_size
         self._last_tps: float = 0.0  # most recent chunk tok/s (for WorkerPool)

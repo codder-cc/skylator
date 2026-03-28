@@ -57,6 +57,20 @@ MIGRATION_STEPS: list[tuple[int, str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_mods_folder ON mods(folder_name)",
         ],
     ),
+    (
+        6,
+        "Fix cached pending counts: subtract untranslatable strings from mod_stats_cache.pending",
+        [
+            """UPDATE mod_stats_cache
+               SET pending = MAX(0, pending - (
+                   SELECT COUNT(*) FROM strings s
+                   WHERE s.mod_name = mod_stats_cache.mod_name
+                     AND s.status   = 'pending'
+                     AND s.source   = 'untranslatable'
+               ))
+               WHERE pending > 0""",
+        ],
+    ),
 ]
 
 

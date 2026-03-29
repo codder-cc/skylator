@@ -801,20 +801,55 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange,
             </div>
           )}
           {/* Offline job progress */}
-          {(worker.offline_jobs ?? []).map(oj => (
-            <div key={oj.offline_job_id} className="mt-1 space-y-0.5">
-              <div className="flex items-center gap-2 text-[10px] text-violet-400">
-                <span className="w-1.5 h-1.5 rounded-full bg-violet-400 animate-pulse shrink-0" />
-                <span>Offline: {oj.done}/{oj.total} strings</span>
-                {oj.tps > 0 && <span className="text-text-muted">{oj.tps.toFixed(1)} tok/s</span>}
-              </div>
-              {oj.current_text && (
-                <div className="text-[9px] text-text-muted/70 truncate pl-3" title={oj.current_text}>
-                  ↳ {oj.current_text}
+          {(worker.offline_jobs ?? []).map(oj => {
+            const state = oj.worker_state ?? 'running'
+            const isLost    = state === 'lost'
+            const isQueued  = state === 'queued'
+            const isDone    = state === 'done'
+            return (
+              <div key={oj.offline_job_id} className="mt-1 space-y-0.5">
+                <div className={cn(
+                  'flex items-center gap-2 text-[10px]',
+                  isLost   ? 'text-red-400'          :
+                  isQueued ? 'text-text-muted'        :
+                  isDone   ? 'text-success/70'        :
+                             'text-violet-400',
+                )}>
+                  <span className={cn(
+                    'w-1.5 h-1.5 rounded-full shrink-0',
+                    isLost   ? 'bg-red-400'       :
+                    isQueued ? 'bg-text-muted'    :
+                    isDone   ? 'bg-success'        :
+                               'bg-violet-400 animate-pulse',
+                  )} />
+                  <span>
+                    {isLost   ? 'Lost'   :
+                     isQueued ? 'Queued' :
+                     isDone   ? 'Done'   : 'Offline'}
+                    {': '}{oj.done}/{oj.total} strings
+                  </span>
+                  {oj.tps > 0 && !isLost && !isQueued && (
+                    <span className="text-text-muted">{oj.tps.toFixed(1)} tok/s</span>
+                  )}
                 </div>
-              )}
-            </div>
-          ))}
+                {oj.current_text && !isLost && !isQueued && (
+                  <div className="text-[9px] text-text-muted/70 truncate pl-3" title={oj.current_text}>
+                    ↳ {oj.current_text}
+                  </div>
+                )}
+                {isLost && (
+                  <div className="text-[9px] text-red-400/70 pl-3">
+                    Package lost — host will auto-complete on next heartbeat
+                  </div>
+                )}
+                {isQueued && (
+                  <div className="text-[9px] text-text-muted/60 pl-3">
+                    Waiting for worker to pick up package
+                  </div>
+                )}
+              </div>
+            )
+          })}
         </div>
       </div>
 

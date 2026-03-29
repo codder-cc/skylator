@@ -32,6 +32,7 @@ class BackendWorkerStatus:
     tps:          float = 0.0
     errors:       int   = 0
     alive:        bool  = True
+    busy_offline: bool  = False  # worker refused because it's running an offline job
 
     def to_dict(self) -> dict:
         return {
@@ -162,8 +163,14 @@ class WorkerPool:
                     work_q.task_done()
 
                 except RemoteServerDeadError as exc:
-                    log.error("WorkerPool [%s]: remote dead — %s", label, exc)
-                    status.alive  = False
+                    from translator.models.remote_backend import RemoteWorkerBusyError
+                    if isinstance(exc, RemoteWorkerBusyError):
+                        log.warning("WorkerPool [%s]: busy with offline job — retiring thread", label)
+                        status.alive       = False
+                        status.busy_offline = True
+                    else:
+                        log.error("WorkerPool [%s]: remote dead — %s", label, exc)
+                        status.alive  = False
                     status.errors += len(chunk)
                     with _counter_lock:
                         error_count[0] += len(chunk)
@@ -216,4 +223,6 @@ class WorkerPool:
             with _counter_lock:
                 error_count[0] += orphaned
 
-        return {"done": done_count[0], "errors": error_count[0]}
+        all_busy_offline = statuses and all(s.busy_offline for s in statuses.values())
+        return {"done": done_count[0], "errors": error_count[0],
+                "all_busy_offline": all_busy_offline}

@@ -410,10 +410,16 @@ class TranslatePipeline:
             if pool_done < total and job.status == JobStatus.RUNNING:
                 unprocessed = total - pool_done
                 job.status = JobStatus.PAUSED
-                job.add_log(
-                    f"Paused — {unprocessed} string(s) not processed (worker disconnected or timed out). "
-                    f"Assign a worker and Resume to retry."
-                )
+                if pool_result.get("all_busy_offline"):
+                    job.add_log(
+                        f"Paused — all workers are running offline jobs ({unprocessed} string(s) pending). "
+                        f"Wait for offline jobs to finish, then Resume."
+                    )
+                else:
+                    job.add_log(
+                        f"Paused — {unprocessed} string(s) not processed (worker disconnected or timed out). "
+                        f"Assign a worker and Resume to retry."
+                    )
                 return
 
             # ── Wait for dispatch waiters (strings owned by concurrent jobs) ──

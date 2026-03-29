@@ -1116,11 +1116,52 @@ def global_dict_toggle():
 
 @bp.route("/workers", methods=["GET"])
 def workers_list():
-    """Return all registered remote workers (active + recently seen)."""
+    """Return all registered remote workers (active + recently seen).
+
+    Each worker's offline_jobs list is enriched with host-side worker_state
+    (queued / running / lost / done) so the UI can show the correct status
+    even when a package was lost or the remote hasn't polled yet.
+    """
     registry = current_app.config.get("WORKER_REGISTRY")
     if registry is None:
         return jsonify([])
-    return jsonify([w.to_dict() for w in registry.get_all()])
+
+    result = []
+    for w in registry.get_all():
+        d = w.to_dict()
+        # Merge host-tracked offline job state into the offline_jobs list.
+        # Include jobs that the host knows about for this worker, even if the
+        # remote isn't currently reporting them (queued / lost / done).
+        host_oj_map = {
+            ojid: rec
+            for ojid, rec in registry._offline_jobs_snapshot()
+            if rec.get("worker_label") == w.label
+        }
+        # Start from what the remote reported (has live tps/current_text)
+        merged: list[dict] = []
+        reported_ids: set[str] = set()
+        for oj in (d.get("offline_jobs") or []):
+            ojid = oj.get("offline_job_id", "")
+            rec  = host_oj_map.get(ojid, {})
+            merged.append({**oj, "worker_state": rec.get("worker_state", "running")})
+            reported_ids.add(ojid)
+        # Add jobs not currently reported by remote (queued / lost / done)
+        for ojid, rec in host_oj_map.items():
+            if ojid in reported_ids:
+                continue
+            if rec.get("finished"):
+                continue  # done and confirmed — don't clutter UI
+            merged.append({
+                "offline_job_id": ojid,
+                "total":          rec.get("total", 0),
+                "done":           rec.get("done", 0),
+                "tps":            0.0,
+                "current_text":   rec.get("current_text", ""),
+                "worker_state":   rec.get("worker_state", "queued"),
+            })
+        d["offline_jobs"] = merged
+        result.append(d)
+    return jsonify(result)
 
 
 @bp.route("/workers/register", methods=["POST"])
@@ -1167,11 +1208,79 @@ def workers_heartbeat():
     hardware      = data.get("hardware")      # {ram_total_mb, vram_total_mb, cpu_name, …}
     commit        = data.get("commit")        # short git commit hash
     offline_jobs  = data.get("offline_jobs")  # [{offline_job_id, total, done, tps, current_text}]
-    found = registry.heartbeat(label, models=models, model=model, backend_type=backend_type,
-                               stats=stats, hardware=hardware, commit=commit,
-                               offline_jobs=offline_jobs)
+    found, lost_job_ids = registry.heartbeat(
+        label, models=models, model=model, backend_type=backend_type,
+        stats=stats, hardware=hardware, commit=commit, offline_jobs=offline_jobs,
+    )
     if not found:
         return jsonify({"ok": False, "reregister": True}), 404
+
+    jm        = current_app.config.get("JOB_MANAGER")
+    stats_mgr = current_app.config.get("STATS_MGR")
+
+    # Push heartbeat progress into host job progress so the job page shows
+    # live counts even before the remote posts /offline-results.
+    if offline_jobs and jm:
+        from translator.web.job_manager import JobStatus as _JS
+        # Collect which host jobs were touched so we notify once per job
+        host_jobs_to_notify: dict[str, object] = {}
+        for oj_data in offline_jobs:
+            ojid = oj_data.get("offline_job_id")
+            if not ojid:
+                continue
+            oj = registry.get_offline_job(ojid)
+            if not oj or oj.get("finished"):
+                continue
+            host_job = jm.get_job(oj["host_job_id"])
+            if not host_job or host_job.status != _JS.OFFLINE_DISPATCHED:
+                continue
+            # Sum done across ALL workers for this host job (monotonic — never go back)
+            all_oj   = registry.get_offline_jobs_for_host_job(oj["host_job_id"])
+            new_done = sum(o.get("done", 0) for o in all_oj)
+            if new_done > host_job.progress.current:
+                host_job.progress.current = new_done
+                host_job.progress.message = (
+                    f"Receiving offline results ({new_done}/{host_job.progress.total})"
+                )
+                host_jobs_to_notify[host_job.id] = host_job
+        for hj in host_jobs_to_notify.values():
+            jm._notify(hj)
+
+    # Auto-complete any offline jobs detected as lost on this heartbeat.
+    # This unblocks the host job so it doesn't hang indefinitely.
+    if lost_job_ids:
+        from translator.web.job_manager import JobStatus
+        import time as _time
+        for ojid in lost_job_ids:
+            oj = registry.get_offline_job(ojid)
+            if not oj:
+                continue
+            registry.delete_offline_package(ojid)
+            all_done = registry.finish_offline_job(ojid)
+            log.info("heartbeat: auto-completed lost job %s for %s (all_done=%s)",
+                     ojid[:8], label, all_done)
+            if all_done and jm:
+                host_job = jm.get_job(oj["host_job_id"])
+                if host_job and host_job.status == JobStatus.OFFLINE_DISPATCHED:
+                    host_job.status      = JobStatus.DONE
+                    host_job.finished_at = _time.time()
+                    host_job.progress.message = (
+                        "Done — some workers lost their packages and were auto-completed"
+                    )
+                    host_job.add_log(
+                        f"Auto-completed: {label} had package lost "
+                        f"(connected but not running job {ojid[:8]})"
+                    )
+                    jm._notify(host_job)
+                    jm._persist()
+                    if stats_mgr:
+                        mod_name = host_job.params.get("mod_name")
+                        if mod_name:
+                            try:
+                                stats_mgr.recompute(mod_name)
+                            except Exception:
+                                pass
+
     return jsonify({"ok": True})
 
 
@@ -1354,6 +1463,7 @@ def workers_offline_results(label: str):
 
     if done:
         all_done = registry.finish_offline_job(offline_job_id)
+        registry.delete_offline_package(offline_job_id)
         log.info("offline-results: %s done (saved=%d, all_workers_done=%s)",
                  offline_job_id[:8], saved_count, all_done)
 

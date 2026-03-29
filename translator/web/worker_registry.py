@@ -119,13 +119,19 @@ class WorkerRegistry:
                   model: str | None = None, backend_type: str | None = None,
                   stats: dict | None = None, hardware: dict | None = None,
                   commit: str | None = None,
-                  offline_jobs: list | None = None) -> bool:
+                  offline_jobs: list | None = None) -> tuple[bool, list[str]]:
         """Update last_seen and any pushed fields.
-        Returns False if unknown (caller should ask remote to re-register)."""
+
+        Returns (found, lost_job_ids):
+          - found: False if unknown worker (caller should ask remote to re-register)
+          - lost_job_ids: offline_job_ids that were detected as lost on this heartbeat
+            (worker is connected and NOT reporting the job, and the package file is gone)
+        """
+        lost_job_ids: list[str] = []
         with self._lock:
             w = self._workers.get(label)
             if w is None:
-                return False
+                return False, []
             w.last_seen = time.time()
             if models       is not None: w.models       = models
             if model        is not None: w.model        = model
@@ -133,16 +139,57 @@ class WorkerRegistry:
             if stats        is not None: w.stats        = stats
             if hardware     is not None: w.hardware     = hardware
             if commit       is not None: w.commit       = commit
+
+            # Build set of offline_job_ids currently reported by this worker
+            reported_ids: set[str] = set()
             if offline_jobs is not None:
                 w.offline_jobs = offline_jobs
-                # Update progress tracking from heartbeat
                 for oj in offline_jobs:
                     ojid = oj.get("offline_job_id")
-                    if ojid and ojid in self._offline_jobs:
-                        self._offline_jobs[ojid]["done"] = oj.get("done", 0)
-                        self._offline_jobs[ojid]["tps"]  = oj.get("tps", 0.0)
-                        self._offline_jobs[ojid]["current_text"] = oj.get("current_text", "")
-            return True
+                    if not ojid:
+                        continue
+                    reported_ids.add(ojid)
+                    if ojid in self._offline_jobs:
+                        rec = self._offline_jobs[ojid]
+                        rec["done"]         = oj.get("done", 0)
+                        rec["tps"]          = oj.get("tps", 0.0)
+                        rec["current_text"] = oj.get("current_text", "")
+                        if rec.get("worker_state") != "done":
+                            rec["worker_state"] = "running"
+
+            # Detect lost packages: jobs assigned to this worker that are not
+            # reported in the heartbeat and have not been confirmed done.
+            for ojid, rec in self._offline_jobs.items():
+                if rec.get("worker_label") != label:
+                    continue
+                if rec.get("finished") or rec.get("worker_state") == "done":
+                    continue
+                if ojid in reported_ids:
+                    continue  # actively running — already updated above
+                # Worker is connected but not reporting this job.
+                # If the package file is still on disk → it hasn't been polled yet (queued).
+                # If the file is gone → the remote polled it but rejected it (lost).
+                chunk_id = rec.get("chunk_id", "")
+                if self._package_exists(label, chunk_id):
+                    rec["worker_state"] = "queued"
+                else:
+                    # File gone + connected + not reporting = lost
+                    if rec.get("worker_state") not in ("done", "lost"):
+                        rec["worker_state"] = "lost"
+                        lost_job_ids.append(ojid)
+                        log.warning(
+                            "Offline job %s on %s detected as LOST "
+                            "(package polled but worker not reporting it)",
+                            ojid[:8], label,
+                        )
+
+        return True, lost_job_ids
+
+    def _package_exists(self, label: str, chunk_id: str) -> bool:
+        """Return True if the persisted package file still exists on disk."""
+        if not self._persist_dir or not chunk_id:
+            return False
+        return (self._persist_dir / label / f"{chunk_id}.json").exists()
 
     def remove(self, label: str) -> None:
         with self._lock:
@@ -195,11 +242,7 @@ class WorkerRegistry:
                 self._work_queues[label] = queue.Queue()
             q = self._work_queues[label]
         try:
-            chunk = q.get(timeout=timeout)
-            # Remove persisted file once the remote has picked it up
-            if chunk.get("type") == "offline_translate":
-                self._delete_package(label, chunk.get("chunk_id", ""))
-            return chunk
+            return q.get(timeout=timeout)
         except queue.Empty:
             return None
 
@@ -317,7 +360,8 @@ class WorkerRegistry:
     # ── Offline job tracking ──────────────────────────────────────────────────
 
     def register_offline_job(self, offline_job_id: str, host_job_id: str,
-                              worker_label: str, total_strings: int) -> None:
+                              worker_label: str, total_strings: int,
+                              chunk_id: str = "") -> None:
         """Register a dispatched offline job. Called once per worker."""
         with self._lock:
             self._offline_jobs[offline_job_id] = {
@@ -328,6 +372,8 @@ class WorkerRegistry:
                 "tps":           0.0,
                 "current_text":  "",
                 "finished":      False,
+                "chunk_id":      chunk_id,
+                "worker_state":  "queued",   # queued → running → done | lost
             }
             hj = self._offline_host_jobs.setdefault(host_job_id, {
                 "total_workers": 0, "done_workers": 0,
@@ -360,12 +406,25 @@ class WorkerRegistry:
             oj = self._offline_jobs.get(offline_job_id)
             if oj is None:
                 return False
-            oj["finished"] = True
+            oj["finished"]     = True
+            oj["worker_state"] = "done"
             hj = self._offline_host_jobs.get(oj["host_job_id"])
             if hj is None:
                 return True
             hj["done_workers"] += 1
             return hj["done_workers"] >= hj["total_workers"]
+
+    def _offline_jobs_snapshot(self) -> list[tuple[str, dict]]:
+        """Thread-safe snapshot of all offline job records."""
+        with self._lock:
+            return list(self._offline_jobs.items())
+
+    def delete_offline_package(self, offline_job_id: str) -> None:
+        """Delete the persisted package file for an offline job (call when done=True arrives)."""
+        with self._lock:
+            oj = self._offline_jobs.get(offline_job_id)
+        if oj:
+            self._delete_package(oj.get("worker_label", ""), oj.get("chunk_id", ""))
 
     def get_offline_job(self, offline_job_id: str) -> dict | None:
         with self._lock:

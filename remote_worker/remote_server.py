@@ -292,6 +292,7 @@ class ServerState:
         # Offline translate state
         self.offline_job: dict | None = None
         self.offline_job_runner = None   # OfflineTranslateRunner | None
+        self.offline_queue: list = []    # packages waiting while current offline job runs
         self.offline_pending_results: list = []
         self.offline_pending_done: bool = False
 
@@ -963,6 +964,16 @@ async def _run_offline_job(
         state.offline_job        = None
         state.offline_job_runner = None
         log.info("Offline job %s complete", offline_job_id[:8])
+        # Start the next queued offline job if any
+        if state.offline_queue:
+            next_chunk = state.offline_queue.pop(0)
+            next_id = next_chunk.get("offline_job_id", "")
+            log.info("Pull worker: starting queued offline job %s (%d strings)",
+                     next_id[:8], len(next_chunk.get("strings") or []))
+            state.offline_job = next_chunk
+            asyncio.create_task(
+                _run_offline_job(next_chunk, state, loop, base, label)
+            )
 
 
 # ── Pull-mode worker loop ──────────────────────────────────────────────────────
@@ -1197,13 +1208,17 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
 
             # ── Offline translate ─────────────────────────────────────────────
             if chunk_type == "offline_translate":
+                offline_job_id = chunk.get("offline_job_id", "")
                 if state.offline_job is not None:
-                    # Already busy — reject
+                    # Already busy — queue locally; start after current job finishes
+                    state.offline_queue.append(chunk)
+                    log.info("Pull worker: offline job %s queued (busy, queue depth=%d)",
+                             offline_job_id[:8], len(state.offline_queue))
                     await _post_result(state.http_client, base, label, chunk_id,
-                                       "\x00busy\x00")
+                                       json.dumps({"ok": True, "offline_job_id": offline_job_id,
+                                                   "queued": True}))
                     continue
                 state.offline_job = chunk
-                offline_job_id = chunk.get("offline_job_id", "")
                 log.info("Pull worker: accepted offline job %s (%d strings)",
                          offline_job_id[:8], len(chunk.get("strings") or []))
                 await _post_result(state.http_client, base, label, chunk_id,

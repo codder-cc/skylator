@@ -185,8 +185,15 @@ class RegistryPullBackend:
                     f"[{self._label}] chunk {chunk_id[:8]} timed out after {self._timeout:.0f}s"
                 )
             if raw and raw.startswith("\x00"):
-                # Remote signalled a hard error (e.g. no model loaded, inference crash).
                 error_type = raw.strip("\x00")
+                if error_type == "busy":
+                    from translator.models.remote_backend import RemoteWorkerBusyError
+                    log.warning("PullBackend [%s]: chunk %s — worker busy with offline job",
+                                self._label, chunk_id[:8])
+                    raise RemoteWorkerBusyError(
+                        f"[{self._label}] busy with offline job"
+                    )
+                # Remote signalled a hard error (e.g. no model loaded, inference crash).
                 log.error("PullBackend [%s]: chunk %s remote error: %s — marking dead",
                           self._label, chunk_id[:8], error_type)
                 raise RemoteServerDeadError(

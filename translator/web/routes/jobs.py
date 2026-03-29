@@ -334,9 +334,14 @@ def resume_job(job_id: str):
 def dispatch_back(job_id: str):
     """Cancel the offline job on all assigned workers.
 
-    The remote will stop at the next batch boundary, deliver partial results,
-    and resume pull-mode.  The host job stays OFFLINE_DISPATCHED until the
-    final results flush arrives (done=True in /offline-results).
+    For workers that are actively translating: sends cancel_offline_job so they
+    stop at the next batch boundary and flush partial results.
+
+    For workers whose package was lost (never delivered or already finished):
+    force-completes their tracking immediately so the host job is not left
+    hanging indefinitely.
+
+    The host job status changes to DONE once all workers are accounted for.
     """
     jm       = current_app.config["JOB_MANAGER"]
     registry = current_app.config.get("WORKER_REGISTRY")
@@ -352,8 +357,29 @@ def dispatch_back(job_id: str):
     offline_job_ids = job.params.get("offline_job_ids") or []
     machines        = job.params.get("assigned_machines") or []
 
-    errors = []
+    errors         = []
+    force_complete = []  # offline_job_ids whose workers are not actively running them
+
     for offline_job_id, label in zip(offline_job_ids, machines):
+        oj = registry.get_offline_job(offline_job_id)
+        if oj and oj.get("finished"):
+            # Already delivered done=True — nothing to do
+            continue
+
+        # Check whether the worker actually has this job running right now
+        worker = registry.get(label)
+        worker_active_ids = {
+            x.get("offline_job_id") for x in (worker.offline_jobs if worker else [])
+        }
+        if offline_job_id not in worker_active_ids:
+            # Worker doesn't have this job running — package lost or already finished
+            # without the host registering it.  Force-complete to unblock the host job.
+            force_complete.append((offline_job_id, label))
+            log.info("dispatch-back: %s not active on %s — force-completing",
+                     offline_job_id[:8], label)
+            continue
+
+        # Worker IS actively running this job — send cancel so it flushes partial results
         chunk_id = str(_uuid.uuid4())
         registry.enqueue_chunk(label, {
             "chunk_id":        chunk_id,
@@ -363,13 +389,40 @@ def dispatch_back(job_id: str):
         result = registry.collect_result(chunk_id, timeout=10)
         if not result:
             errors.append(f"{label}: no response within 10s")
+            force_complete.append((offline_job_id, label))
         else:
-            log.info("dispatch-back: %s ACK from %s", offline_job_id[:8], label)
+            log.info("dispatch-back: %s cancel ACK from %s", offline_job_id[:8], label)
+
+    # Force-complete workers whose packages were lost or timed out
+    all_done = False
+    for offline_job_id, label in force_complete:
+        job.add_log(f"Force-completing {label} — package was lost or not delivered")
+        registry.delete_offline_package(offline_job_id)
+        all_done = registry.finish_offline_job(offline_job_id)
+
+    if all_done and not any(True for _ in []):  # if force_complete finished all workers
+        # Re-check: are ALL workers now finished?
+        remaining = [
+            oid for oid, _ in zip(offline_job_ids, machines)
+            if not (registry.get_offline_job(oid) or {}).get("finished")
+        ]
+        if not remaining:
+            import time as _time
+            job.status      = JobStatus.DONE
+            job.finished_at = _time.time()
+            job.progress.message = "Done — dispatch-back complete (partial results)"
+            jm._notify(job)
+            jm._persist()
+            job.add_log("All workers accounted for — job marked done")
 
     if errors:
         log.warning("dispatch-back warnings: %s", "; ".join(errors))
 
-    job.add_log("Dispatch-back requested — workers will flush partial results")
+    active_cancelled = len(offline_job_ids) - len(force_complete)
+    job.add_log(
+        f"Dispatch-back: {active_cancelled} worker(s) signalled to flush, "
+        f"{len(force_complete)} force-completed (lost/undelivered)"
+    )
     jm._notify(job)
     return jsonify({"ok": True, "warnings": errors})
 
@@ -492,7 +545,8 @@ def _create_translate_mod_job(jm, cfg, mod_name: str, options: dict):
     return jm.create(
         name     = f"Translate: {mod_name}",
         job_type = "translate_mod",
-        params   = {"mod_name": mod_name, "scope": scope},
+        params   = {"mod_name": mod_name, "scope": scope,
+                    "assigned_machines": list(machines) if machines else []},
         fn       = run,
     )
 
@@ -537,7 +591,8 @@ def _create_batch_job(jm, cfg, mod_names: list, options: dict):
     return jm.create(
         name     = f"Batch translate: {len(mod_names)} mods",
         job_type = "batch_translate",
-        params   = {"mods": mod_names},
+        params   = {"mods": mod_names,
+                    "assigned_machines": list(machines) if machines else []},
         fn       = run,
     )
 
@@ -616,7 +671,8 @@ def _create_translate_all_job(jm, cfg, options: dict):
         name     = f"Translate All Mods{scope_label}",
         job_type = "translate_all",
         params   = {"dry_run": dry_run, "resume": resume, "scope": scope,
-                    "status_filter": status_filter, "force": force},
+                    "status_filter": status_filter, "force": force,
+                    "assigned_machines": list(machines) if machines else []},
         fn       = run,
     )
 

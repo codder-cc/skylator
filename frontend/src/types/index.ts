@@ -162,6 +162,7 @@ export interface WorkerInfo {
     done: number
     tps: number
     current_text: string
+    worker_state?: 'queued' | 'running' | 'lost' | 'done'
   }[]
 }
 

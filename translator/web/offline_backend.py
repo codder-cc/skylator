@@ -147,7 +147,8 @@ def dispatch(
         # Persist + enqueue — no ACK wait. Offline jobs are fire-and-forget:
         # the remote picks up the package when it connects (could be hours/days).
         registry.enqueue_chunk(label, package)
-        registry.register_offline_job(offline_job_id, host_job_id, label, len(remote_strings))
+        registry.register_offline_job(offline_job_id, host_job_id, label, len(remote_strings),
+                                      chunk_id=chunk_id)
         offline_job_ids.append(offline_job_id)
         job.add_log(
             f"Package queued for {label} ({len(remote_strings)} strings) — "
@@ -274,7 +275,8 @@ def dispatch_multi(
                  len(remote_strings), label, offline_job_id[:8])
 
         registry.enqueue_chunk(label, package)
-        registry.register_offline_job(offline_job_id, host_job_id, label, len(remote_strings))
+        registry.register_offline_job(offline_job_id, host_job_id, label, len(remote_strings),
+                                      chunk_id=chunk_id)
         offline_job_ids.append(offline_job_id)
         job.add_log(
             f"Package queued for {label} ({len(remote_strings)} strings, multi-mod) — "

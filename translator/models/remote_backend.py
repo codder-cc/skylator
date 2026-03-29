@@ -34,6 +34,10 @@ class RemoteServerDeadError(RuntimeError):
     """Raised when the remote server stops responding during batch translation."""
 
 
+class RemoteWorkerBusyError(RemoteServerDeadError):
+    """Raised when the remote worker is busy with an offline job and cannot accept inline inference."""
+
+
 class RemoteBackend(BaseBackend):
     """
     BaseBackend implementation that POSTs batches to a remote Skylator server.

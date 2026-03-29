@@ -8,6 +8,7 @@ import {
 } from 'lucide-react'
 import { modsApi } from '@/api/mods'
 import { jobsApi } from '@/api/jobs'
+import { workersApi } from '@/api/workers'
 import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/utils'
 import { StatusBadge } from '@/components/shared/StatusBadge'
@@ -336,6 +337,159 @@ function BatchToolbar({
 
 const PER_PAGE = 100
 
+// ── Translate All Modal ───────────────────────────────────────────────────────
+
+type BatchScope = 'all' | 'esp' | 'mcm' | 'bsa' | 'review' | 'pending'
+
+const SCOPE_OPTIONS: { value: BatchScope; label: string }[] = [
+  { value: 'all',     label: 'All' },
+  { value: 'esp',     label: 'ESP only' },
+  { value: 'mcm',     label: 'MCM only' },
+  { value: 'bsa',     label: 'BSA only' },
+  { value: 'review',  label: 'Review only' },
+  { value: 'pending', label: 'Pending only' },
+]
+
+function TranslateAllModal({ defaultOffline, onClose }: { defaultOffline: boolean; onClose: () => void }) {
+  const navigate = useNavigate({ from: '/mods/' })
+  const [scope,   setScope]   = useState<BatchScope>('all')
+  const [force,   setForce]   = useState(false)
+  const [resume,  setResume]  = useState(true)
+  const [offline, setOffline] = useState(defaultOffline)
+  const [machines, setMachines] = useState<string[]>([])
+
+  const { data: workers = [] } = useQuery({
+    queryKey: QK.workers(),
+    queryFn:  workersApi.list,
+    staleTime: 30_000,
+  })
+
+  const createMut = useMutation({
+    mutationFn: () =>
+      jobsApi.create({
+        type: 'translate_all',
+        options: { scope, force, resume, machines, ...(offline && machines.length > 0 && { offline: true }) },
+      }),
+    onSuccess: (data) => {
+      onClose()
+      if (data.ok && data.job_id) {
+        void navigate({ to: '/jobs/$jobId', params: { jobId: data.job_id } })
+      } else {
+        void navigate({ to: '/jobs' })
+      }
+    },
+  })
+
+  const toggleMachine = (label: string) =>
+    setMachines((prev) => prev.includes(label) ? prev.filter((m) => m !== label) : [...prev, label])
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-bg-base/80 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div className="card p-6 w-full max-w-md space-y-5 shadow-2xl">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-semibold text-text-main">
+            {offline ? 'Dispatch All Offline' : 'Translate All Mods'}
+          </h2>
+          <button onClick={onClose} className="text-text-muted hover:text-text-main transition-colors">
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* Scope */}
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-text-muted uppercase tracking-wide">Scope</p>
+          <div className="grid grid-cols-3 gap-2">
+            {SCOPE_OPTIONS.map((opt) => (
+              <label
+                key={opt.value}
+                className={cn(
+                  'flex items-center gap-2 px-3 py-2 rounded-lg border text-sm cursor-pointer transition-colors',
+                  scope === opt.value
+                    ? 'border-accent/60 bg-accent/10 text-accent'
+                    : 'border-border-subtle bg-bg-card2 text-text-muted hover:text-text-main',
+                )}
+              >
+                <input type="radio" name="scope" value={opt.value} checked={scope === opt.value}
+                  onChange={() => setScope(opt.value)} className="sr-only" />
+                {opt.label}
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {/* Options */}
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-text-muted uppercase tracking-wide">Options</p>
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)}
+              className="w-4 h-4 rounded border-border-subtle bg-bg-card2 accent-accent" />
+            <span className="text-sm text-text-main">Force re-translate (bypass cache)</span>
+          </label>
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" checked={resume} onChange={(e) => setResume(e.target.checked)}
+              className="w-4 h-4 rounded border-border-subtle bg-bg-card2 accent-accent" />
+            <span className="text-sm text-text-main">Skip already-completed mods</span>
+          </label>
+          {machines.length > 0 && (
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input type="checkbox" checked={offline} onChange={(e) => setOffline(e.target.checked)}
+                className="w-4 h-4 rounded border-border-subtle bg-bg-card2 accent-accent" />
+              <span className="text-sm text-text-main">Offline translate (dispatch to workers)</span>
+            </label>
+          )}
+        </div>
+
+        {/* Machines */}
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-text-muted uppercase tracking-wide">Machines</p>
+          <div className="space-y-1.5">
+            {workers.length === 0 && (
+              <p className="text-xs text-text-muted italic">No workers registered.</p>
+            )}
+            {workers.map((w) => (
+              <label key={w.label} className="flex items-center gap-3 cursor-pointer">
+                <input type="checkbox" checked={machines.includes(w.label)} onChange={() => toggleMachine(w.label)}
+                  className="w-4 h-4 rounded border-border-subtle bg-bg-card2 accent-accent" />
+                <span className="text-sm text-text-main">{w.label}</span>
+                {w.alive && (
+                  <span className="text-xs text-success bg-success/10 px-1.5 py-0.5 rounded border border-success/30">online</span>
+                )}
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {createMut.isError && (
+          <p className="text-xs text-danger">
+            Failed: {String((createMut.error as Error)?.message ?? 'Unknown error')}
+          </p>
+        )}
+        <div className="flex gap-3 justify-end pt-1">
+          <button onClick={onClose}
+            className="px-4 py-2 rounded-lg text-sm text-text-muted hover:text-text-main border border-border-subtle hover:bg-bg-card2 transition-colors">
+            Cancel
+          </button>
+          <button
+            onClick={() => createMut.mutate()}
+            disabled={createMut.isPending || (offline && machines.length === 0)}
+            className={cn(
+              'px-5 py-2 rounded-lg text-sm font-medium disabled:opacity-50 transition-colors',
+              offline
+                ? 'bg-violet-500 text-white hover:bg-violet-500/80'
+                : 'bg-accent text-white hover:bg-accent/80',
+            )}
+          >
+            {createMut.isPending ? 'Starting…' : offline ? 'Dispatch Offline' : 'Start'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ModsPage() {
   const navigate = useNavigate({ from: '/mods/' })
   const { status, q, sort_by, page } = Route.useSearch()
@@ -468,23 +622,7 @@ function ModsPage() {
     }
   }
 
-  const [dispatchAllBusy, setDispatchAllBusy] = useState(false)
-  async function handleDispatchAllOffline() {
-    if (!machines.length) return
-    setDispatchAllBusy(true)
-    try {
-      const result = await jobsApi.create({
-        type: 'translate_all',
-        options: { offline: true, machines, resume: true },
-      })
-      queryClient.invalidateQueries({ queryKey: QK.jobs() })
-      if (result.ok && result.job_id) {
-        navigate({ to: '/jobs/$jobId', params: { jobId: result.job_id } })
-      }
-    } finally {
-      setDispatchAllBusy(false)
-    }
-  }
+  const [showTranslateAllModal, setShowTranslateAllModal] = useState<false | 'online' | 'offline'>(false)
 
   async function handleBatchApply() {
     const mods = Array.from(selected)
@@ -508,6 +646,7 @@ function ModsPage() {
   const sortLabel = SORT_OPTIONS.find((o) => o.value === sort_by)?.label ?? 'Sort'
 
   return (
+    <>
     <div className="space-y-5">
       {/* Page header */}
       <div className="flex items-center gap-4">
@@ -523,17 +662,22 @@ function ModsPage() {
           )}
         </div>
         <div className="flex-1" />
-        {machines.length > 0 && (
-          <button
-            onClick={handleDispatchAllOffline}
-            disabled={dispatchAllBusy}
-            className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg bg-violet-500/20 text-violet-400 border border-violet-500/30 hover:bg-violet-500/30 disabled:opacity-50 transition-colors"
-            title="Dispatch all pending mods to offline workers"
-          >
-            {dispatchAllBusy ? <RefreshCw size={14} className="animate-spin" /> : <ArrowDownToLine size={14} />}
-            Dispatch All Offline
-          </button>
-        )}
+        <button
+          onClick={() => setShowTranslateAllModal('online')}
+          className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg bg-accent/20 text-accent border border-accent/30 hover:bg-accent/30 transition-colors"
+          title="Translate all pending mods"
+        >
+          <Play size={14} />
+          Translate All
+        </button>
+        <button
+          onClick={() => setShowTranslateAllModal('offline')}
+          className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg bg-violet-500/20 text-violet-400 border border-violet-500/30 hover:bg-violet-500/30 transition-colors"
+          title="Dispatch all pending mods to offline workers"
+        >
+          <ArrowDownToLine size={14} />
+          Dispatch All Offline
+        </button>
         <button
           onClick={() => refetch()}
           disabled={isFetching}
@@ -714,5 +858,12 @@ function ModsPage() {
         </>
       )}
     </div>
+    {showTranslateAllModal && (
+      <TranslateAllModal
+        defaultOffline={showTranslateAllModal === 'offline'}
+        onClose={() => setShowTranslateAllModal(false)}
+      />
+    )}
+    </>
   )
 }

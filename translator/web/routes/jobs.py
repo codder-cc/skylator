@@ -947,9 +947,41 @@ def _create_offline_translate_mods_job(jm, cfg, mod_names: list,
         total_count = 0
 
         for mod_name in mod_names:
-            if not (repo and repo.mod_has_data(mod_name)):
-                job.add_log(f"Skipping {mod_name}: no DB data (run a scan first)")
-                continue
+            if repo and not repo.mod_has_data(mod_name):
+                # Auto-seed ESP strings into SQLite so offline dispatch can proceed
+                mod_dir = get_mod_path(mod_name)
+                if not mod_dir or not mod_dir.is_dir():
+                    job.add_log(f"Skipping {mod_name}: mod folder not found")
+                    continue
+                try:
+                    from scripts.esp_engine import extract_all_strings, needs_translation
+                    n_seeded = 0
+                    for ext in ("*.esp", "*.esm", "*.esl"):
+                        for esp_path in mod_dir.glob(ext):
+                            esp_name = esp_path.name
+                            strings, _ = extract_all_strings(esp_path)
+                            if repo.esp_string_count(mod_name, esp_name) >= len(strings):
+                                continue
+                            for s in strings:
+                                orig = s.get("text", "")
+                                if not needs_translation(orig):
+                                    s["translation"] = orig
+                                    s["status"] = "translated"
+                                    s["quality_score"] = 100
+                                else:
+                                    s["translation"] = ""
+                                    s["status"] = "pending"
+                                    s["quality_score"] = None
+                            repo.bulk_insert_strings(mod_name, esp_name, strings)
+                            n_seeded += len(strings)
+                    if n_seeded:
+                        job.add_log(f"  {mod_name}: auto-seeded {n_seeded} strings")
+                    elif not repo.mod_has_data(mod_name):
+                        job.add_log(f"Skipping {mod_name}: no ESP strings found")
+                        continue
+                except Exception as exc:
+                    job.add_log(f"Skipping {mod_name}: seed failed — {exc}")
+                    continue
             rows = repo.get_all_strings(mod_name)
             pending = [
                 {

@@ -937,9 +937,18 @@ def _create_offline_translate_mods_job(jm, cfg, mod_names: list,
     backends, skipped = _resolve_backends(cfg, machines)
     repo              = current_app.config.get("STRING_REPO")
     registry          = current_app.config.get("WORKER_REGISTRY")
+    mods_dirs         = list(cfg.paths.mods_dirs) if cfg else []
 
     if not backends:
         raise ValueError("offline translate requires at least one registered machine")
+
+    def _find_mod_dir(mod_name: str):
+        """Thread-safe mod folder lookup using cfg (no current_app)."""
+        for mods_dir in mods_dirs:
+            p = mods_dir / mod_name
+            if p.is_dir():
+                return p
+        return None
 
     def run(job):
         if skipped:
@@ -953,7 +962,7 @@ def _create_offline_translate_mods_job(jm, cfg, mod_names: list,
         for mod_name in mod_names:
             if repo and not repo.mod_has_data(mod_name):
                 # Auto-seed ESP strings into SQLite so offline dispatch can proceed
-                mod_dir = get_mod_path(mod_name)
+                mod_dir = _find_mod_dir(mod_name)
                 if not mod_dir or not mod_dir.is_dir():
                     job.add_log(f"Skipping {mod_name}: mod folder not found")
                     continue
@@ -1002,7 +1011,7 @@ def _create_offline_translate_mods_job(jm, cfg, mod_names: list,
                 continue
 
             context = ""
-            mod_folder = cfg.paths.mods_dir / mod_name if cfg.paths.mods_dir else None
+            mod_folder = _find_mod_dir(mod_name)
             if mod_folder:
                 try:
                     context = builder.get_mod_context(mod_folder, force=False)

@@ -87,6 +87,7 @@ class TranslatePipeline:
 
         # ── Step 1: Resolve strings ───────────────────────────────────────────
         strings = self._resolve_strings(mod_name, scope, mode, keys, jm, job)
+        job.add_log(f"[DEBUG] After resolve: {len(strings)} strings (scope={scope!r}, mode={mode})")
 
         # ── Step 2: Mark untranslatable ───────────────────────────────────────
         n_untrans = self._string_mgr.mark_untranslatable(mod_name)
@@ -95,12 +96,16 @@ class TranslatePipeline:
             # Re-filter after marking
             strings = [s for s in strings if s.get("status") != "translated"
                        or mode == TranslationMode.FORCE_ALL]
+            job.add_log(f"[DEBUG] After untranslatable filter: {len(strings)} strings")
 
         # ── Steps 3 & 4: Skip reserved + acquire reservations ────────────────
         _reservation_mgr = self._reservation_mgr
         if _reservation_mgr and strings:
             reserved_ids = _reservation_mgr.get_reserved_string_ids(mod_name)
+            before = len(strings)
             strings = [s for s in strings if s.get("id") not in reserved_ids]
+            if len(reserved_ids) > 0:
+                job.add_log(f"[DEBUG] Reservation pre-filter: {before} → {len(strings)} (reserved={len(reserved_ids)})")
 
             string_ids = [s["id"] for s in strings if s.get("id")]
             if string_ids:
@@ -114,16 +119,23 @@ class TranslatePipeline:
         try:
             # ── Step 5: Cache lookup ──────────────────────────────────────────
             if self._translation_cache and strings and mode != TranslationMode.FORCE_ALL:
+                before_cache = len(strings)
                 strings = self._apply_cache_hits(strings, jm, job, mod_name)
+                if len(strings) != before_cache:
+                    job.add_log(f"[DEBUG] Cache resolved {before_cache - len(strings)} strings; {len(strings)} remain")
 
             # ── Step 6: GlobalDict lookup (compat layer) ──────────────────────
             gd = self._global_dict
             gd_dirty = False
             if gd and strings and mode != TranslationMode.FORCE_ALL:
+                before_dict = len(strings)
                 strings, gd_dirty_flag = self._apply_dict_hits(strings, jm, job, mod_name)
                 gd_dirty = gd_dirty_flag
+                if len(strings) != before_dict:
+                    job.add_log(f"[DEBUG] Dict resolved {before_dict - len(strings)} strings; {len(strings)} remain")
 
             if not strings:
+                job.add_log(f"[DEBUG] 0 strings remain — exiting early (all resolved or none matched filter)")
                 jm.update_progress(job, 1, 1, "Done — all strings resolved from cache/dict")
                 job.result = f"All strings resolved from cache/dict for {mod_name}"
                 return
@@ -156,9 +168,13 @@ class TranslatePipeline:
             # ── Step 8: Dispatch to WorkerPool ───────────────────────────────
             # Steps 9-12 happen inside the on_string_done callback below.
             if not backends:
-                raise RuntimeError(
-                    "No inference backends configured — register a worker first"
+                from translator.web.job_manager import JobStatus
+                job.status = JobStatus.PAUSED
+                job.add_log(
+                    f"Paused — no inference backend available for {mod_name}. "
+                    f"Assign a remote worker and Resume to continue."
                 )
+                return
 
             n_failed = [0]
 
@@ -216,7 +232,7 @@ class TranslatePipeline:
                 job._worker_statuses = {st.label: st.to_dict() for st in statuses}
 
             pool = WorkerPool(backends, chunk_size=10)
-            pool.run(
+            pool_result = pool.run(
                 strings         = strings,
                 context         = context,
                 params          = params,
@@ -232,9 +248,21 @@ class TranslatePipeline:
             if gd and gd_dirty:
                 gd.save()
 
-            # If job was paused mid-run, don't mark it done
             from translator.web.job_manager import JobStatus
+            # If job was paused mid-run (user-requested or dead worker), don't mark it done
             if job.status == JobStatus.PAUSED:
+                return
+
+            # If the pool processed fewer strings than expected, a backend died —
+            # pause so the user can reassign a worker and Resume.
+            pool_done = pool_result.get("done", 0)
+            if pool_done < total and job.status == JobStatus.RUNNING:
+                unprocessed = total - pool_done
+                job.status = JobStatus.PAUSED
+                job.add_log(
+                    f"Paused — {unprocessed} string(s) not processed (worker disconnected or timed out). "
+                    f"Assign a worker and Resume to retry."
+                )
                 return
 
             jm.update_progress(job, total, total, "Done")

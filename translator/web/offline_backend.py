@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 
 _TM_MAX_CHARS  = 80
 _TM_MAX_PAIRS  = 2000
-_ACK_TIMEOUT   = 30   # seconds to wait for offline-job ACK from remote
+_ACK_TIMEOUT   = 300  # seconds to wait for offline-job ACK from remote (worker may be mid-chunk)
 
 
 def _build_tm_pairs(repo: "StringRepo", mod_name: str) -> dict:

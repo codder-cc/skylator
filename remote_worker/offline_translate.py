@@ -95,6 +95,7 @@ class OfflineTranslateRunner:
 
         strings         = self._data.get("strings") or []
         context         = self._data.get("context") or ""
+        mods_context: dict = self._data.get("mods_context") or {}
         src_lang        = self._data.get("src_lang") or "English"
         tgt_lang        = self._data.get("tgt_lang") or "Russian"
         raw_params      = self._data.get("params") or {}
@@ -127,7 +128,15 @@ class OfflineTranslateRunner:
                             tm_lines.append(entry)
             tm_block = ("Translation memory:\n" + "\n".join(tm_lines) + "\n") if tm_lines else ""
 
-            full_context = context
+            # Per-mod context: for multi-mod packages the host sends a mods_context
+            # dict keyed by mod_name; fall back to the shared context otherwise.
+            if mods_context:
+                batch_mod = batch[0].get("mod_name") or "" if batch else ""
+                batch_ctx = mods_context.get(batch_mod) or context
+            else:
+                batch_ctx = context
+
+            full_context = batch_ctx
             if tm_block:
                 full_context = (full_context + "\n" + tm_block).strip()
 

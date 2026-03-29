@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Search, RefreshCw, Play, FileText, Archive,
   ArrowUpDown, CheckSquare, Square, X, ChevronDown,
-  AlertTriangle, Clock, Radio,
+  AlertTriangle, Clock, Radio, ArrowDownToLine,
 } from 'lucide-react'
 import { modsApi } from '@/api/mods'
 import { jobsApi } from '@/api/jobs'
@@ -282,12 +282,16 @@ function BatchToolbar({
   onClear,
   onTranslate,
   onApply,
+  onDispatchOffline,
+  machinesAvailable,
   isBusy,
 }: {
   selected: string[]
   onClear: () => void
   onTranslate: () => void
   onApply: () => void
+  onDispatchOffline: () => void
+  machinesAvailable: boolean
   isBusy: boolean
 }) {
   return (
@@ -302,6 +306,16 @@ function BatchToolbar({
         {isBusy ? <RefreshCw size={13} className="animate-spin" /> : <Play size={13} />}
         Translate selected
       </button>
+      {machinesAvailable && (
+        <button
+          onClick={onDispatchOffline}
+          disabled={isBusy}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-violet-500/20 text-violet-400 border border-violet-500/30 hover:bg-violet-500/30 disabled:opacity-50 transition-colors"
+        >
+          {isBusy ? <RefreshCw size={13} className="animate-spin" /> : <ArrowDownToLine size={13} />}
+          Dispatch Offline
+        </button>
+      )}
       <button
         onClick={onApply}
         disabled={isBusy}
@@ -429,6 +443,26 @@ function ModsPage() {
       queryClient.invalidateQueries({ queryKey: QK.jobs() })
       setSelected(new Set())
       navigate({ to: '/jobs' })
+    } finally {
+      setBatchBusy(false)
+    }
+  }
+
+  async function handleBatchDispatchOffline() {
+    const mods = Array.from(selected)
+    if (!mods.length || !machines.length) return
+    setBatchBusy(true)
+    try {
+      const result = await jobsApi.create({
+        type: 'translate_mod',
+        mods,
+        options: { offline: true, machines },
+      })
+      queryClient.invalidateQueries({ queryKey: QK.jobs() })
+      setSelected(new Set())
+      if (result.ok && result.job_id) {
+        navigate({ to: '/jobs/$jobId', params: { jobId: result.job_id } })
+      }
     } finally {
       setBatchBusy(false)
     }
@@ -587,6 +621,8 @@ function ModsPage() {
           onClear={() => setSelected(new Set())}
           onTranslate={handleBatchTranslate}
           onApply={handleBatchApply}
+          onDispatchOffline={handleBatchDispatchOffline}
+          machinesAvailable={machines.length > 0}
           isBusy={batchBusy}
         />
       )}

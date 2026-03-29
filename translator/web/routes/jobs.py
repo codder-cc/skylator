@@ -118,11 +118,21 @@ def create_job():
     if job_type == "translate_all":
         job = _create_translate_all_job(jm, cfg, options)
     elif job_type == "translate_mod" and mod_names:
+        offline  = options.get("offline", False)
+        machines = options.get("machines")
         if len(mod_names) == 1:
-            job = _create_translate_mod_job(jm, cfg, mod_names[0], options)
+            if offline and machines:
+                job = _create_offline_translate_job(jm, cfg, mod_names[0], None, "all",
+                                                    inf_params, machines=machines)
+            else:
+                job = _create_translate_mod_job(jm, cfg, mod_names[0], options)
         else:
-            # batch of multiple mods
-            job = _create_batch_job(jm, cfg, mod_names, options)
+            if offline and machines:
+                job = _create_offline_translate_mods_job(jm, cfg, mod_names,
+                                                         params=inf_params, machines=machines)
+            else:
+                # batch of multiple mods
+                job = _create_batch_job(jm, cfg, mod_names, options)
     elif job_type in ("scan", "scan_mods"):
         scan_mod = mod_names[0] if mod_names else None
         job = _create_scan_job(
@@ -253,6 +263,14 @@ def assign_workers(job_id: str):
     jm._notify(job)
     jm._persist()
 
+    if job.status == JobStatus.RUNNING:
+        # Pause the live pipeline so it stops picking up new chunks, then restart
+        # with the updated worker set (same as the PAUSED path below).
+        job.status = JobStatus.PAUSED
+        job.add_log("Restarting pipeline with new worker set…")
+        jm._notify(job)
+        jm._persist()
+
     if job.status == JobStatus.PAUSED:
         new_job = _resume_job_with_machines(jm, cfg, job)
         return jsonify({"ok": True, "resumed": True, "job_id": new_job.id})
@@ -276,13 +294,21 @@ def unassign_workers(job_id: str):
     jm._notify(job)
     jm._persist()
 
-    if job.status == JobStatus.RUNNING and not updated:
+    if job.status == JobStatus.RUNNING:
         job.status = JobStatus.PAUSED
-        job.add_log("Paused — no workers assigned")
-        jm._notify(job)
-        jm._persist()
+        if updated:
+            job.add_log("Restarting pipeline without removed worker…")
+            jm._notify(job)
+            jm._persist()
+            cfg     = current_app.config.get("TRANSLATOR_CFG")
+            new_job = _resume_job_with_machines(jm, cfg, job)
+            return jsonify({"ok": True, "resumed": True, "job_id": new_job.id})
+        else:
+            job.add_log("Paused — no workers assigned")
+            jm._notify(job)
+            jm._persist()
 
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "resumed": False})
 
 
 @bp.route("/<job_id>/resume", methods=["POST"])
@@ -346,6 +372,57 @@ def dispatch_back(job_id: str):
     job.add_log("Dispatch-back requested — workers will flush partial results")
     jm._notify(job)
     return jsonify({"ok": True, "warnings": errors})
+
+
+@bp.route("/<job_id>/dispatch-offline", methods=["POST"])
+def dispatch_offline_from_job(job_id: str):
+    """Pause a running translate job and dispatch remaining pending strings
+    as an offline job to the assigned (or specified) workers.
+
+    Body (optional): {"machines": ["label1", "label2"]}
+    Returns: {"ok": true, "job_id": "<new offline job id>"}
+    """
+    jm  = current_app.config["JOB_MANAGER"]
+    cfg = current_app.config.get("TRANSLATOR_CFG")
+    from translator.web.job_manager import JobStatus
+
+    job = jm.get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    if job.status != JobStatus.RUNNING:
+        return jsonify({"error": "Job is not running"}), 400
+
+    mod_name = job.params.get("mod_name")
+    if not mod_name:
+        return jsonify({"error": "Cannot dispatch offline: no mod_name in job params"}), 400
+
+    data     = request.get_json() or {}
+    machines = data.get("machines") or job.params.get("assigned_machines") or []
+    if not machines:
+        return jsonify({"error": "No machines specified or assigned to job"}), 400
+
+    # Pause the running pipeline — WorkerPool will stop at next batch boundary
+    job.status = JobStatus.PAUSED
+    job.add_log("Paused for offline dispatch — creating offline job")
+    jm._notify(job)
+    jm._persist()
+
+    try:
+        from translator.models.inference_params import InferenceParams
+        inf_params = InferenceParams.from_dict(job.params.get("params") or {})
+        new_job = _create_offline_translate_job(
+            jm, cfg,
+            mod_name = mod_name,
+            keys     = job.params.get("keys"),
+            scope    = job.params.get("scope", "all"),
+            params   = inf_params,
+            machines = machines,
+        )
+    except Exception as exc:
+        log.error("dispatch-offline: failed to create offline job: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
+    return jsonify({"ok": True, "job_id": new_job.id})
 
 
 def _resume_job_with_machines(jm, cfg, job):
@@ -725,6 +802,90 @@ def _create_offline_translate_job(jm, cfg, mod_name: str,
         job_type = "translate_strings",
         params   = {"mod_name": mod_name, "keys": keys, "scope": scope,
                     "assigned_machines": list(machines) if machines else [],
+                    "offline": True},
+        fn       = run,
+    )
+
+
+def _create_offline_translate_mods_job(jm, cfg, mod_names: list,
+                                        params=None, machines: list | None = None):
+    """Create a single offline translate job spanning multiple mods.
+
+    All mods' pending strings are packaged together (with per-mod context)
+    and split across the assigned workers via dispatch_multi().
+    """
+    backends, skipped = _resolve_backends(cfg, machines)
+    repo              = current_app.config.get("STRING_REPO")
+    registry          = current_app.config.get("WORKER_REGISTRY")
+
+    if not backends:
+        raise ValueError("offline translate requires at least one registered machine")
+
+    def run(job):
+        if skipped:
+            job.add_log(f"WARNING: machines not found in registry (skipped): {', '.join(skipped)}")
+
+        from translator.context.builder import ContextBuilder
+        builder = ContextBuilder()
+        mods_payload: list[tuple] = []
+        total_count = 0
+
+        for mod_name in mod_names:
+            if not (repo and repo.mod_has_data(mod_name)):
+                job.add_log(f"Skipping {mod_name}: no DB data (run a scan first)")
+                continue
+            rows = repo.get_all_strings(mod_name)
+            pending = [
+                {
+                    "id":       r["id"],
+                    "key":      r["key"],
+                    "esp":      r["esp_name"],
+                    "mod_name": mod_name,
+                    "original": r.get("original") or "",
+                }
+                for r in rows if r.get("status") == "pending"
+            ]
+            if not pending:
+                job.add_log(f"Skipping {mod_name}: no pending strings")
+                continue
+
+            context = ""
+            mod_folder = cfg.paths.mods_dir / mod_name if cfg.paths.mods_dir else None
+            if mod_folder:
+                try:
+                    context = builder.get_mod_context(mod_folder, force=False)
+                except Exception as exc:
+                    log.warning("offline dispatch multi: context for %s failed: %s", mod_name, exc)
+
+            mods_payload.append((mod_name, pending, context))
+            total_count += len(pending)
+            job.add_log(f"  {mod_name}: {len(pending)} pending strings")
+
+        if not mods_payload:
+            job.add_log("No pending strings found across selected mods")
+            job.result = "Nothing to dispatch"
+            return
+
+        job.add_log(f"Dispatching {total_count} strings from {len(mods_payload)} mods "
+                    f"to {len(backends)} worker(s)")
+
+        from translator.web.offline_backend import dispatch_multi
+        dispatch_multi(
+            job        = job,
+            mods       = mods_payload,
+            inf_params = params,
+            machines   = backends,
+            registry   = registry,
+            jm         = jm,
+            repo       = repo,
+            cfg        = cfg,
+        )
+
+    n = len(mod_names)
+    return jm.create(
+        name     = f"Offline Translate: {n} mod{'s' if n != 1 else ''}",
+        job_type = "translate_strings",
+        params   = {"mods": mod_names, "assigned_machines": list(machines or []),
                     "offline": True},
         fn       = run,
     )

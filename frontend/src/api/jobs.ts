@@ -37,4 +37,10 @@ export const jobsApi = {
 
   dispatchBack: (id: string) =>
     apiPost<{ ok: boolean; warnings?: string[] }>(`/jobs/${id}/dispatch-back`),
+
+  dispatchOffline: (id: string, machines?: string[]) =>
+    apiPost<{ ok: boolean; job_id: string }>(
+      `/jobs/${id}/dispatch-offline`,
+      machines ? { machines } : {},
+    ),
 }

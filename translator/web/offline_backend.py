@@ -152,6 +152,10 @@ def dispatch(
             raise RuntimeError(
                 f"offline_backend: no ACK from {label} within {_ACK_TIMEOUT}s"
             )
+        if result.startswith("\x00busy"):
+            log.warning("offline_backend: worker %s is busy with another offline job — skipping", label)
+            job.add_log(f"WARNING: {label} is busy — skipped")
+            continue
         if result.startswith("\x00"):
             raise RuntimeError(
                 f"offline_backend: worker {label} rejected chunk: {result}"
@@ -172,7 +176,7 @@ def dispatch(
         job.add_log(f"Dispatched {len(remote_strings)} strings to {label} (offline)")
 
     if not offline_job_ids:
-        raise RuntimeError("offline_backend: all workers had empty buckets — nothing dispatched")
+        raise RuntimeError("offline_backend: all workers were busy or had empty buckets — nothing dispatched")
 
     # Transition job to OFFLINE_DISPATCHED
     job.params["offline_job_ids"]  = offline_job_ids
@@ -184,3 +188,157 @@ def dispatch(
     job.progress.current = 0
     log.info("offline_backend: job %s → OFFLINE_DISPATCHED (%d workers, %d strings)",
              host_job_id[:8], len(offline_job_ids), len(strings))
+
+
+def dispatch_multi(
+    job,
+    mods: "list[tuple[str, list[dict], str]]",
+    inf_params,
+    machines: "list[tuple[str, object]]",
+    registry: "WorkerRegistry",
+    jm: "JobManager",
+    repo: "StringRepo",
+    cfg,
+) -> None:
+    """
+    Package strings from multiple mods and dispatch to remote workers.
+
+    Each mod gets its own context; the package carries a ``mods_context``
+    dict so the remote runner can look up the right context per string.
+
+    Parameters
+    ----------
+    mods : list of (mod_name, strings, context)
+        Each tuple provides the mod name, its pending string dicts, and its
+        pre-built context string.
+    """
+    from translator.web.job_manager import JobStatus
+    import json as _json
+
+    if not machines:
+        raise RuntimeError("offline_backend.dispatch_multi: no machines provided")
+    if not mods:
+        raise RuntimeError("offline_backend.dispatch_multi: no mods provided")
+
+    src_lang = getattr(getattr(cfg, "translation", None), "source_lang", "English")
+    tgt_lang = getattr(getattr(cfg, "translation", None), "target_lang", "Russian")
+
+    # Flatten all strings and build per-mod context map
+    all_strings: list[dict] = []
+    mods_context: dict[str, str] = {}
+    for mod_name, mod_strings, context in mods:
+        mods_context[mod_name] = context
+        for s in mod_strings:
+            entry = dict(s)
+            entry.setdefault("mod_name", mod_name)
+            all_strings.append(entry)
+
+    # Merged TM: collect from all mods, cap at _TM_MAX_PAIRS total
+    merged_tm: dict[str, str] = {}
+    if repo:
+        for mod_name, _, _ in mods:
+            pairs = _build_tm_pairs(repo, mod_name)
+            for orig, trans in pairs.items():
+                merged_tm[orig] = trans
+                if len(merged_tm) >= _TM_MAX_PAIRS:
+                    break
+            if len(merged_tm) >= _TM_MAX_PAIRS:
+                break
+
+    originals = [s.get("original") or "" for s in all_strings]
+    term_str  = _build_terminology(originals)
+    params_dict = inf_params.as_dict() if inf_params else {}
+
+    n_workers = len(machines)
+    buckets   = _split_round_robin(all_strings, n_workers)
+
+    host_job_id     = job.id
+    offline_job_ids = []
+
+    for i, (label, _backend) in enumerate(machines):
+        bucket = buckets[i]
+        if not bucket:
+            log.info("offline_backend.dispatch_multi: no strings for %s (bucket empty)", label)
+            continue
+
+        offline_job_id = str(uuid.uuid4())
+        chunk_id       = str(uuid.uuid4())
+
+        remote_strings = [
+            {
+                "id":       s.get("id"),
+                "key":      s.get("key") or "",
+                "esp":      s.get("esp") or s.get("esp_name") or "",
+                "mod_name": s.get("mod_name") or "",
+                "original": s.get("original") or "",
+            }
+            for s in bucket
+        ]
+
+        package = {
+            "chunk_id":        chunk_id,
+            "type":            "offline_translate",
+            "offline_job_id":  offline_job_id,
+            "host_job_id":     host_job_id,
+            "mod_name":        f"{len(mods)} mods",
+            "strings":         remote_strings,
+            "context":         "",           # unused — per-mod context in mods_context
+            "mods_context":    mods_context,
+            "src_lang":        src_lang,
+            "tgt_lang":        tgt_lang,
+            "params":          params_dict,
+            "terminology":     term_str,
+            "preserve_tokens": [],
+            "tm_pairs":        merged_tm,
+        }
+
+        log.info("offline_backend.dispatch_multi: dispatching %d strings to %s (offline_job_id=%s)",
+                 len(remote_strings), label, offline_job_id[:8])
+
+        registry.enqueue_chunk(label, package)
+        result = registry.collect_result(chunk_id, timeout=_ACK_TIMEOUT)
+
+        if not result:
+            raise RuntimeError(
+                f"offline_backend.dispatch_multi: no ACK from {label} within {_ACK_TIMEOUT}s"
+            )
+        if result.startswith("\x00busy"):
+            log.warning("offline_backend.dispatch_multi: worker %s is busy — skipping", label)
+            job.add_log(f"WARNING: {label} is busy — skipped")
+            continue
+        if result.startswith("\x00"):
+            raise RuntimeError(
+                f"offline_backend.dispatch_multi: worker {label} rejected chunk: {result}"
+            )
+
+        try:
+            ack = _json.loads(result)
+            if not ack.get("ok"):
+                raise RuntimeError(
+                    f"offline_backend.dispatch_multi: worker {label} returned ok=false: {result}"
+                )
+        except Exception as exc:
+            raise RuntimeError(f"offline_backend.dispatch_multi: bad ACK from {label}: {exc}") from exc
+
+        registry.register_offline_job(offline_job_id, host_job_id, label, len(remote_strings))
+        offline_job_ids.append(offline_job_id)
+        job.add_log(f"Dispatched {len(remote_strings)} strings to {label} (offline, multi-mod)")
+
+    if not offline_job_ids:
+        raise RuntimeError(
+            "offline_backend.dispatch_multi: all workers were busy or had empty buckets"
+        )
+
+    mod_names_str = ", ".join(m[0] for m in mods[:3])
+    if len(mods) > 3:
+        mod_names_str += f" +{len(mods) - 3} more"
+
+    job.params["offline_job_ids"]   = offline_job_ids
+    job.params["assigned_machines"] = [m[0] for m in machines]
+    job.status      = JobStatus.OFFLINE_DISPATCHED
+    job.finished_at = None
+    job.progress.message = f"Awaiting offline results from {len(offline_job_ids)} worker(s)"
+    job.progress.total   = len(all_strings)
+    job.progress.current = 0
+    log.info("offline_backend.dispatch_multi: job %s → OFFLINE_DISPATCHED (%d workers, %d strings, %d mods)",
+             host_job_id[:8], len(offline_job_ids), len(all_strings), len(mods))

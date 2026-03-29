@@ -236,12 +236,13 @@ def test_dispatch_raises_on_no_ack(timeout=True):
                      [("w", MagicMock())], registry, MagicMock(), _make_repo(), _make_cfg())
 
 
-def test_dispatch_raises_on_busy_response():
+def test_dispatch_skips_busy_worker_and_raises_nothing_dispatched():
+    """A single busy worker is skipped; since no workers succeed, raises RuntimeError."""
     job      = _make_job()
     registry = _make_registry(ack_json="\x00busy\x00")
 
     with patch("translator.web.offline_backend._build_terminology", return_value=""):
-        with pytest.raises(RuntimeError, match="rejected"):
+        with pytest.raises(RuntimeError, match="busy"):
             dispatch(job, "TestMod", _make_strings(5), "", _make_inf_params(),
                      [("w", MagicMock())], registry, MagicMock(), _make_repo(), _make_cfg())
 

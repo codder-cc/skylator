@@ -499,6 +499,43 @@ function DispatchBackButton({ jobId }: { jobId: string }) {
   )
 }
 
+function DispatchOfflineButton({ jobId }: { jobId: string }) {
+  const navigate = useNavigate()
+  const qc = useQueryClient()
+  const [open, setOpen] = useState(false)
+  const mut = useMutation({
+    mutationFn: () => jobsApi.dispatchOffline(jobId),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: QK.jobs() })
+      setOpen(false)
+      if (data.ok && data.job_id) {
+        navigate({ to: '/jobs/$jobId', params: { jobId: data.job_id } })
+      }
+    },
+  })
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-violet-500/20 text-violet-400 border border-violet-500/30 hover:bg-violet-500/30 transition-colors"
+      >
+        <ArrowDownToLine size={11} />
+        Dispatch Offline
+      </button>
+      <ConfirmDialog
+        open={open}
+        onOpenChange={setOpen}
+        title="Dispatch offline?"
+        description="The current job will be paused and remaining pending strings will be dispatched to the assigned workers as a standalone offline job. You will be taken to the new job."
+        confirmLabel="Dispatch offline"
+        loading={mut.isPending}
+        onConfirm={() => mut.mutate()}
+      />
+    </>
+  )
+}
+
 function RetryButton({ jobId }: { jobId: string }) {
   const navigate = useNavigate()
   const qc = useQueryClient()
@@ -565,6 +602,10 @@ function JobDetailPage() {
           {job.name}
         </h1>
         <StatusBadge status={job.status} />
+        {job.status === 'running' && job.job_type.includes('translate') &&
+          (job.assigned_machines?.length ?? 0) > 0 && (
+          <DispatchOfflineButton jobId={jobId} />
+        )}
         {job.status === 'running' && <PauseButton jobId={jobId} />}
         {job.status === 'running' && <CancelButton jobId={jobId} />}
         {job.status === 'paused' && (

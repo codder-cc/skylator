@@ -190,7 +190,8 @@ def create_app(config_path: Path | None = None) -> Flask:
 
     # ── Init worker registry (reverse-connected remote workers) ─────────────
     from translator.web.worker_registry import WorkerRegistry
-    app.config["WORKER_REGISTRY"] = WorkerRegistry()
+    _offline_pkg_dir = (cfg.paths.translation_cache.parent if cfg else ROOT / "cache") / "offline_packages"
+    app.config["WORKER_REGISTRY"] = WorkerRegistry(persist_dir=_offline_pkg_dir)
     app.config["SETUP_REPORTS"]   = []   # in-memory list of remote setup reports
 
     # ── Register blueprints ─────────────────────────────────────────────────

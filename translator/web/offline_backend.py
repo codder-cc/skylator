@@ -19,7 +19,6 @@ log = logging.getLogger(__name__)
 
 _TM_MAX_CHARS  = 80
 _TM_MAX_PAIRS  = 2000
-_ACK_TIMEOUT   = 300  # seconds to wait for offline-job ACK from remote (worker may be mid-chunk)
 
 
 def _build_tm_pairs(repo: "StringRepo", mod_name: str) -> dict:
@@ -145,35 +144,15 @@ def dispatch(
         log.info("offline_backend: dispatching %d strings to %s (offline_job_id=%s)",
                  len(remote_strings), label, offline_job_id[:8])
 
+        # Persist + enqueue — no ACK wait. Offline jobs are fire-and-forget:
+        # the remote picks up the package when it connects (could be hours/days).
         registry.enqueue_chunk(label, package)
-        result = registry.collect_result(chunk_id, timeout=_ACK_TIMEOUT)
-
-        if not result:
-            raise RuntimeError(
-                f"offline_backend: no ACK from {label} within {_ACK_TIMEOUT}s"
-            )
-        if result.startswith("\x00busy"):
-            log.warning("offline_backend: worker %s is busy with another offline job — skipping", label)
-            job.add_log(f"WARNING: {label} is busy — skipped")
-            continue
-        if result.startswith("\x00"):
-            raise RuntimeError(
-                f"offline_backend: worker {label} rejected chunk: {result}"
-            )
-
-        import json as _json
-        try:
-            ack = _json.loads(result)
-            if not ack.get("ok"):
-                raise RuntimeError(
-                    f"offline_backend: worker {label} returned ok=false: {result}"
-                )
-        except Exception as exc:
-            raise RuntimeError(f"offline_backend: bad ACK from {label}: {exc}") from exc
-
         registry.register_offline_job(offline_job_id, host_job_id, label, len(remote_strings))
         offline_job_ids.append(offline_job_id)
-        job.add_log(f"Dispatched {len(remote_strings)} strings to {label} (offline)")
+        job.add_log(
+            f"Package queued for {label} ({len(remote_strings)} strings) — "
+            f"will be delivered when worker connects/finishes current work"
+        )
 
     if not offline_job_ids:
         raise RuntimeError("offline_backend: all workers were busy or had empty buckets — nothing dispatched")
@@ -213,7 +192,6 @@ def dispatch_multi(
         pre-built context string.
     """
     from translator.web.job_manager import JobStatus
-    import json as _json
 
     if not machines:
         raise RuntimeError("offline_backend.dispatch_multi: no machines provided")
@@ -296,33 +274,12 @@ def dispatch_multi(
                  len(remote_strings), label, offline_job_id[:8])
 
         registry.enqueue_chunk(label, package)
-        result = registry.collect_result(chunk_id, timeout=_ACK_TIMEOUT)
-
-        if not result:
-            raise RuntimeError(
-                f"offline_backend.dispatch_multi: no ACK from {label} within {_ACK_TIMEOUT}s"
-            )
-        if result.startswith("\x00busy"):
-            log.warning("offline_backend.dispatch_multi: worker %s is busy — skipping", label)
-            job.add_log(f"WARNING: {label} is busy — skipped")
-            continue
-        if result.startswith("\x00"):
-            raise RuntimeError(
-                f"offline_backend.dispatch_multi: worker {label} rejected chunk: {result}"
-            )
-
-        try:
-            ack = _json.loads(result)
-            if not ack.get("ok"):
-                raise RuntimeError(
-                    f"offline_backend.dispatch_multi: worker {label} returned ok=false: {result}"
-                )
-        except Exception as exc:
-            raise RuntimeError(f"offline_backend.dispatch_multi: bad ACK from {label}: {exc}") from exc
-
         registry.register_offline_job(offline_job_id, host_job_id, label, len(remote_strings))
         offline_job_ids.append(offline_job_id)
-        job.add_log(f"Dispatched {len(remote_strings)} strings to {label} (offline, multi-mod)")
+        job.add_log(
+            f"Package queued for {label} ({len(remote_strings)} strings, multi-mod) — "
+            f"will be delivered when worker connects/finishes current work"
+        )
 
     if not offline_job_ids:
         raise RuntimeError(

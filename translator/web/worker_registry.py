@@ -12,10 +12,15 @@ Pull-mode inference (works across subnets — remote → host only):
   - Host collects results via wait_result() with per-chunk threading.Event
 """
 from __future__ import annotations
+import json
+import logging
 import queue
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -71,7 +76,7 @@ class WorkerRegistry:
 
     HEARTBEAT_TTL = 45.0   # seconds without heartbeat before considered dead
 
-    def __init__(self) -> None:
+    def __init__(self, persist_dir: Path | None = None) -> None:
         self._lock:    threading.Lock        = threading.Lock()
         self._workers: dict[str, WorkerInfo] = {}
         # Pull-mode queues: label → work items waiting for the remote to pick up
@@ -83,6 +88,11 @@ class WorkerRegistry:
         self._offline_jobs: dict[str, dict] = {}
         # Count of completed workers per host job: host_job_id → {total_workers, done_workers}
         self._offline_host_jobs: dict[str, dict] = {}
+        # Persistent package storage: packages survive host restarts
+        self._persist_dir: Path | None = persist_dir
+        if persist_dir:
+            persist_dir.mkdir(parents=True, exist_ok=True)
+            self._restore_persisted_packages()
 
     # ── Worker lifecycle ──────────────────────────────────────────────────────
 
@@ -163,7 +173,14 @@ class WorkerRegistry:
     # ── Pull-mode: host side ──────────────────────────────────────────────────
 
     def enqueue_chunk(self, label: str, chunk: dict) -> None:
-        """Put a work chunk into the worker's queue for pull-mode remotes."""
+        """Put a work chunk into the worker's queue for pull-mode remotes.
+
+        Offline packages (type='offline_translate') are also written to disk so
+        they survive a host restart and can be re-delivered when the remote
+        eventually reconnects and polls.
+        """
+        if chunk.get("type") == "offline_translate":
+            self._persist_package(label, chunk)
         with self._lock:
             if label not in self._work_queues:
                 self._work_queues[label] = queue.Queue()
@@ -178,9 +195,65 @@ class WorkerRegistry:
                 self._work_queues[label] = queue.Queue()
             q = self._work_queues[label]
         try:
-            return q.get(timeout=timeout)
+            chunk = q.get(timeout=timeout)
+            # Remove persisted file once the remote has picked it up
+            if chunk.get("type") == "offline_translate":
+                self._delete_package(label, chunk.get("chunk_id", ""))
+            return chunk
         except queue.Empty:
             return None
+
+    # ── Offline package persistence ───────────────────────────────────────────
+
+    def _persist_package(self, label: str, chunk: dict) -> None:
+        """Write an offline package to disk so it survives server restarts."""
+        if not self._persist_dir:
+            return
+        try:
+            pkg_dir = self._persist_dir / label
+            pkg_dir.mkdir(parents=True, exist_ok=True)
+            chunk_id = chunk.get("chunk_id", "")
+            if not chunk_id:
+                return
+            path = pkg_dir / f"{chunk_id}.json"
+            path.write_text(json.dumps(chunk), encoding="utf-8")
+        except Exception as exc:
+            log.warning("Could not persist offline package for %s: %s", label, exc)
+
+    def _delete_package(self, label: str, chunk_id: str) -> None:
+        """Remove a persisted offline package after successful delivery."""
+        if not self._persist_dir or not chunk_id:
+            return
+        try:
+            path = self._persist_dir / label / f"{chunk_id}.json"
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    def _restore_persisted_packages(self) -> None:
+        """On startup: reload persisted offline packages into in-memory queues.
+
+        Called once from __init__. Any package that was persisted but not yet
+        delivered (remote had not polled before host restarted) is re-queued
+        so the remote can pick it up when it reconnects.
+        """
+        if not self._persist_dir or not self._persist_dir.exists():
+            return
+        count = 0
+        for label_dir in sorted(self._persist_dir.iterdir()):
+            if not label_dir.is_dir():
+                continue
+            label = label_dir.name
+            q = self._work_queues.setdefault(label, queue.Queue())
+            for pkg_file in sorted(label_dir.glob("*.json")):
+                try:
+                    chunk = json.loads(pkg_file.read_text(encoding="utf-8"))
+                    q.put(chunk)
+                    count += 1
+                except Exception as exc:
+                    log.warning("Could not restore offline package %s: %s", pkg_file.name, exc)
+        if count:
+            log.info("WorkerRegistry: restored %d persisted offline package(s) from disk", count)
 
     def register_chunk_wait(self, chunk_id: str) -> threading.Event:
         """Register that the host is waiting for a result for chunk_id.

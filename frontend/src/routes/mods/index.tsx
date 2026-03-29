@@ -468,6 +468,24 @@ function ModsPage() {
     }
   }
 
+  const [dispatchAllBusy, setDispatchAllBusy] = useState(false)
+  async function handleDispatchAllOffline() {
+    if (!machines.length) return
+    setDispatchAllBusy(true)
+    try {
+      const result = await jobsApi.create({
+        type: 'translate_all',
+        options: { offline: true, machines, resume: true },
+      })
+      queryClient.invalidateQueries({ queryKey: QK.jobs() })
+      if (result.ok && result.job_id) {
+        navigate({ to: '/jobs/$jobId', params: { jobId: result.job_id } })
+      }
+    } finally {
+      setDispatchAllBusy(false)
+    }
+  }
+
   async function handleBatchApply() {
     const mods = Array.from(selected)
     if (!mods.length) return
@@ -505,6 +523,17 @@ function ModsPage() {
           )}
         </div>
         <div className="flex-1" />
+        {machines.length > 0 && (
+          <button
+            onClick={handleDispatchAllOffline}
+            disabled={dispatchAllBusy}
+            className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg bg-violet-500/20 text-violet-400 border border-violet-500/30 hover:bg-violet-500/30 disabled:opacity-50 transition-colors"
+            title="Dispatch all pending mods to offline workers"
+          >
+            {dispatchAllBusy ? <RefreshCw size={14} className="animate-spin" /> : <ArrowDownToLine size={14} />}
+            Dispatch All Offline
+          </button>
+        )}
         <button
           onClick={() => refetch()}
           disabled={isFetching}

@@ -71,7 +71,7 @@ def translate_all_worker(job, cfg, dry_run: bool = False, resume: bool = True,
                          scope: str = "all", status_filter: str = "all",
                          force: bool = False, backends=None, repo=None,
                          stats_mgr=None, reservation_mgr=None,
-                         translation_cache=None):
+                         translation_cache=None, dispatch_pool=None):
     """Translate all mods in mods_dir.
 
     scope:         "all" | "esp" | "mcm" | "bsa" | "swf" | "review"
@@ -134,7 +134,8 @@ def translate_all_worker(job, cfg, dry_run: bool = False, resume: bool = True,
                                     backends=backends, repo=repo,
                                     stats_mgr=stats_mgr,
                                     reservation_mgr=reservation_mgr,
-                                    translation_cache=translation_cache)
+                                    translation_cache=translation_cache,
+                                    dispatch_pool=dispatch_pool)
         except Exception as exc:
             job.add_log(f"FAILED: {exc}")
 
@@ -146,7 +147,7 @@ def _translate_mod_filtered(job, cfg, mod_name: str, scope: str = "all",
                              status_filter: str = "all", force: bool = False,
                              dry_run: bool = False, backends=None, repo=None,
                              stats_mgr=None, reservation_mgr=None,
-                             translation_cache=None):
+                             translation_cache=None, dispatch_pool=None):
     """Helper: translate a mod using translate_strings_worker with filter options.
 
     Used by translate_all_worker when scope/status_filter/force/backends are set.
@@ -168,7 +169,8 @@ def _translate_mod_filtered(job, cfg, mod_name: str, scope: str = "all",
                                  force=eff_force, backends=backends, repo=repo,
                                  stats_mgr=stats_mgr,
                                  reservation_mgr=reservation_mgr,
-                                 translation_cache=translation_cache)
+                                 translation_cache=translation_cache,
+                                 dispatch_pool=dispatch_pool)
 
 
 def apply_mod_worker(job, cfg, mod_name: str, dry_run: bool = False, repo=None,
@@ -256,7 +258,8 @@ def translate_strings_worker(job, cfg, mod_name: str,
                              params=None, force: bool = False,
                              backends=None, repo=None,
                              stats_mgr=None, reservation_mgr=None,
-                             translation_cache=None):
+                             translation_cache=None,
+                             dispatch_pool=None):
     """Thin shim — delegates to TranslatePipeline.
     Legacy force=True maps to TranslationMode.FORCE_ALL.
     """
@@ -292,6 +295,7 @@ def translate_strings_worker(job, cfg, mod_name: str,
         translation_cache = translation_cache,
         stats_mgr         = stats_mgr,
         global_dict       = global_dict,
+        dispatch_pool     = dispatch_pool,
     )
     pipeline.run(job, mod_name, scope=scope, mode=mode,
                  backends=backends, params=params, keys=keys)

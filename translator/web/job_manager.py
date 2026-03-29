@@ -51,6 +51,7 @@ class Job:
     string_updates: list[dict]          = field(default_factory=list)
     tokens_generated: int               = 0
     tps_avg:          float             = 0.0
+    waiting_on_jobs:  dict              = field(default_factory=dict)  # {owner_job_id: hash_count}
 
     def __post_init__(self):
         self._timing: list[float] = []       # timestamps of progress updates (for ETA)
@@ -71,6 +72,7 @@ class Job:
         d["tps_avg"]          = self.tps_avg
         # Include worker statuses so completed jobs retain their machine stats
         d["worker_updates"]   = list(self._worker_statuses.values())
+        d["waiting_on_jobs"]  = self.waiting_on_jobs
         return d
 
     def _elapsed(self) -> float:
@@ -424,6 +426,26 @@ class JobManager:
         })
         if len(job.string_updates) > 10000:
             job.string_updates = job.string_updates[-10000:]
+        self._notify(job)
+
+    def increment_progress_from_dispatch(self, job_id: str, string_update: dict) -> None:
+        """Called when a dispatch waiter receives a hash result from another job.
+
+        Appends the string update and increments progress.current atomically.
+        Thread-safe — called from the owner job's worker thread.
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.status not in (
+                JobStatus.RUNNING, JobStatus.PAUSED
+            ):
+                return
+            job.string_updates.append(string_update)
+            if len(job.string_updates) > 10000:
+                job.string_updates = job.string_updates[-10000:]
+            job.progress.current = min(
+                job.progress.current + 1, job.progress.total
+            )
         self._notify(job)
 
     def update_progress(self, job: Job, current: int, total: int,

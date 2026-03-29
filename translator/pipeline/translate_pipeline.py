@@ -57,6 +57,7 @@ class TranslatePipeline:
         translation_cache,
         stats_mgr,
         global_dict=None,
+        dispatch_pool=None,
     ):
         self._cfg              = cfg
         self._repo             = repo
@@ -65,6 +66,7 @@ class TranslatePipeline:
         self._translation_cache = translation_cache
         self._stats_mgr        = stats_mgr
         self._global_dict      = global_dict
+        self._dispatch_pool    = dispatch_pool
 
     def run(
         self,
@@ -98,9 +100,50 @@ class TranslatePipeline:
                        or mode == TranslationMode.FORCE_ALL]
             job.add_log(f"[DEBUG] After untranslatable filter: {len(strings)} strings")
 
-        # ── Steps 3 & 4: Skip reserved + acquire reservations ────────────────
-        _reservation_mgr = self._reservation_mgr
-        if _reservation_mgr and strings:
+        # ── Steps 3 & 4: Dispatch pool claim (or legacy reservations fallback) ──
+        _dispatch_pool   = self._dispatch_pool
+        _reservation_mgr = self._reservation_mgr if not _dispatch_pool else None
+        machine_label    = (backends[0][0] if backends else job.name)
+        claim            = None   # ClaimResult from dispatch pool
+        hash_map: dict   = {}     # hash → string_id (populated when dispatch_pool is active)
+        n_owned          = 0      # strings going to pool.run()
+
+        if _dispatch_pool and strings:
+            hash_map = {
+                s["string_hash"]: s["id"]
+                for s in strings
+                if s.get("string_hash")
+            }
+            hashless = [s for s in strings if not s.get("string_hash")]
+
+            if hash_map:
+                claim = _dispatch_pool.claim_batch(
+                    hash_map, job.id, mod_name, machine_label
+                )
+                if claim.waiting_on:
+                    job.add_log(
+                        f"[DISPATCH] {len(claim.waiting_on)} string(s) being translated by "
+                        f"other job(s) — registered as waiter"
+                    )
+                    # Track which jobs own hashes we're waiting for (UI dependency display)
+                    for owner_job_id in claim.waiting_on.values():
+                        job.waiting_on_jobs[owner_job_id] = (
+                            job.waiting_on_jobs.get(owner_job_id, 0) + 1
+                        )
+                if claim.cache_hits:
+                    job.add_log(
+                        f"[DISPATCH] {len(claim.cache_hits)} string(s) already done in dispatch pool"
+                    )
+
+            # Keep only owned strings for pool.run(); hashless strings are always owned
+            owned_hashes   = set(claim.owned) if claim else set()
+            strings = (
+                [s for s in strings if s.get("string_hash") in owned_hashes]
+                + hashless
+            )
+            n_owned = len(strings)
+
+        elif _reservation_mgr and strings:
             reserved_ids = _reservation_mgr.get_reserved_string_ids(mod_name)
             before = len(strings)
             strings = [s for s in strings if s.get("id") not in reserved_ids]
@@ -109,15 +152,43 @@ class TranslatePipeline:
 
             string_ids = [s["id"] for s in strings if s.get("id")]
             if string_ids:
-                machine_label = backends[0][0] if backends else job.name
                 acq = _reservation_mgr.acquire_batch(string_ids, machine_label, job.id)
                 if acq.already_taken:
                     job.add_log(f"Skipped {len(acq.already_taken)} strings reserved by another job")
                 acquired_set = set(acq.reserved)
                 strings = [s for s in strings if not s.get("id") or s["id"] in acquired_set]
+            n_owned = len(strings)
+        else:
+            n_owned = len(strings)
 
         try:
-            # ── Step 5: Cache lookup ──────────────────────────────────────────
+            # ── Step 5a: Apply dispatch pool cache hits ───────────────────────
+            # Hashes already 'done' in the pool by a previous/concurrent job.
+            # hash_map (hash → string_id) was built during the dispatch claim step above.
+            n_dispatch_cache = 0
+            if _dispatch_pool and claim and claim.cache_hits and hash_map:
+                for h, (cached_translation, cached_qs) in claim.cache_hits.items():
+                    sid = hash_map.get(h)
+                    if sid is None:
+                        continue
+                    row = self._repo.db.execute(
+                        "SELECT esp_name, key FROM strings WHERE id=?", (sid,)
+                    ).fetchone()
+                    if row:
+                        self._string_mgr.save_string(
+                            mod_name=mod_name, esp_name=row["esp_name"],
+                            key=row["key"], translation=cached_translation,
+                            original="", source="dispatch_cache", job_id=job.id,
+                            quality_score=cached_qs,
+                        )
+                        jm.add_string_update(
+                            job, row["key"], row["esp_name"],
+                            cached_translation, "translated", cached_qs,
+                            source="dispatch_cache",
+                        )
+                        n_dispatch_cache += 1
+
+            # ── Step 5b: TranslationCache lookup ─────────────────────────────
             if self._translation_cache and strings and mode != TranslationMode.FORCE_ALL:
                 before_cache = len(strings)
                 strings = self._apply_cache_hits(strings, jm, job, mod_name)
@@ -134,16 +205,20 @@ class TranslatePipeline:
                 if len(strings) != before_dict:
                     job.add_log(f"[DEBUG] Dict resolved {before_dict - len(strings)} strings; {len(strings)} remain")
 
-            if not strings:
+            n_waiting = len(claim.waiting_on) if claim else 0
+
+            if not strings and n_waiting == 0:
                 job.add_log(f"[DEBUG] 0 strings remain — exiting early (all resolved or none matched filter)")
                 jm.update_progress(job, 1, 1, "Done — all strings resolved from cache/dict")
                 job.result = f"All strings resolved from cache/dict for {mod_name}"
                 return
 
+            # total_all includes: strings going to pool + waiting on other jobs
             total = len(strings)
+            total_all = total + n_waiting + n_dispatch_cache
 
             # ── Step 7: Build context ─────────────────────────────────────────
-            jm.update_progress(job, 0, total, f"Building context for {mod_name}...")
+            jm.update_progress(job, n_dispatch_cache, total_all, f"Building context for {mod_name}...")
             mod_folder = self._cfg.paths.mods_dir / mod_name
             context = ContextBuilder().get_mod_context(mod_folder, force=False)
 
@@ -167,6 +242,25 @@ class TranslatePipeline:
 
             # ── Step 8: Dispatch to WorkerPool ───────────────────────────────
             # Steps 9-12 happen inside the on_string_done callback below.
+            # If we have no strings to translate (all are waiting on other jobs),
+            # skip the backends check and pool.run() entirely.
+            if not strings and n_waiting > 0:
+                job.add_log(
+                    f"All {n_waiting} string(s) are being translated by other jobs — waiting..."
+                )
+                from translator.web.job_manager import JobStatus
+                import time as _time
+                while True:
+                    if job.status in (JobStatus.CANCELLED, JobStatus.PAUSED, JobStatus.FAILED):
+                        return
+                    if _dispatch_pool.get_pending_waiters(job.id) == 0:
+                        break
+                    _time.sleep(2)
+                job.waiting_on_jobs.clear()
+                jm.update_progress(job, total_all, total_all, "Done")
+                job.result = f"All strings received via shared dispatch for {mod_name}"
+                return
+
             if not backends:
                 from translator.web.job_manager import JobStatus
                 job.status = JobStatus.PAUSED
@@ -228,10 +322,67 @@ class TranslatePipeline:
                     gd.add(s.get("original", ""), translation)
                     gd_dirty = True
 
+                # ── Dispatch pool: broadcast to waiters ───────────────────────
+                if _dispatch_pool and s.get("string_hash"):
+                    try:
+                        waiters = _dispatch_pool.complete_hash(
+                            s["string_hash"], translation,
+                            result.quality_score, job.id,
+                        )
+                        for w in waiters:
+                            # Look up esp_name + key for the waiter's string_id
+                            w_row = self._repo.db.execute(
+                                "SELECT esp_name, key FROM strings WHERE id=?",
+                                (w["string_id"],),
+                            ).fetchone()
+                            if w_row:
+                                try:
+                                    self._string_mgr.save_string(
+                                        mod_name=w["waiter_mod"],
+                                        esp_name=w_row["esp_name"],
+                                        key=w_row["key"],
+                                        translation=translation,
+                                        original=s.get("original", ""),
+                                        source="dispatch_shared",
+                                        job_id=w["waiter_job_id"],
+                                        quality_score=result.quality_score,
+                                    )
+                                except Exception as exc:
+                                    log.warning(
+                                        "dispatch waiter save failed %s/%s: %s",
+                                        w["waiter_mod"], w_row["key"], exc,
+                                    )
+                                jm.increment_progress_from_dispatch(
+                                    w["waiter_job_id"],
+                                    {
+                                        "key":           w_row["key"],
+                                        "esp":           w_row["esp_name"],
+                                        "translation":   translation,
+                                        "status":        "translated",
+                                        "quality_score": result.quality_score,
+                                        "source":        "dispatch_shared",
+                                        "machine_label": actual_label,
+                                    },
+                                )
+                            if self._stats_mgr:
+                                try:
+                                    self._stats_mgr.invalidate(w["waiter_mod"])
+                                except Exception:
+                                    pass
+                    except Exception as exc:
+                        log.warning(
+                            "complete_hash failed for %s: %s",
+                            s.get("string_hash", "?")[:8], exc,
+                        )
+
             def _on_status(statuses) -> None:
                 job._worker_statuses = {st.label: st.to_dict() for st in statuses}
 
             pool = WorkerPool(backends, chunk_size=10)
+
+            # on_progress uses n_dispatch_cache as offset so the bar reflects all strings
+            _offset = n_dispatch_cache
+
             pool_result = pool.run(
                 strings         = strings,
                 context         = context,
@@ -239,7 +390,7 @@ class TranslatePipeline:
                 force           = (mode == TranslationMode.FORCE_ALL),
                 on_string_done  = _on_string_done,
                 on_progress     = lambda done, tot: jm.update_progress(
-                    job, done, tot, f"Translating {done}/{tot}"),
+                    job, _offset + done, total_all, f"Translating {done}/{tot}"),
                 on_status       = _on_status,
                 should_stop     = lambda: job.status.value in ("cancelled", "paused"),
                 context_builder = _build_chunk_context,
@@ -265,7 +416,24 @@ class TranslatePipeline:
                 )
                 return
 
-            jm.update_progress(job, total, total, "Done")
+            # ── Wait for dispatch waiters (strings owned by concurrent jobs) ──
+            if _dispatch_pool:
+                import time as _time
+                n_remaining = _dispatch_pool.get_pending_waiters(job.id)
+                if n_remaining > 0:
+                    job.add_log(
+                        f"All owned strings translated. "
+                        f"Waiting for {n_remaining} shared string(s) from other job(s)..."
+                    )
+                    while True:
+                        if job.status in (JobStatus.CANCELLED, JobStatus.PAUSED, JobStatus.FAILED):
+                            return
+                        if _dispatch_pool.get_pending_waiters(job.id) == 0:
+                            break
+                        _time.sleep(2)
+                    job.waiting_on_jobs.clear()
+
+            jm.update_progress(job, total_all, total_all, "Done")
             if n_failed[0]:
                 job.result = (
                     f"Translated strings for {mod_name} "
@@ -279,8 +447,14 @@ class TranslatePipeline:
                 job.result = f"Translated strings for {mod_name}"
 
         finally:
-            # Always release reservations (even on cancel / exception)
-            if _reservation_mgr:
+            # Release dispatch pool slots (only 'translating' → 'queued'; 'done' stays as cache)
+            if _dispatch_pool:
+                try:
+                    _dispatch_pool.release_job(job.id)
+                except Exception as exc:
+                    log.warning("dispatch_pool.release_job failed: %s", exc)
+            elif _reservation_mgr:
+                # Legacy fallback
                 try:
                     _reservation_mgr.release_batch(job.id)
                 except Exception as exc:
@@ -319,6 +493,7 @@ class TranslatePipeline:
                 "rec_type":      r.get("rec_type") or "",
                 "field":         r.get("field_type") or "",
                 "idx":           r.get("field_index"),
+                "string_hash":   r.get("string_hash"),
                 "dict_match":    "",
             } for r in db_rows]
             job.add_log(f"Loaded {len(strings)} strings from SQLite for {mod_name}")
@@ -372,6 +547,7 @@ class TranslatePipeline:
                     "status": r.get("status") or "pending", "quality_score": r.get("quality_score"),
                     "form_id": r.get("form_id") or "", "rec_type": r.get("rec_type") or "",
                     "field": r.get("field_type") or "", "idx": r.get("field_index"),
+                    "string_hash": r.get("string_hash"),
                     "dict_match": "",
                 } for r in db_rows]
                 job.add_log(f"Bootstrapped SQLite: {sum(len(v) for v in by_esp.values())} strings")

@@ -468,6 +468,7 @@ def _create_translate_mod_job(jm, cfg, mod_name: str, options: dict):
 
     reservation_mgr   = current_app.config.get("RESERVATION_MGR")
     translation_cache = current_app.config.get("TRANSLATION_CACHE")
+    dispatch_pool     = current_app.config.get("DISPATCH_POOL")
 
     def run(job):
         if skipped:
@@ -484,7 +485,8 @@ def _create_translate_mod_job(jm, cfg, mod_name: str, options: dict):
                                  force=force, backends=backends, repo=repo,
                                  stats_mgr=stats_mgr,
                                  reservation_mgr=reservation_mgr,
-                                 translation_cache=translation_cache)
+                                 translation_cache=translation_cache,
+                                 dispatch_pool=dispatch_pool)
         post_job_hook(scanner, stats_mgr, mod_name)
 
     return jm.create(
@@ -503,6 +505,7 @@ def _create_batch_job(jm, cfg, mod_names: list, options: dict):
     scanner           = current_app.config.get("SCANNER")
     reservation_mgr   = current_app.config.get("RESERVATION_MGR")
     translation_cache = current_app.config.get("TRANSLATION_CACHE")
+    dispatch_pool     = current_app.config.get("DISPATCH_POOL")
 
     backends, skipped = _resolve_backends(cfg, machines)
 
@@ -526,7 +529,8 @@ def _create_batch_job(jm, cfg, mod_names: list, options: dict):
                                      force=force, backends=backends, repo=repo,
                                      stats_mgr=stats_mgr,
                                      reservation_mgr=reservation_mgr,
-                                     translation_cache=translation_cache)
+                                     translation_cache=translation_cache,
+                                     dispatch_pool=dispatch_pool)
             post_job_hook(scanner, stats_mgr, mod_name)
         jm.update_progress(job, total, total, "Done")
 
@@ -592,6 +596,7 @@ def _create_translate_all_job(jm, cfg, options: dict):
     scanner           = current_app.config.get("SCANNER")
     reservation_mgr   = current_app.config.get("RESERVATION_MGR")
     translation_cache = current_app.config.get("TRANSLATION_CACHE")
+    dispatch_pool     = current_app.config.get("DISPATCH_POOL")
 
     def run(job):
         if skipped:
@@ -602,7 +607,8 @@ def _create_translate_all_job(jm, cfg, options: dict):
                              force=force, backends=backends, repo=repo,
                              stats_mgr=stats_mgr,
                              reservation_mgr=reservation_mgr,
-                             translation_cache=translation_cache)
+                             translation_cache=translation_cache,
+                             dispatch_pool=dispatch_pool)
         post_job_hook(scanner, stats_mgr)  # None → recompute all mods
 
     scope_label = f" [{scope.upper()}]" if scope != "all" else ""
@@ -671,6 +677,7 @@ def _create_translate_strings_job(jm, cfg, mod_name: str,
     scanner                   = current_app.config.get("SCANNER")
     reservation_mgr           = current_app.config.get("RESERVATION_MGR")
     translation_cache         = current_app.config.get("TRANSLATION_CACHE")
+    dispatch_pool             = current_app.config.get("DISPATCH_POOL")
 
     def run(job):
         if skipped:
@@ -687,7 +694,8 @@ def _create_translate_strings_job(jm, cfg, mod_name: str,
                                  params=params, force=force, backends=backends,
                                  repo=repo, stats_mgr=stats_mgr,
                                  reservation_mgr=reservation_mgr,
-                                 translation_cache=translation_cache)
+                                 translation_cache=translation_cache,
+                                 dispatch_pool=dispatch_pool)
         post_job_hook(scanner, stats_mgr, mod_name)
 
     if keys:

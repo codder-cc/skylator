@@ -51,6 +51,7 @@ export interface Job {
   tokens_generated?: number
   tps_avg?: number
   offline_job_ids?: string[]
+  waiting_on_jobs?: Record<string, number>
 }
 
 export interface ModFileInfo {

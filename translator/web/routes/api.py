@@ -1234,11 +1234,12 @@ def workers_offline_results(label: str):
     from translator.data_manager.string_manager import StringManager
     from pathlib import Path
 
-    registry  = current_app.config.get("WORKER_REGISTRY")
-    jm        = current_app.config.get("JOB_MANAGER")
-    repo      = current_app.config.get("STRING_REPO")
-    cfg       = current_app.config.get("TRANSLATOR_CFG")
-    stats_mgr = current_app.config.get("STATS_MGR")
+    registry      = current_app.config.get("WORKER_REGISTRY")
+    jm            = current_app.config.get("JOB_MANAGER")
+    repo          = current_app.config.get("STRING_REPO")
+    cfg           = current_app.config.get("TRANSLATOR_CFG")
+    stats_mgr     = current_app.config.get("STATS_MGR")
+    dispatch_pool = current_app.config.get("DISPATCH_POOL")
 
     if registry is None or jm is None:
         return jsonify({"ok": False, "error": "Not initialized"}), 500
@@ -1296,6 +1297,57 @@ def workers_offline_results(label: str):
                 job, key, esp_name, translation, status,
                 quality_score=quality, source="ai", machine_label=label,
             )
+
+        # Broadcast to dispatch waiters (hashes shared across mods)
+        string_hash = r.get("string_hash")
+        if dispatch_pool and string_hash and translation and host_job_id:
+            try:
+                waiters = dispatch_pool.complete_hash(
+                    string_hash, translation, quality, host_job_id
+                )
+                for w in waiters:
+                    if repo is not None and cfg is not None:
+                        w_row = repo.db.execute(
+                            "SELECT esp_name, key FROM strings WHERE id=?",
+                            (w["string_id"],),
+                        ).fetchone()
+                        if w_row:
+                            try:
+                                string_mgr.save_string(
+                                    mod_name=w["waiter_mod"],
+                                    esp_name=w_row["esp_name"],
+                                    key=w_row["key"],
+                                    translation=translation,
+                                    original=r.get("original") or "",
+                                    source="dispatch_shared",
+                                    job_id=w["waiter_job_id"],
+                                    quality_score=quality,
+                                )
+                            except Exception as exc:
+                                log.warning(
+                                    "offline dispatch waiter save failed %s/%s: %s",
+                                    w["waiter_mod"], w_row["key"], exc,
+                                )
+                    if jm is not None:
+                        jm.increment_progress_from_dispatch(
+                            w["waiter_job_id"],
+                            {
+                                "key":           r.get("key") or "",
+                                "esp":           r.get("esp_name") or "",
+                                "translation":   translation,
+                                "status":        status,
+                                "quality_score": quality,
+                                "source":        "dispatch_shared",
+                                "machine_label": label,
+                            },
+                        )
+                    if stats_mgr:
+                        try:
+                            stats_mgr.invalidate(w["waiter_mod"])
+                        except Exception:
+                            pass
+            except Exception as exc:
+                log.warning("offline complete_hash failed for %s: %s", string_hash[:8], exc)
 
     # Update progress tracking
     registry.update_offline_progress(offline_job_id, done_delta=len(results))

@@ -71,6 +71,36 @@ MIGRATION_STEPS: list[tuple[int, str, list[str]]] = [
                WHERE pending > 0""",
         ],
     ),
+    (
+        7,
+        "Add hash-based dispatch pool: string_dispatch + dispatch_waiters",
+        [
+            """CREATE TABLE IF NOT EXISTS string_dispatch (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                string_hash   TEXT    NOT NULL UNIQUE,
+                status        TEXT    NOT NULL DEFAULT 'queued',
+                owner_job_id  TEXT,
+                owner_machine TEXT,
+                translation   TEXT,
+                quality_score INTEGER,
+                claimed_at    REAL,
+                completed_at  REAL
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_dispatch_hash   ON string_dispatch(string_hash)",
+            "CREATE INDEX IF NOT EXISTS idx_dispatch_job    ON string_dispatch(owner_job_id)",
+            "CREATE INDEX IF NOT EXISTS idx_dispatch_status ON string_dispatch(status)",
+            """CREATE TABLE IF NOT EXISTS dispatch_waiters (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                string_hash    TEXT    NOT NULL,
+                waiter_job_id  TEXT    NOT NULL,
+                waiter_mod     TEXT    NOT NULL,
+                string_id      INTEGER NOT NULL,
+                UNIQUE(string_hash, string_id)
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_waiters_hash ON dispatch_waiters(string_hash)",
+            "CREATE INDEX IF NOT EXISTS idx_waiters_job  ON dispatch_waiters(waiter_job_id)",
+        ],
+    ),
 ]
 
 

@@ -49,13 +49,16 @@ def create_app(config_path: Path | None = None) -> Flask:
     app.config["TRANSLATION_DB"] = _db
     app.config["STRING_REPO"] = _repo
 
-    # ── Init ReservationManager ──────────────────────────────────────────────
+    # ── Init ReservationManager (legacy — kept for backward compat) ─────────
     from translator.reservation.reservation_manager import ReservationManager
     _reservation_mgr = ReservationManager(_db, ttl_seconds=300)
-    # On startup, release orphaned reservations from the previous session —
-    # no jobs survive a server restart so any "active" rows are stale.
     _reservation_mgr.release_all_active()
     app.config["RESERVATION_MGR"] = _reservation_mgr
+
+    # ── Init HashDispatchPool ────────────────────────────────────────────────
+    from translator.reservation.hash_dispatch_pool import HashDispatchPool
+    _dispatch_pool = HashDispatchPool(_db)
+    app.config["DISPATCH_POOL"] = _dispatch_pool
 
     # ── Init TranslationCache ────────────────────────────────────────────────
     from translator.data_manager.translation_cache import TranslationCache
@@ -172,11 +175,18 @@ def create_app(config_path: Path | None = None) -> Flask:
     ).start()
 
     # ── Init job manager ────────────────────────────────────────────────────
-    from translator.web.job_manager import JobManager
+    from translator.web.job_manager import JobManager, JobStatus
     jm = JobManager.get()
     jobs_file = ROOT / "cache/jobs.json"
     jm.set_persist_path(jobs_file)
     app.config["JOB_MANAGER"] = jm
+
+    # Release dispatch slots from dead jobs; keep OFFLINE_DISPATCHED owners alive
+    _offline_job_ids = {
+        jid for jid, j in jm._jobs.items()
+        if j.status == JobStatus.OFFLINE_DISPATCHED
+    }
+    _dispatch_pool.release_all_translating(keep_job_ids=_offline_job_ids)
 
     # ── Init worker registry (reverse-connected remote workers) ─────────────
     from translator.web.worker_registry import WorkerRegistry

@@ -652,6 +652,33 @@ function JobDetailPage() {
         </div>
       )}
 
+      {/* Shared strings — waiting on other jobs */}
+      {Object.keys(job.waiting_on_jobs ?? {}).length > 0 && (
+        <div className="card p-4 border border-accent/30 bg-accent/5">
+          <div className="text-xs font-semibold text-accent uppercase tracking-wide mb-2 flex items-center gap-2">
+            <Hash size={12} />
+            Shared Strings
+          </div>
+          <p className="text-sm text-text-muted mb-2">
+            {Object.values(job.waiting_on_jobs!).reduce((a, b) => a + b, 0)} string(s) being translated by other job(s):
+          </p>
+          <ul className="space-y-1">
+            {Object.entries(job.waiting_on_jobs!).map(([ownerJobId, count]) => (
+              <li key={ownerJobId} className="text-sm flex items-center gap-2">
+                <Link
+                  to="/jobs/$jobId"
+                  params={{ jobId: ownerJobId }}
+                  className="font-mono text-accent hover:underline"
+                >
+                  {ownerJobId.slice(0, 8)}…
+                </Link>
+                <span className="text-text-muted">— {count} shared hash{count !== 1 ? 'es' : ''}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Progress bar */}
       {(job.status === 'running' || job.status === 'offline_dispatched' || (job.pct > 0 && job.pct < 100)) && job.progress && (
         <div className="card p-4">

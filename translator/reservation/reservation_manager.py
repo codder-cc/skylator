@@ -102,6 +102,22 @@ class ReservationManager:
             log.debug("release_batch job=%s: released %d reservations", job_id, n)
         return n
 
+    def release_all_active(self) -> int:
+        """Release every active reservation regardless of TTL.
+        Called on server startup to clear orphaned reservations from a
+        previous session that was killed before finally blocks could run.
+        Returns number of rows updated.
+        """
+        conn = self._db._connect()
+        conn.execute(
+            "UPDATE string_reservations SET status='released' WHERE status='active'",
+        )
+        n = conn.execute("SELECT changes()").fetchone()[0]
+        conn.commit()
+        if n:
+            log.info("release_all_active: released %d orphaned reservations on startup", n)
+        return n
+
     # ── Expiry ───────────────────────────────────────────────────────────────
 
     def expire_stale(self) -> int:
@@ -122,16 +138,17 @@ class ReservationManager:
     # ── Query ─────────────────────────────────────────────────────────────────
 
     def get_reserved_string_ids(self, mod_name: str) -> set[int]:
-        """Return the set of string_ids with active reservations for this mod.
+        """Return the set of string_ids with active, non-expired reservations for this mod.
         Used by TranslatePipeline to skip strings already claimed by another job.
         """
+        now = time.time()
         rows = self._db.execute(
             """
             SELECT sr.string_id
             FROM string_reservations sr
             JOIN strings s ON sr.string_id = s.id
-            WHERE s.mod_name = ? AND sr.status = 'active'
+            WHERE s.mod_name = ? AND sr.status = 'active' AND sr.expires_at > ?
             """,
-            (mod_name,),
+            (mod_name, now),
         ).fetchall()
         return {r[0] for r in rows}

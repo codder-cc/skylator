@@ -52,6 +52,9 @@ def create_app(config_path: Path | None = None) -> Flask:
     # ── Init ReservationManager ──────────────────────────────────────────────
     from translator.reservation.reservation_manager import ReservationManager
     _reservation_mgr = ReservationManager(_db, ttl_seconds=300)
+    # On startup, release orphaned reservations from the previous session —
+    # no jobs survive a server restart so any "active" rows are stale.
+    _reservation_mgr.release_all_active()
     app.config["RESERVATION_MGR"] = _reservation_mgr
 
     # ── Init TranslationCache ────────────────────────────────────────────────

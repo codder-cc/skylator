@@ -93,7 +93,7 @@ class OfflineTranslateRunner:
         from prompt.parser   import parse_numbered_output
         from models.inference_params import InferenceParams
 
-        strings         = self._data.get("strings") or []
+        raw_strings     = self._data.get("strings") or []
         context         = self._data.get("context") or ""
         mods_context: dict = self._data.get("mods_context") or {}
         src_lang        = self._data.get("src_lang") or "English"
@@ -108,17 +108,35 @@ class OfflineTranslateRunner:
 
         infer_params = InferenceParams.from_dict(raw_params)
 
+        # Build mod-aware batch list: each entry is (batch_strings, mod_context).
+        # Strings from different mods are never mixed into the same batch so that
+        # every prompt receives the correct Nexus summary for its mod.
+        batches: list[tuple[list, str]] = []
+        if mods_context:
+            from collections import OrderedDict
+            mod_groups: OrderedDict[str, list] = OrderedDict()
+            for s in raw_strings:
+                mn = s.get("mod_name") or ""
+                mod_groups.setdefault(mn, []).append(s)
+            for mn, group in mod_groups.items():
+                mod_ctx = mods_context.get(mn) or context
+                for j in range(0, len(group), batch_size):
+                    batches.append((group[j: j + batch_size], mod_ctx))
+        else:
+            for j in range(0, len(raw_strings), batch_size):
+                batches.append((raw_strings[j: j + batch_size], context))
+
         buffer: list[dict] = []
-        n_total = len(strings)
+        n_total = sum(len(b) for b, _ in batches)
         log.info("OfflineTranslateRunner: starting %d strings, batch_size=%d",
                  n_total, batch_size)
 
-        i = 0
-        while i < n_total and not self._stop:
-            batch = strings[i: i + batch_size]
+        for batch, batch_ctx in batches:
+            if self._stop:
+                break
             originals = [s.get("original") or "" for s in batch]
 
-            # Build TM block for this chunk
+            # Build TM block for this batch
             tm_lines = []
             for orig in originals:
                 for word in orig.split():
@@ -128,17 +146,7 @@ class OfflineTranslateRunner:
                             tm_lines.append(entry)
             tm_block = ("Translation memory:\n" + "\n".join(tm_lines) + "\n") if tm_lines else ""
 
-            # Per-mod context: for multi-mod packages the host sends a mods_context
-            # dict keyed by mod_name; fall back to the shared context otherwise.
-            if mods_context:
-                batch_mod = batch[0].get("mod_name") or "" if batch else ""
-                batch_ctx = mods_context.get(batch_mod) or context
-            else:
-                batch_ctx = context
-
-            full_context = batch_ctx
-            if tm_block:
-                full_context = (full_context + "\n" + tm_block).strip()
+            full_context = (batch_ctx + "\n" + tm_block).strip() if tm_block else batch_ctx
 
             # Build terminology block (pass pre-built one from host + TM)
             full_term = terminology
@@ -185,8 +193,6 @@ class OfflineTranslateRunner:
                     "quality_score": qs,
                 })
                 self.done_count += 1
-
-            i += batch_size
 
             # Deliver incrementally every DELIVER_EVERY strings
             if len(buffer) >= DELIVER_EVERY:

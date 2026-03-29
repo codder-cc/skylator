@@ -239,7 +239,7 @@ function BatchModal({ onClose }: BatchModalProps) {
   const createMut = useMutation({
     mutationFn: () =>
       jobsApi.create({
-        job_type: 'translate_all',
+        type: 'translate_all',
         options: { scope, force, resume, machines, ...(offline && machines.length > 0 && { offline: true }) },
       }),
     onSuccess: () => {

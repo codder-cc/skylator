@@ -445,10 +445,6 @@ def dispatch_offline_from_job(job_id: str):
     if job.status != JobStatus.RUNNING:
         return jsonify({"error": "Job is not running"}), 400
 
-    mod_name = job.params.get("mod_name")
-    if not mod_name:
-        return jsonify({"error": "Cannot dispatch offline: no mod_name in job params"}), 400
-
     data     = request.get_json() or {}
     machines = data.get("machines") or job.params.get("assigned_machines") or []
     if not machines:
@@ -463,14 +459,29 @@ def dispatch_offline_from_job(job_id: str):
     try:
         from translator.models.inference_params import InferenceParams
         inf_params = InferenceParams.from_dict(job.params.get("params") or {})
-        new_job = _create_offline_translate_job(
-            jm, cfg,
-            mod_name = mod_name,
-            keys     = job.params.get("keys"),
-            scope    = job.params.get("scope", "all"),
-            params   = inf_params,
-            machines = machines,
-        )
+
+        mod_name = job.params.get("mod_name")
+        if mod_name:
+            # Single-mod job (translate_strings / translate_mod)
+            new_job = _create_offline_translate_job(
+                jm, cfg,
+                mod_name = mod_name,
+                keys     = job.params.get("keys"),
+                scope    = job.params.get("scope", "all"),
+                params   = inf_params,
+                machines = machines,
+            )
+        else:
+            # translate_all job — collect all pending mods and dispatch as multi-mod offline
+            stats_mgr = current_app.config.get("STATS_MGR")
+            resume    = job.params.get("resume", True)
+            mod_names = _collect_all_pending_mod_names(cfg, stats_mgr, resume)
+            if not mod_names:
+                return jsonify({"error": "No pending mods found to dispatch offline"}), 400
+            job.add_log(f"Collecting {len(mod_names)} pending mod(s) for offline dispatch")
+            new_job = _create_offline_translate_mods_job(
+                jm, cfg, mod_names, params=inf_params, machines=machines,
+            )
     except Exception as exc:
         log.error("dispatch-offline: failed to create offline job: %s", exc)
         return jsonify({"error": str(exc)}), 500
@@ -638,16 +649,57 @@ def _resolve_backends(cfg, machines: list | None):
     return (result if result else None), skipped
 
 
+def _collect_all_pending_mod_names(cfg, stats_mgr, resume: bool) -> list[str]:
+    """Return ordered list of mod folder names to process for translate_all.
+
+    Mirrors the resume / done-set logic in translate_all_worker so that offline
+    dispatch skips the same mods that the online worker would skip.
+    """
+    from pathlib import Path as _Path
+    done: set[str] = set()
+    if resume and stats_mgr:
+        try:
+            all_stats = stats_mgr.get_all_stats()
+            done = {name for name, st in all_stats.items() if st.status == "done"}
+        except Exception:
+            pass
+    if resume and not done:
+        done_file = cfg.paths.translation_cache.parent / "translated_mods.txt"
+        if done_file.exists():
+            done = set(done_file.read_text(encoding="utf-8").splitlines())
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for mods_dir in cfg.paths.mods_dirs:
+        if not mods_dir.is_dir():
+            continue
+        for d in sorted(mods_dir.iterdir()):
+            if d.is_dir() and d.name not in seen:
+                seen.add(d.name)
+                if d.name not in done:
+                    result.append(d.name)
+    return result
+
+
 def _create_translate_all_job(jm, cfg, options: dict):
-    dry_run           = options.get("dry_run", False)
-    resume            = options.get("resume", True)
-    scope             = options.get("scope", "all")
-    status_filter     = options.get("status_filter", "all")
-    force             = options.get("force", False)
-    machines          = options.get("machines")    # list of labels or None
+    dry_run       = options.get("dry_run", False)
+    resume        = options.get("resume", True)
+    scope         = options.get("scope", "all")
+    status_filter = options.get("status_filter", "all")
+    force         = options.get("force", False)
+    machines      = options.get("machines")    # list of labels or None
+    offline       = options.get("offline", False)
+    stats_mgr     = current_app.config.get("STATS_MGR")
+
+    # Offline path: collect pending mods now and dispatch as a multi-mod offline job
+    if offline and machines:
+        mod_names = _collect_all_pending_mod_names(cfg, stats_mgr, resume)
+        if not mod_names:
+            raise ValueError("No pending mods found to dispatch offline")
+        return _create_offline_translate_mods_job(jm, cfg, mod_names, machines=machines)
+
     backends, skipped = _resolve_backends(cfg, machines)
     repo              = current_app.config.get("STRING_REPO")
-    stats_mgr         = current_app.config.get("STATS_MGR")
     scanner           = current_app.config.get("SCANNER")
     reservation_mgr   = current_app.config.get("RESERVATION_MGR")
     translation_cache = current_app.config.get("TRANSLATION_CACHE")

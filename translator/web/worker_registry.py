@@ -88,6 +88,8 @@ class WorkerRegistry:
         self._offline_jobs: dict[str, dict] = {}
         # Count of completed workers per host job: host_job_id → {total_workers, done_workers}
         self._offline_host_jobs: dict[str, dict] = {}
+        # Chunk IDs that were cancelled before the worker polled them
+        self._cancelled_chunks: set[str] = set()
         # Persistent package storage: packages survive host restarts
         self._persist_dir: Path | None = persist_dir
         if persist_dir:
@@ -236,15 +238,37 @@ class WorkerRegistry:
 
     def dequeue_chunk(self, label: str, timeout: float = 15.0) -> dict | None:
         """Called by the GET /api/workers/<label>/chunk endpoint.
-        Blocks up to `timeout` seconds waiting for work; returns None on timeout."""
+        Blocks up to `timeout` seconds waiting for work; returns None on timeout.
+        Skips chunks whose chunk_id was cancelled before the worker polled."""
+        import time as _time
         with self._lock:
             if label not in self._work_queues:
                 self._work_queues[label] = queue.Queue()
             q = self._work_queues[label]
-        try:
-            return q.get(timeout=timeout)
-        except queue.Empty:
-            return None
+        deadline = _time.monotonic() + timeout
+        while True:
+            remaining = deadline - _time.monotonic()
+            if remaining <= 0:
+                return None
+            try:
+                chunk = q.get(timeout=min(remaining, 1.0))
+            except queue.Empty:
+                if _time.monotonic() >= deadline:
+                    return None
+                continue
+            chunk_id = chunk.get("chunk_id", "")
+            with self._lock:
+                cancelled = chunk_id in self._cancelled_chunks
+                if cancelled:
+                    self._cancelled_chunks.discard(chunk_id)
+            if cancelled:
+                continue  # silently drop and wait for the next chunk
+            return chunk
+
+    def cancel_queued_chunk(self, chunk_id: str) -> None:
+        """Mark a chunk_id as cancelled so it is silently dropped when dequeued."""
+        with self._lock:
+            self._cancelled_chunks.add(chunk_id)
 
     # ── Offline package persistence ───────────────────────────────────────────
 

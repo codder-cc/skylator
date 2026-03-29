@@ -397,6 +397,10 @@ def dispatch_back(job_id: str):
     all_done = False
     for offline_job_id, label in force_complete:
         job.add_log(f"Force-completing {label} — package was lost or not delivered")
+        # Cancel the in-memory queue chunk so the worker silently drops it if it polls
+        oj_rec = registry.get_offline_job(offline_job_id)
+        if oj_rec and oj_rec.get("chunk_id"):
+            registry.cancel_queued_chunk(oj_rec["chunk_id"])
         registry.delete_offline_package(offline_job_id)
         all_done = registry.finish_offline_job(offline_job_id)
 

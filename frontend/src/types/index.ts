@@ -158,6 +158,7 @@ export interface WorkerInfo {
   ota_restart_at?: number
   offline_jobs?: {
     offline_job_id: string
+    host_job_id: string
     total: number
     done: number
     tps: number

@@ -806,6 +806,7 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange,
             const isLost    = state === 'lost'
             const isQueued  = state === 'queued'
             const isDone    = state === 'done'
+            const isActive  = !isLost && !isQueued && !isDone
             return (
               <div key={oj.offline_job_id} className="mt-1 space-y-0.5">
                 <div className={cn(
@@ -828,11 +829,14 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange,
                      isDone   ? 'Done'   : 'Offline'}
                     {': '}{oj.done}/{oj.total} strings
                   </span>
-                  {oj.tps > 0 && !isLost && !isQueued && (
+                  {oj.tps > 0 && isActive && (
                     <span className="text-text-muted">{oj.tps.toFixed(1)} tok/s</span>
                   )}
+                  {oj.host_job_id && !isDone && (
+                    <DispatchBackButton hostJobId={oj.host_job_id} />
+                  )}
                 </div>
-                {oj.current_text && !isLost && !isQueued && (
+                {oj.current_text && isActive && (
                   <div className="text-[9px] text-text-muted/70 truncate pl-3" title={oj.current_text}>
                     ↳ {oj.current_text}
                   </div>
@@ -1036,6 +1040,29 @@ function HostOtaCard() {
         )}
       </div>
     </div>
+  )
+}
+
+// ── Dispatch Back (cancel offline job) button ─────────────────────────────────
+function DispatchBackButton({ hostJobId }: { hostJobId: string }) {
+  const qc  = useQueryClient()
+  const mut = useMutation({
+    mutationFn: () => jobsApi.dispatchBack(hostJobId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.workers() })
+      qc.invalidateQueries({ queryKey: QK.jobs() })
+    },
+  })
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); mut.mutate() }}
+      disabled={mut.isPending || mut.isSuccess}
+      title="Cancel offline job (flush partial results)"
+      className="ml-auto flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-medium bg-red-500/15 text-red-400 border border-red-500/25 hover:bg-red-500/25 disabled:opacity-40 transition-colors"
+    >
+      {mut.isPending ? <RefreshCw size={8} className="animate-spin" /> : '✕'}
+      {mut.isSuccess ? 'Cancelled' : 'Cancel'}
+    </button>
   )
 }
 

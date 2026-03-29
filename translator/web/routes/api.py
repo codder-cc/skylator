@@ -1143,7 +1143,9 @@ def workers_list():
         for oj in (d.get("offline_jobs") or []):
             ojid = oj.get("offline_job_id", "")
             rec  = host_oj_map.get(ojid, {})
-            merged.append({**oj, "worker_state": rec.get("worker_state", "running")})
+            merged.append({**oj,
+                            "worker_state": rec.get("worker_state", "running"),
+                            "host_job_id":  rec.get("host_job_id", "")})
             reported_ids.add(ojid)
         # Add jobs not currently reported by remote (queued / lost / done)
         for ojid, rec in host_oj_map.items():
@@ -1158,6 +1160,7 @@ def workers_list():
                 "tps":            0.0,
                 "current_text":   rec.get("current_text", ""),
                 "worker_state":   rec.get("worker_state", "queued"),
+                "host_job_id":    rec.get("host_job_id", ""),
             })
         d["offline_jobs"] = merged
         result.append(d)

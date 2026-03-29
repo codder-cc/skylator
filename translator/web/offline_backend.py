@@ -152,7 +152,7 @@ def dispatch(
         offline_job_ids.append(offline_job_id)
         job.add_log(
             f"Package queued for {label} ({len(remote_strings)} strings) — "
-            f"will be delivered when worker connects/finishes current work"
+            f"worker will pick it up on next poll (≤15 s if online, or when it reconnects)"
         )
 
     if not offline_job_ids:
@@ -280,7 +280,7 @@ def dispatch_multi(
         offline_job_ids.append(offline_job_id)
         job.add_log(
             f"Package queued for {label} ({len(remote_strings)} strings, multi-mod) — "
-            f"will be delivered when worker connects/finishes current work"
+            f"worker will pick it up on next poll (≤15 s if online, or when it reconnects)"
         )
 
     if not offline_job_ids:

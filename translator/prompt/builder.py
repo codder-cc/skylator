@@ -5,6 +5,7 @@ Produces numbered-list prompts compatible with parse_numbered_output().
 
 from __future__ import annotations
 import json
+import threading
 from pathlib import Path
 
 from translator.config import get_config
@@ -75,16 +76,87 @@ def _preserve_note(preserve_tokens: list[str]) -> str:
 _TM_MAX_ENTRY_CHARS = 80   # cap both sides of a TM entry to avoid long dialogue bloat
 
 
+class TranslationMemory:
+    """
+    Word-indexed translation memory for fast, scalable per-chunk TM lookup.
+
+    Complexity:
+        add()         → O(words_in_orig) amortised
+        build_block() → O(unique_words_in_query)   — constant regardless of TM size
+        vs the old approach: O(all_pairs) per chunk
+
+    Thread-safe: shared across WorkerPool threads without per-chunk copying.
+
+    Caps:
+        MAX_ENTRY_CHARS — skip entries where either side is longer (avoids bloat)
+        MAX_ENTRIES     — total cap so a 10k-string mod doesn't eat unbounded RAM
+    """
+
+    MAX_ENTRY_CHARS = 80
+    MAX_ENTRIES     = 2000
+
+    def __init__(self) -> None:
+        self._lock:  threading.Lock       = threading.Lock()
+        self._pairs: dict[str, str]       = {}  # orig → trans
+        self._index: dict[str, list[str]] = {}  # word → [orig, ...]
+
+    def add(self, orig: str, trans: str) -> None:
+        """Add a pair.  No-op if too long, identical, or cap reached."""
+        if (not orig or not trans
+                or orig == trans
+                or len(orig)  > self.MAX_ENTRY_CHARS
+                or len(trans) > self.MAX_ENTRY_CHARS):
+            return
+        with self._lock:
+            if orig in self._pairs or len(self._pairs) >= self.MAX_ENTRIES:
+                return
+            self._pairs[orig] = trans
+            for w in orig.lower().split():
+                if len(w) > 2:
+                    self._index.setdefault(w, []).append(orig)
+
+    def build_block(self, current_texts: list[str], max_entries: int = 10) -> str:
+        """Return a formatted TM block for prompt injection.
+
+        Only includes entries that share words with current_texts,
+        ranked by word-overlap score, capped at max_entries.
+        """
+        if not self._pairs:
+            return ""
+
+        query: set[str] = set()
+        for t in current_texts:
+            query.update(w.lower() for w in t.split() if len(w) > 2)
+        if not query:
+            return ""
+
+        scores: dict[str, int] = {}
+        with self._lock:
+            for w in query:
+                for orig in self._index.get(w, []):
+                    scores[orig] = scores.get(orig, 0) + 1
+            if not scores:
+                return ""
+            top = sorted(scores, key=lambda k: -scores[k])[:max_entries]
+            lines = [f"  {o} → {self._pairs[o]}" for o in top if o in self._pairs]
+
+        if not lines:
+            return ""
+        return "Reference translations (for consistency):\n" + "\n".join(lines)
+
+    def __len__(self) -> int:
+        return len(self._pairs)
+
+
 def build_tm_block(
     pairs: dict[str, str],
     current_texts: list[str],
     max_entries: int = 10,
 ) -> str:
     """
-    Build a translation memory (TM) block from already-translated pairs.
-
-    Only includes entries with non-zero word-overlap with current_texts,
-    capped at max_entries.  Long entries are skipped to avoid token bloat.
+    Stateless helper: build a TM block from a plain dict snapshot.
+    Used by translate-one (single-string) and tests.
+    For bulk jobs use TranslationMemory which avoids per-chunk O(N) scans.
     """
     if not pairs:
         return ""
@@ -95,7 +167,6 @@ def build_tm_block(
 
     relevant: list[tuple[str, str, int]] = []
     for orig, trans in pairs.items():
-        # Skip very long strings — they're expensive and rarely help consistency
         if len(orig) > _TM_MAX_ENTRY_CHARS or len(trans) > _TM_MAX_ENTRY_CHARS:
             continue
         score = len(set(w.lower() for w in orig.split()) & query_words)

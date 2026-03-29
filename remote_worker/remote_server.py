@@ -289,6 +289,11 @@ class ServerState:
         self._model_lock: asyncio.Lock   = None   # created in lifespan
         # [FIX #9, #10] Persistent async HTTP client — created in lifespan
         self.http_client = None
+        # Offline translate state
+        self.offline_job: dict | None = None
+        self.offline_job_runner = None   # OfflineTranslateRunner | None
+        self.offline_pending_results: list = []
+        self.offline_pending_done: bool = False
 
     @property
     def tps_avg(self) -> float:
@@ -837,6 +842,19 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
             # [FIX #8] Refresh free memory before every heartbeat
             state.refresh_free_memory()
 
+            # Build offline_jobs field for heartbeat
+            if state.offline_job:
+                runner = state.offline_job_runner
+                offline_jobs_payload = [{
+                    "offline_job_id": state.offline_job.get("offline_job_id", ""),
+                    "total":          len(state.offline_job.get("strings") or []),
+                    "done":           runner.done_count if runner else 0,
+                    "tps":            state.tps_last,
+                    "current_text":   runner.current_text if runner else "",
+                }]
+            else:
+                offline_jobs_payload = []
+
             r = await state.http_client.post(
                 f"{host_url.rstrip('/')}/api/workers/heartbeat",
                 json={
@@ -846,6 +864,7 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
                     "models":       _get_cached_models(),
                     "hardware":     state.hardware,
                     "commit":       _get_git_commit(),
+                    "offline_jobs": offline_jobs_payload,
                     "stats": {
                         "tps_avg":        state.tps_avg,
                         "tps_last":       state.tps_last,
@@ -867,11 +886,83 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
                     _async_register(state.http_client, host_url, my_url, caps, state)
                 )
             needs_register = False
+            # Flush any results buffered while host was unreachable
+            if state.offline_pending_results or state.offline_pending_done:
+                asyncio.create_task(
+                    _flush_pending_results(state, host_url.rstrip("/"), label)
+                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             log.warning("Heartbeat failed: %s", exc)
             needs_register = True
+
+
+# ── Offline translate helpers ──────────────────────────────────────────────────
+
+async def _flush_pending_results(state: ServerState, base: str, label: str) -> None:
+    """Deliver buffered offline results that failed while host was unreachable."""
+    if not state.offline_pending_results and not state.offline_pending_done:
+        return
+    results = state.offline_pending_results[:]
+    done    = state.offline_pending_done
+    job_id  = (state.offline_job or {}).get("offline_job_id", "")
+    if not job_id:
+        return
+    try:
+        r = await state.http_client.post(
+            f"{base}/api/workers/{label}/offline-results",
+            json={"offline_job_id": job_id, "results": results, "done": done},
+            timeout=20.0,
+        )
+        r.raise_for_status()
+        state.offline_pending_results.clear()
+        state.offline_pending_done = False
+        log.info("Flushed %d pending offline results (done=%s)", len(results), done)
+    except Exception as exc:
+        log.warning("Flush pending results failed: %s", exc)
+
+
+async def _run_offline_job(
+    chunk: dict,
+    state: ServerState,
+    loop: asyncio.AbstractEventLoop,
+    base: str,
+    label: str,
+) -> None:
+    """Async task: run OfflineTranslateRunner and deliver results to host."""
+    from offline_translate import OfflineTranslateRunner
+    offline_job_id = chunk.get("offline_job_id", "")
+
+    async def deliver(results: list, done: bool) -> None:
+        try:
+            r = await state.http_client.post(
+                f"{base}/api/workers/{label}/offline-results",
+                json={"offline_job_id": offline_job_id, "results": results, "done": done},
+                timeout=20.0,
+            )
+            r.raise_for_status()
+        except Exception as exc:
+            log.warning("Offline result delivery failed: %s — buffering", exc)
+            state.offline_pending_results.extend(results)
+            if done:
+                state.offline_pending_done = True
+
+    runner = OfflineTranslateRunner(chunk)
+    state.offline_job_runner = runner
+    try:
+        await runner.run(state, loop, deliver_cb=deliver)
+    except Exception as exc:
+        log.error("OfflineTranslateRunner error: %s", exc)
+        # Try to deliver partial + done so the host job doesn't hang
+        try:
+            await deliver([], done=True)
+        except Exception:
+            state.offline_pending_done = True
+    finally:
+        state.offline_job        = None
+        state.offline_job_runner = None
+        log.info("Offline job %s complete", offline_job_id[:8])
 
 
 # ── Pull-mode worker loop ──────────────────────────────────────────────────────
@@ -1104,14 +1195,56 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                     await _ota_step("update failed", status="failed")
                 continue
 
+            # ── Offline translate ─────────────────────────────────────────────
+            if chunk_type == "offline_translate":
+                if state.offline_job is not None:
+                    # Already busy — reject
+                    await _post_result(state.http_client, base, label, chunk_id,
+                                       "\x00busy\x00")
+                    continue
+                state.offline_job = chunk
+                offline_job_id = chunk.get("offline_job_id", "")
+                log.info("Pull worker: accepted offline job %s (%d strings)",
+                         offline_job_id[:8], len(chunk.get("strings") or []))
+                await _post_result(state.http_client, base, label, chunk_id,
+                                   json.dumps({"ok": True, "offline_job_id": offline_job_id}))
+                asyncio.create_task(
+                    _run_offline_job(chunk, state, loop, base, label)
+                )
+                continue
+
+            if chunk_type == "cancel_offline_job":
+                offline_job_id = chunk.get("offline_job_id", "")
+                if (state.offline_job and
+                        state.offline_job.get("offline_job_id") == offline_job_id):
+                    if state.offline_job_runner:
+                        state.offline_job_runner.cancel()
+                    log.info("Pull worker: offline job %s cancelled", offline_job_id[:8])
+                await _post_result(state.http_client, base, label, chunk_id,
+                                   json.dumps({"ok": True}))
+                continue
+
+            # ── Busy guard: refuse regular inference while offline job is running ──
+            if state.offline_job is not None:
+                log.info("Pull worker: busy with offline job — rejecting chunk %s", chunk_id[:8])
+                await _post_result(state.http_client, base, label, chunk_id,
+                                   "\x00busy\x00")
+                continue
+
             # ── Inference ─────────────────────────────────────────────────────
             prompt = chunk["prompt"]
             log.info("Pull worker: inferring chunk %s (%d chars)", chunk_id[:8], len(prompt))
+
+            if state.backend is None:
+                log.error("Pull worker: no model loaded — cannot process chunk %s", chunk_id[:8])
+                await _post_result(state.http_client, base, label, chunk_id, "\x00no_model\x00")
+                continue
 
             from models.inference_params import InferenceParams
             params = InferenceParams.from_dict(chunk.get("params") or {})
 
             t0 = time.time()
+            state.infer_started_at = time.monotonic()
             try:
                 result = await loop.run_in_executor(
                     None,
@@ -1121,7 +1254,9 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                 log.info("Pull worker: chunk %s done in %.1fs", chunk_id[:8], elapsed)
             except Exception as exc:
                 log.error("Pull worker: inference error for chunk %s: %s", chunk_id[:8], exc)
-                result = ""
+                result = "\x00infer_error\x00"
+            finally:
+                state.infer_started_at = 0.0
 
             await _post_result(state.http_client, base, label, chunk_id, result or "")
 

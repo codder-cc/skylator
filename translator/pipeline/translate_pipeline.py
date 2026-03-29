@@ -25,7 +25,6 @@ Steps:
 """
 from __future__ import annotations
 import logging
-import threading
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -81,7 +80,7 @@ class TranslatePipeline:
         from translator.web.job_manager import JobManager
         from translator.web.worker_pool import WorkerPool
         from translator.context.builder import ContextBuilder
-        from translator.prompt.builder import build_tm_block, enrich_context
+        from translator.prompt.builder import TranslationMemory, enrich_context
         from scripts.esp_engine import prepare_for_ai, needs_translation as _needs_trans
 
         jm = JobManager.get()
@@ -136,19 +135,23 @@ class TranslatePipeline:
             mod_folder = self._cfg.paths.mods_dir / mod_name
             context = ContextBuilder().get_mod_context(mod_folder, force=False)
 
-            # TM seed from already-translated strings
-            tm_pairs: dict[str, str] = {
-                s["original"]: s["translation"]
-                for s in strings
-                if s.get("translation") and s["translation"] != s["original"]
-            }
-            _tm_lock = threading.Lock()
+            # ── TM: seed from all previously-translated strings in this mod ──────
+            # Uses a word-indexed structure so per-chunk lookup is O(words_in_chunk)
+            # instead of O(all_pairs).  Also captures translations from prior job
+            # runs (not just the current batch), giving consistency on re-runs.
+            tm = TranslationMemory()
+            if self._repo and self._repo.mod_has_data(mod_name):
+                for r in self._repo.get_all_strings(mod_name):
+                    tm.add(r.get("original") or "", r.get("translation") or "")
+            # Also seed from strings already carrying translations (e.g. FORCE_ALL mode)
+            for s in strings:
+                tm.add(s.get("original", ""), s.get("translation", ""))
+            if len(tm):
+                job.add_log(f"TM: {len(tm)} pairs loaded for {mod_name}")
 
             def _build_chunk_context(originals: list[str]) -> str:
-                with _tm_lock:
-                    snapshot = dict(tm_pairs)
                 ai_preview, _ = prepare_for_ai(originals)
-                return enrich_context(context, build_tm_block(snapshot, ai_preview), ai_preview)
+                return enrich_context(context, tm.build_block(ai_preview), ai_preview)
 
             # ── Step 8: Dispatch to WorkerPool ───────────────────────────────
             # Steps 9-12 happen inside the on_string_done callback below.
@@ -167,7 +170,7 @@ class TranslatePipeline:
                     n_failed[0] += 1
                     job.add_log(
                         f"[WARN] Empty AI response for {s.get('esp','?')} [{s.get('key','?')}]"
-                        f" — string left as pending (likely context overflow)"
+                        f" — string left as pending"
                     )
                     return
                 translation = r["translation"]
@@ -204,8 +207,7 @@ class TranslatePipeline:
                     source="ai",
                     machine_label=actual_label,
                 )
-                with _tm_lock:
-                    tm_pairs[s.get("original", "")] = translation
+                tm.add(s.get("original", ""), translation)
                 if gd:
                     gd.add(s.get("original", ""), translation)
                     gd_dirty = True
@@ -223,12 +225,17 @@ class TranslatePipeline:
                 on_progress     = lambda done, tot: jm.update_progress(
                     job, done, tot, f"Translating {done}/{tot}"),
                 on_status       = _on_status,
-                should_stop     = lambda: job.status.value == "cancelled",
+                should_stop     = lambda: job.status.value in ("cancelled", "paused"),
                 context_builder = _build_chunk_context,
             )
 
             if gd and gd_dirty:
                 gd.save()
+
+            # If job was paused mid-run, don't mark it done
+            from translator.web.job_manager import JobStatus
+            if job.status == JobStatus.PAUSED:
+                return
 
             jm.update_progress(job, total, total, "Done")
             if n_failed[0]:
@@ -238,7 +245,7 @@ class TranslatePipeline:
                 )
                 job.add_log(
                     f"[WARN] {n_failed[0]} string(s) returned empty from AI and remain pending. "
-                    f"Cause: context overflow on very long strings. Re-run the job to retry."
+                    f"Check the worker logs for details. Re-run the job to retry."
                 )
             else:
                 job.result = f"Translated strings for {mod_name}"

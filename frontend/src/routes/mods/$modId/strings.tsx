@@ -21,6 +21,7 @@ import {
   Replace,
   Users,
   X,
+  Radio,
 } from 'lucide-react'
 import { modsApi } from '@/api/mods'
 import { jobsApi } from '@/api/jobs'
@@ -31,7 +32,7 @@ import { SourceBadge } from '@/components/shared/SourceBadge'
 import { StringHistoryModal } from '@/components/shared/StringHistoryModal'
 import { useMachines } from '@/hooks/useMachines'
 import { useReservations } from '@/hooks/useReservations'
-import { SCOPES, type StringStatus } from '@/lib/constants'
+import { SCOPES, JOB_ACTIVE_STATUSES, type StringStatus } from '@/lib/constants'
 import { useModLiveUpdates, useClearModLiveUpdates } from '@/hooks/useModLiveUpdates'
 import type { StringEntry, StringUpdate } from '@/types'
 
@@ -662,7 +663,7 @@ function ModStringsPage() {
 
   // Check if there's a running job for this mod
   const activeJob = allJobs.find(
-    (j) => j.mod_name === folderName && ['running', 'pending'].includes(j.status),
+    (j) => j.mod_name === folderName && (JOB_ACTIVE_STATUSES as readonly string[]).includes(j.status),
   )
 
   // Reservation polling — only when a job is active for this mod
@@ -863,14 +864,37 @@ function ModStringsPage() {
 
   // ── Bulk translate mutation ────────────────────────────────────────────────
 
+  const [offlineMode, setOfflineMode] = useState(false)
+
   const bulkTranslateMut = useMutation({
     mutationFn: () =>
       jobsApi.create({
         type: 'translate_strings',
         mods: [folderName],
         scope,
-        options: { machines },
+        options: { machines, ...(offlineMode && machines.length > 0 && { offline: true }) },
       }),
+    onSuccess: (result) => {
+      if (result.ok && result.job_id) {
+        queryClient.invalidateQueries({ queryKey: QK.jobs() })
+        navigate({ to: '/jobs/$jobId', params: { jobId: result.job_id } })
+      }
+    },
+  })
+
+  // ── Translate selected mutation ────────────────────────────────────────────
+
+  const translateSelectedMut = useMutation({
+    mutationFn: () => {
+      const selectedKeys = strings
+        .filter((s) => selectedIds.has(s.id))
+        .map((s) => s.key)
+      return jobsApi.create({
+        type: 'translate_strings',
+        mods: [folderName],
+        options: { keys: selectedKeys, machines, ...(offlineMode && machines.length > 0 && { offline: true }) },
+      })
+    },
     onSuccess: (result) => {
       if (result.ok && result.job_id) {
         queryClient.invalidateQueries({ queryKey: QK.jobs() })
@@ -1029,6 +1053,39 @@ function ModStringsPage() {
               <CheckSquare size={13} />
             )}
             Approve {selectedIds.size}
+          </button>
+        )}
+
+        {/* Offline mode toggle — only when machines are selected */}
+        {machines.length > 0 && (
+          <button
+            onClick={() => setOfflineMode((v) => !v)}
+            title="Dispatch to remote workers autonomously (no host connection required)"
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors',
+              offlineMode
+                ? 'bg-violet-500/20 text-violet-400 border-violet-500/40 hover:bg-violet-500/30'
+                : 'bg-bg-card2 text-text-muted border-border-subtle hover:text-text-main',
+            )}
+          >
+            <Radio size={13} />
+            Offline
+          </button>
+        )}
+
+        {/* Translate selected — shown when strings are selected */}
+        {selectedIds.size > 0 && (
+          <button
+            onClick={() => translateSelectedMut.mutate()}
+            disabled={translateSelectedMut.isPending}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent/20 text-accent border border-accent/30 hover:bg-accent/30 text-xs font-medium transition-colors disabled:opacity-50"
+          >
+            {translateSelectedMut.isPending ? (
+              <RefreshCw size={13} className="animate-spin" />
+            ) : (
+              <Play size={13} />
+            )}
+            Translate {selectedIds.size}
           </button>
         )}
 

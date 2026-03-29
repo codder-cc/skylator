@@ -17,11 +17,13 @@ log = logging.getLogger(__name__)
 
 
 class JobStatus(str, Enum):
-    PENDING   = "pending"
-    RUNNING   = "running"
-    DONE      = "done"
-    FAILED    = "failed"
-    CANCELLED = "cancelled"
+    PENDING             = "pending"
+    RUNNING             = "running"
+    PAUSED              = "paused"
+    DONE                = "done"
+    FAILED              = "failed"
+    CANCELLED           = "cancelled"
+    OFFLINE_DISPATCHED  = "offline_dispatched"
 
 
 @dataclass
@@ -62,7 +64,8 @@ class Job:
         d["progress"]         = asdict(self.progress)
         d["elapsed"]          = self._elapsed()
         d["pct"]              = self.progress.current / max(self.progress.total, 1) * 100
-        d["mod_name"]         = self.params.get("mod_name", "")
+        d["mod_name"]          = self.params.get("mod_name", "")
+        d["assigned_machines"] = self.params.get("assigned_machines") or []
         d["eta_seconds"]      = self._eta_seconds()
         d["tokens_generated"] = self.tokens_generated
         d["tps_avg"]          = self.tps_avg
@@ -160,6 +163,7 @@ class JobManager:
                 if j.status == JobStatus.RUNNING:
                     j.status      = JobStatus.DONE
                     j.finished_at = j.finished_at or time.time()
+                # Don't overwrite PAUSED with DONE — job was paused mid-run
             self._persist()   # save terminal status to disk before notifying
             self._notify(j)   # SSE broadcast — clients see correct done/failed
 
@@ -348,7 +352,8 @@ class JobManager:
 
     def cancel(self, job_id: str):
         job = self._jobs.get(job_id)
-        if job and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
+        if job and job.status in (JobStatus.PENDING, JobStatus.RUNNING, JobStatus.PAUSED,
+                                   JobStatus.OFFLINE_DISPATCHED):
             job.status = JobStatus.CANCELLED
             job.finished_at = time.time()
             self._notify(job)
@@ -385,7 +390,8 @@ class JobManager:
         new_string_updates contains only entries added since the last broadcast.
         """
         try:
-            terminal = job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED)
+            terminal = job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.PAUSED)
+            # OFFLINE_DISPATCHED is not terminal — SSE stream stays open
             d = job.to_dict()
             if not terminal and not include_logs:
                 d["log_lines"] = []
@@ -503,8 +509,8 @@ class JobManager:
                 )
                 # Don't reload running jobs as running — mark as failed
                 if j.status == JobStatus.RUNNING:
-                    j.status = JobStatus.FAILED
-                    j.error  = "Interrupted (server restart)"
+                    j.status = JobStatus.PAUSED
+                    j.error  = "Paused (server restart)"
                 with self._lock:
                     self._jobs[jid] = j
         except Exception as exc:

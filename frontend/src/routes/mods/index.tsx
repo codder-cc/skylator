@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Search, RefreshCw, Play, FileText, Archive,
   ArrowUpDown, CheckSquare, Square, X, ChevronDown,
-  AlertTriangle, Clock,
+  AlertTriangle, Clock, Radio,
 } from 'lucide-react'
 import { modsApi } from '@/api/mods'
 import { jobsApi } from '@/api/jobs'
@@ -14,6 +14,7 @@ import { StatusBadge } from '@/components/shared/StatusBadge'
 import { ProgressBar } from '@/components/shared/ProgressBar'
 import { useMachines } from '@/hooks/useMachines'
 import type { ModInfo, Job } from '@/types'
+import { JOB_ACTIVE_STATUSES } from '@/lib/constants'
 
 type SortBy = 'status' | 'name' | 'pct' | 'pending'
 
@@ -215,15 +216,28 @@ function ModCard({ mod, selected, onToggleSelect, activeJob }: ModCardProps) {
 
       {/* Live job status */}
       {activeJob && (
-        <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-accent/8 border border-accent/20 text-[10px]">
-          <RefreshCw size={9} className={cn('shrink-0', activeJob.status === 'running' ? 'animate-spin text-accent' : 'text-text-muted/60')} />
-          <span className="text-accent/80 truncate flex-1 min-w-0">
+        <div className={cn(
+          'flex items-center gap-1.5 px-2 py-1 rounded text-[10px] border',
+          activeJob.status === 'offline_dispatched'
+            ? 'bg-violet-500/8 border-violet-500/20'
+            : 'bg-accent/8 border-accent/20',
+        )}>
+          {activeJob.status === 'offline_dispatched'
+            ? <Radio size={9} className="shrink-0 text-violet-400" />
+            : <RefreshCw size={9} className={cn('shrink-0', activeJob.status === 'running' ? 'animate-spin text-accent' : 'text-text-muted/60')} />
+          }
+          <span className={cn('truncate flex-1 min-w-0', activeJob.status === 'offline_dispatched' ? 'text-violet-400/80' : 'text-accent/80')}>
             {activeJob.status === 'pending'
               ? 'Queued…'
+              : activeJob.status === 'offline_dispatched'
+              ? activeJob.progress?.message || 'Offline — awaiting results…'
               : activeJob.progress?.message || 'Translating…'}
           </span>
           {activeJob.status === 'running' && activeJob.pct > 0 && (
             <span className="font-mono text-accent/60 shrink-0">{activeJob.pct.toFixed(0)}%</span>
+          )}
+          {activeJob.status === 'offline_dispatched' && activeJob.pct > 0 && (
+            <span className="font-mono text-violet-400/60 shrink-0">{activeJob.pct.toFixed(0)}%</span>
           )}
         </div>
       )}
@@ -347,7 +361,7 @@ function ModsPage() {
   const activeJobByMod = useMemo(() => {
     const map = new Map<string, Job>()
     for (const j of allJobs) {
-      if (j.status !== 'running' && j.status !== 'pending') continue
+      if (!(JOB_ACTIVE_STATUSES as readonly string[]).includes(j.status)) continue
       const names: string[] = []
       if (j.mod_name) names.push(j.mod_name)
       const p = j.params as Record<string, unknown> | undefined

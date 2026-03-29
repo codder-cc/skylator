@@ -60,7 +60,7 @@ def job_stream(job_id: str):
                     data = q.get(timeout=2)
                     yield f"data: {data}\n\n"
                     d = json.loads(data)
-                    if d.get("status") in ("done", "failed", "cancelled"):
+                    if d.get("status") in ("done", "failed", "cancelled", "paused"):
                         break
                 except Exception:
                     yield ": ping\n\n"
@@ -146,8 +146,13 @@ def create_job():
         scope    = data.get("scope", "all")
         force    = options.get("force", False)
         machines = options.get("machines")
-        job      = _create_translate_strings_job(jm, cfg, mod_names[0], keys, scope,
-                                                  inf_params, force=force, machines=machines)
+        offline  = options.get("offline", False)
+        if offline and machines:
+            job = _create_offline_translate_job(jm, cfg, mod_names[0], keys, scope,
+                                                inf_params, machines=machines)
+        else:
+            job = _create_translate_strings_job(jm, cfg, mod_names[0], keys, scope,
+                                                inf_params, force=force, machines=machines)
     elif job_type == "recompute_scores":
         mod_name = mod_names[0] if mod_names else None
         repo     = current_app.config.get("STRING_REPO")
@@ -210,26 +215,150 @@ def retry_job(job_id: str):
     return jsonify({"ok": True, "job_id": new_job.id})
 
 
-@bp.route("/<job_id>/resume", methods=["POST"])
-def resume_job(job_id: str):
-    """Create a new job that continues where a failed/cancelled translate job left off.
-    Skips already-translated strings naturally (force=False)."""
+@bp.route("/<job_id>/pause", methods=["POST"])
+def pause_job(job_id: str):
+    """Pause a running job — sets status=PAUSED, which triggers should_stop() in WorkerPool."""
     jm  = current_app.config["JOB_MANAGER"]
-    cfg = current_app.config.get("TRANSLATOR_CFG")
+    from translator.web.job_manager import JobStatus
     job = jm.get_job(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
+    if job.status != JobStatus.RUNNING:
+        return jsonify({"error": "Job is not running"}), 400
+    job.status = JobStatus.PAUSED
+    job.add_log("Paused by user")
+    jm._notify(job)
+    jm._persist()
+    return jsonify({"ok": True})
+
+
+@bp.route("/<job_id>/assign", methods=["POST"])
+def assign_workers(job_id: str):
+    """Assign workers to a job. Auto-resumes if job is paused."""
+    jm  = current_app.config["JOB_MANAGER"]
+    cfg = current_app.config.get("TRANSLATOR_CFG")
+    from translator.web.job_manager import JobStatus
+    job = jm.get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    data     = request.get_json() or {}
+    machines = data.get("machines", [])
+    current  = list(job.params.get("assigned_machines") or [])
+    for m in machines:
+        if m not in current:
+            current.append(m)
+    job.params["assigned_machines"] = current
+    job.add_log(f"Assigned workers: {', '.join(machines)}")
+    jm._notify(job)
+    jm._persist()
+
+    if job.status == JobStatus.PAUSED:
+        new_job = _resume_job_with_machines(jm, cfg, job)
+        return jsonify({"ok": True, "resumed": True, "job_id": new_job.id})
+    return jsonify({"ok": True, "resumed": False})
+
+
+@bp.route("/<job_id>/unassign", methods=["POST"])
+def unassign_workers(job_id: str):
+    """Unassign workers from a job. Auto-pauses if no workers remain and job is running."""
+    jm  = current_app.config["JOB_MANAGER"]
+    from translator.web.job_manager import JobStatus
+    job = jm.get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    data     = request.get_json() or {}
+    machines = set(data.get("machines", []))
+    updated  = [m for m in (job.params.get("assigned_machines") or []) if m not in machines]
+    job.params["assigned_machines"] = updated
+    job.add_log(f"Unassigned workers: {', '.join(machines)}")
+    jm._notify(job)
+    jm._persist()
+
+    if job.status == JobStatus.RUNNING and not updated:
+        job.status = JobStatus.PAUSED
+        job.add_log("Paused — no workers assigned")
+        jm._notify(job)
+        jm._persist()
+
+    return jsonify({"ok": True})
+
+
+@bp.route("/<job_id>/resume", methods=["POST"])
+def resume_job(job_id: str):
+    """Create a new job that continues where a paused/failed/cancelled translate job left off.
+    Skips already-translated strings naturally (force=False)."""
+    jm  = current_app.config["JOB_MANAGER"]
+    cfg = current_app.config.get("TRANSLATOR_CFG")
+    from translator.web.job_manager import JobStatus
+    job = jm.get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    if job.status not in (JobStatus.PAUSED, JobStatus.FAILED, JobStatus.CANCELLED):
+        return jsonify({"error": "Job is not resumable"}), 400
     mod_name = job.params.get("mod_name")
     if not mod_name:
         return jsonify({"error": "Cannot resume: no mod_name in job params"}), 400
-    new_job = _create_translate_strings_job(
-        jm, cfg, mod_name,
-        keys=job.params.get("keys"),
-        scope=job.params.get("scope", "all"),
-        params=None,
-        force=False,  # resume = naturally skip already-translated strings
-    )
+    new_job = _resume_job_with_machines(jm, cfg, job)
     return jsonify({"job_id": new_job.id, "ok": True})
+
+
+@bp.route("/<job_id>/dispatch-back", methods=["POST"])
+def dispatch_back(job_id: str):
+    """Cancel the offline job on all assigned workers.
+
+    The remote will stop at the next batch boundary, deliver partial results,
+    and resume pull-mode.  The host job stays OFFLINE_DISPATCHED until the
+    final results flush arrives (done=True in /offline-results).
+    """
+    jm       = current_app.config["JOB_MANAGER"]
+    registry = current_app.config.get("WORKER_REGISTRY")
+    from translator.web.job_manager import JobStatus
+    import uuid as _uuid
+
+    job = jm.get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    if job.status != JobStatus.OFFLINE_DISPATCHED:
+        return jsonify({"error": "Job is not offline_dispatched"}), 400
+
+    offline_job_ids = job.params.get("offline_job_ids") or []
+    machines        = job.params.get("assigned_machines") or []
+
+    errors = []
+    for offline_job_id, label in zip(offline_job_ids, machines):
+        chunk_id = str(_uuid.uuid4())
+        registry.enqueue_chunk(label, {
+            "chunk_id":        chunk_id,
+            "type":            "cancel_offline_job",
+            "offline_job_id":  offline_job_id,
+        })
+        result = registry.collect_result(chunk_id, timeout=10)
+        if not result:
+            errors.append(f"{label}: no response within 10s")
+        else:
+            log.info("dispatch-back: %s ACK from %s", offline_job_id[:8], label)
+
+    if errors:
+        log.warning("dispatch-back warnings: %s", "; ".join(errors))
+
+    job.add_log("Dispatch-back requested — workers will flush partial results")
+    jm._notify(job)
+    return jsonify({"ok": True, "warnings": errors})
+
+
+def _resume_job_with_machines(jm, cfg, job):
+    """Create a new translate_strings job using stored assigned_machines."""
+    return _create_translate_strings_job(
+        jm, cfg,
+        mod_name = job.params.get("mod_name"),
+        keys     = job.params.get("keys"),
+        scope    = job.params.get("scope", "all"),
+        params   = None,
+        force    = False,
+        machines = job.params.get("assigned_machines") or [],
+    )
 
 
 @bp.route("/clear", methods=["POST"])
@@ -306,7 +435,7 @@ def _create_batch_job(jm, cfg, mod_names: list, options: dict):
         from translator.web.workers import translate_strings_worker
         total = len(mod_names)
         for i, mod_name in enumerate(mod_names):
-            if job.status.value == "cancelled":
+            if job.status.value in ("cancelled", "paused"):
                 break
             jm.update_progress(job, i, total, f"Translating: {mod_name}")
             # Auto-checkpoint before each mod in the batch
@@ -495,7 +624,108 @@ def _create_translate_strings_job(jm, cfg, mod_name: str,
     return jm.create(
         name     = label,
         job_type = "translate_strings",
-        params   = {"mod_name": mod_name, "keys": keys, "scope": scope},
+        params   = {"mod_name": mod_name, "keys": keys, "scope": scope,
+                    "assigned_machines": list(machines) if machines else []},
+        fn       = run,
+    )
+
+
+def _create_offline_translate_job(jm, cfg, mod_name: str,
+                                   keys: list | None = None,
+                                   scope: str = "all",
+                                   params=None,
+                                   machines: list | None = None):
+    """Create an offline translate job — dispatches strings to remote workers autonomously."""
+    backends, skipped = _resolve_backends(cfg, machines)
+    repo              = current_app.config.get("STRING_REPO")
+    stats_mgr         = current_app.config.get("STATS_MGR")
+    scanner           = current_app.config.get("SCANNER")
+    registry          = current_app.config.get("WORKER_REGISTRY")
+
+    if not backends:
+        raise ValueError("offline translate requires at least one registered machine")
+
+    def run(job):
+        if skipped:
+            job.add_log(f"WARNING: machines not found in registry (skipped): {', '.join(skipped)}")
+
+        # Resolve pending strings from the DB
+        strings_to_dispatch = []
+        if repo and repo.mod_has_data(mod_name):
+            if keys:
+                all_rows = repo.get_all_strings(mod_name)
+                key_set  = set(keys)
+                rows = [r for r in all_rows if r.get("key") in key_set]
+            else:
+                all_rows = repo.get_all_strings(mod_name)
+                if scope == "esp":
+                    rows = [r for r in all_rows if not r["esp_name"].startswith("mcm")]
+                elif scope == "mcm":
+                    rows = [r for r in all_rows if r["esp_name"].startswith("mcm")]
+                else:
+                    rows = all_rows
+            strings_to_dispatch = [
+                {
+                    "id":       r["id"],
+                    "key":      r["key"],
+                    "esp":      r["esp_name"],
+                    "mod_name": mod_name,
+                    "original": r.get("original") or "",
+                }
+                for r in rows if r.get("status") == "pending"
+            ]
+        else:
+            job.add_log("No SQLite data for mod — offline translate requires DB. Run a scan first.")
+            return
+
+        if not strings_to_dispatch:
+            job.add_log("No pending strings to dispatch — all already translated")
+            job.result = f"Nothing to dispatch for {mod_name}"
+            return
+
+        job.add_log(f"Dispatching {len(strings_to_dispatch)} strings offline to "
+                    f"{len(backends)} worker(s)")
+
+        # Build context
+        from translator.context.builder import ContextBuilder
+        mod_folder = cfg.paths.mods_dir / mod_name if cfg.paths.mods_dir else None
+        context = ""
+        if mod_folder:
+            try:
+                context = ContextBuilder().get_mod_context(mod_folder, force=False)
+            except Exception as exc:
+                log.warning("offline dispatch: context build failed: %s", exc)
+
+        from translator.web.offline_backend import dispatch
+        dispatch(
+            job          = job,
+            mod_name     = mod_name,
+            strings      = strings_to_dispatch,
+            context      = context,
+            inf_params   = params,
+            machines     = backends,
+            registry     = registry,
+            jm           = jm,
+            repo         = repo,
+            cfg          = cfg,
+        )
+        # dispatch() sets job.status = OFFLINE_DISPATCHED before returning
+        # job_center._run() will see OFFLINE_DISPATCHED and not set DONE
+
+    if keys:
+        n = len(keys)
+        label = f"Offline Translate {n} string{'s' if n != 1 else ''}: {mod_name}"
+    elif scope != "all":
+        label = f"Offline Translate [{scope.upper()}]: {mod_name}"
+    else:
+        label = f"Offline Translate: {mod_name}"
+
+    return jm.create(
+        name     = label,
+        job_type = "translate_strings",
+        params   = {"mod_name": mod_name, "keys": keys, "scope": scope,
+                    "assigned_machines": list(machines) if machines else [],
+                    "offline": True},
         fn       = run,
     )
 

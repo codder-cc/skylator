@@ -228,6 +228,7 @@ function BatchModal({ onClose }: BatchModalProps) {
   const [force, setForce] = useState(false)
   const [resume, setResume] = useState(true)
   const [machines, setMachines] = useState<string[]>([])
+  const [offline, setOffline] = useState(false)
 
   const { data: workers = [] } = useQuery({
     queryKey: QK.workers(),
@@ -239,7 +240,7 @@ function BatchModal({ onClose }: BatchModalProps) {
     mutationFn: () =>
       jobsApi.create({
         job_type: 'translate_all',
-        options: { scope, force, resume, machines },
+        options: { scope, force, resume, machines, ...(offline && machines.length > 0 && { offline: true }) },
       }),
     onSuccess: () => {
       onClose()
@@ -316,6 +317,17 @@ function BatchModal({ onClose }: BatchModalProps) {
             />
             <span className="text-sm text-text-main">Skip already-completed mods</span>
           </label>
+          {machines.length > 0 && (
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={offline}
+                onChange={(e) => setOffline(e.target.checked)}
+                className="w-4 h-4 rounded border-border-subtle bg-bg-card2 accent-accent"
+              />
+              <span className="text-sm text-text-main">Offline translate (dispatch to workers)</span>
+            </label>
+          )}
         </div>
 
         {/* Machines */}

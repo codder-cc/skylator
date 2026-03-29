@@ -840,9 +840,8 @@ def translate_one_string(mod_name: str):
         from scripts.esp_engine import (prepare_for_ai,
                                         restore_from_ai, compute_string_status as _css)
         from translator.context.builder import ContextBuilder
-        from translator.prompt.builder import build_tm_block, enrich_context
+        from translator.prompt.builder import enrich_context
         from translator.web.workers import save_translation
-        import json as _json
         import time as _time
 
         xlogs.append(f"input: {original[:100]}")
@@ -867,25 +866,17 @@ def translate_one_string(mod_name: str):
                 xlogs.append(f"max_tokens auto-scaled to {_auto} (input ~{_input_est} tokens, n_ctx={_n_ctx})")
                 log.info("[translate-one] %s | max_tokens auto-scaled to %d", key_str, _auto)
 
-        # Build translation memory (skip for very long strings — wastes input context)
-        esp_stem   = Path(esp_name).stem
-        trans_json = mod_folder / (esp_stem + ".trans.json") if mod_folder else None
-        if trans_json and not trans_json.exists():
-            hits = list(mod_folder.rglob(esp_stem + ".trans.json")) if mod_folder else []
-            trans_json = hits[0] if hits else None
-        tm_pairs: dict = {}
-        if not _is_long and trans_json and trans_json.exists():
-            try:
-                saved = _json.loads(trans_json.read_text(encoding="utf-8"))
-                tm_pairs = {s["text"]: s["translation"]
-                            for s in saved
-                            if s.get("text") and s.get("translation")
-                            and s["translation"] != s["text"]}
-            except Exception:
-                pass
-        elif _is_long:
+        # Build translation memory from DB (skip for very long strings)
+        from translator.prompt.builder import TranslationMemory
+        tm = TranslationMemory()
+        if not _is_long:
+            _repo = current_app.config.get("STRING_REPO")
+            if _repo and _repo.mod_has_data(mod_name):
+                for r in _repo.get_all_strings(mod_name):
+                    tm.add(r.get("original") or "", r.get("translation") or "")
+        else:
             xlogs.append(f"TM skipped (long string: {len(original)} chars)")
-        context = enrich_context(context, build_tm_block(tm_pairs, [original]), [original])
+        context = enrich_context(context, tm.build_block([original]), [original])
 
         # Log masked form for debugging (compute before calling core)
         ai_preview, _ = prepare_for_ai([original])
@@ -1169,14 +1160,16 @@ def workers_heartbeat():
     registry = current_app.config.get("WORKER_REGISTRY")
     if not label or registry is None:
         return jsonify({"ok": False}), 400
-    models       = data.get("models")        # list[{name, path, size_mb}] or None
-    model        = data.get("model")         # currently loaded model label
-    backend_type = data.get("backend_type")  # llamacpp | mlx
-    stats        = data.get("stats")         # {tps_avg, tps_last, queue_depth, jobs_completed}
-    hardware     = data.get("hardware")      # {ram_total_mb, vram_total_mb, cpu_name, …}
-    commit       = data.get("commit")        # short git commit hash
+    models        = data.get("models")        # list[{name, path, size_mb}] or None
+    model         = data.get("model")         # currently loaded model label
+    backend_type  = data.get("backend_type")  # llamacpp | mlx
+    stats         = data.get("stats")         # {tps_avg, tps_last, queue_depth, jobs_completed}
+    hardware      = data.get("hardware")      # {ram_total_mb, vram_total_mb, cpu_name, …}
+    commit        = data.get("commit")        # short git commit hash
+    offline_jobs  = data.get("offline_jobs")  # [{offline_job_id, total, done, tps, current_text}]
     found = registry.heartbeat(label, models=models, model=model, backend_type=backend_type,
-                               stats=stats, hardware=hardware, commit=commit)
+                               stats=stats, hardware=hardware, commit=commit,
+                               offline_jobs=offline_jobs)
     if not found:
         return jsonify({"ok": False, "reregister": True}), 404
     return jsonify({"ok": True})
@@ -1224,6 +1217,119 @@ def workers_post_result(label: str):
     if not found:
         log.warning("Unexpected result for chunk_id %s from worker %s", chunk_id[:8], label)
     return jsonify({"ok": True, "matched": found})
+
+
+@bp.route("/workers/<label>/offline-results", methods=["POST"])
+def workers_offline_results(label: str):
+    """Remote posts incremental/final results from an offline translate job.
+
+    Body: {
+      "offline_job_id": "...",
+      "results": [{string_id, key, esp_name, mod_name, original, translation,
+                   status, quality_score}],
+      "done": true | false
+    }
+    """
+    from translator.web.job_manager import JobStatus
+    from translator.data_manager.string_manager import StringManager
+    from pathlib import Path
+
+    registry  = current_app.config.get("WORKER_REGISTRY")
+    jm        = current_app.config.get("JOB_MANAGER")
+    repo      = current_app.config.get("STRING_REPO")
+    cfg       = current_app.config.get("TRANSLATOR_CFG")
+    stats_mgr = current_app.config.get("STATS_MGR")
+
+    if registry is None or jm is None:
+        return jsonify({"ok": False, "error": "Not initialized"}), 500
+
+    data           = request.get_json() or {}
+    offline_job_id = data.get("offline_job_id", "")
+    results        = data.get("results") or []
+    done           = bool(data.get("done", False))
+
+    if not offline_job_id:
+        return jsonify({"ok": False, "error": "offline_job_id required"}), 400
+
+    oj = registry.get_offline_job(offline_job_id)
+    if oj is None:
+        log.warning("offline-results: unknown offline_job_id %s from %s", offline_job_id[:8], label)
+        return jsonify({"ok": False, "error": "unknown offline_job_id"}), 404
+
+    host_job_id = oj["host_job_id"]
+    job = jm.get_job(host_job_id)
+
+    if repo is not None and cfg is not None:
+        mods_dir   = cfg.paths.mods_dir if cfg else Path(".")
+        string_mgr = StringManager(repo, Path(mods_dir))
+
+    saved_count = 0
+    mods_touched: set[str] = set()
+
+    for r in results:
+        key         = r.get("key") or ""
+        esp_name    = r.get("esp_name") or ""
+        mod_name    = r.get("mod_name") or (oj.get("mod_name") if oj else "")
+        original    = r.get("original") or ""
+        translation = r.get("translation") or ""
+        status      = r.get("status") or ("translated" if translation else "pending")
+        quality     = r.get("quality_score")
+
+        if not translation or not key or not mod_name:
+            continue
+
+        try:
+            if repo is not None and cfg is not None:
+                string_mgr.save_string(
+                    mod_name=mod_name, esp_name=esp_name, key=key,
+                    translation=translation, original=original,
+                    source="ai", machine_label=label, job_id=host_job_id,
+                    quality_score=quality, status=status,
+                )
+                mods_touched.add(mod_name)
+                saved_count += 1
+        except Exception as exc:
+            log.warning("offline-results: save_string failed for %s/%s: %s", mod_name, key, exc)
+
+        if job is not None:
+            jm.add_string_update(
+                job, key, esp_name, translation, status,
+                quality_score=quality, source="ai", machine_label=label,
+            )
+
+    # Update progress tracking
+    registry.update_offline_progress(offline_job_id, done_delta=len(results))
+
+    if done:
+        all_done = registry.finish_offline_job(offline_job_id)
+        log.info("offline-results: %s done (saved=%d, all_workers_done=%s)",
+                 offline_job_id[:8], saved_count, all_done)
+
+        if all_done and job is not None:
+            job.status      = JobStatus.DONE
+            job.finished_at = __import__("time").time()
+            job.progress.current = job.progress.total
+            job.progress.message = "Done — offline translation complete"
+            jm._notify(job)
+            jm._persist()
+
+        # Recompute stats for all touched mods
+        if stats_mgr:
+            for mod_name in mods_touched:
+                try:
+                    stats_mgr.recompute(mod_name)
+                except Exception:
+                    pass
+    elif job is not None:
+        # Update progress count
+        job.progress.current = min(
+            job.progress.current + len(results),
+            job.progress.total,
+        )
+        job.progress.message = f"Receiving offline results ({job.progress.current}/{job.progress.total})"
+        jm._notify(job)
+
+    return jsonify({"ok": True, "saved": saved_count})
 
 
 @bp.route("/workers/<label>/benchmark", methods=["POST"])

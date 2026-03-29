@@ -37,6 +37,7 @@ class WorkerInfo:
     ota_status:   str = "idle"    # idle | updating | restarting | success | failed
     ota_steps:    list = field(default_factory=list)  # step strings from last OTA run
     ota_restart_at: float = 0.0   # time.time() when restarting phase began
+    offline_jobs:   list  = field(default_factory=list)  # [{offline_job_id, total, done, tps, current_text}]
 
     def to_dict(self) -> dict:
         return {
@@ -57,6 +58,7 @@ class WorkerInfo:
             "ota_status":   self.ota_status,
             "ota_steps":    self.ota_steps,
             "ota_restart_at": self.ota_restart_at,
+            "offline_jobs": self.offline_jobs,
         }
 
 
@@ -77,6 +79,10 @@ class WorkerRegistry:
         # Pull-mode results: chunk_id → (result_str, event) so host thread can wait
         self._result_events:  dict[str, threading.Event] = {}
         self._result_values:  dict[str, str]             = {}
+        # Offline job tracking: offline_job_id → tracking dict
+        self._offline_jobs: dict[str, dict] = {}
+        # Count of completed workers per host job: host_job_id → {total_workers, done_workers}
+        self._offline_host_jobs: dict[str, dict] = {}
 
     # ── Worker lifecycle ──────────────────────────────────────────────────────
 
@@ -102,7 +108,8 @@ class WorkerRegistry:
     def heartbeat(self, label: str, models: list | None = None,
                   model: str | None = None, backend_type: str | None = None,
                   stats: dict | None = None, hardware: dict | None = None,
-                  commit: str | None = None) -> bool:
+                  commit: str | None = None,
+                  offline_jobs: list | None = None) -> bool:
         """Update last_seen and any pushed fields.
         Returns False if unknown (caller should ask remote to re-register)."""
         with self._lock:
@@ -116,6 +123,15 @@ class WorkerRegistry:
             if stats        is not None: w.stats        = stats
             if hardware     is not None: w.hardware     = hardware
             if commit       is not None: w.commit       = commit
+            if offline_jobs is not None:
+                w.offline_jobs = offline_jobs
+                # Update progress tracking from heartbeat
+                for oj in offline_jobs:
+                    ojid = oj.get("offline_job_id")
+                    if ojid and ojid in self._offline_jobs:
+                        self._offline_jobs[ojid]["done"] = oj.get("done", 0)
+                        self._offline_jobs[ojid]["tps"]  = oj.get("tps", 0.0)
+                        self._offline_jobs[ojid]["current_text"] = oj.get("current_text", "")
             return True
 
     def remove(self, label: str) -> None:
@@ -224,3 +240,60 @@ class WorkerRegistry:
                     poll_cb()
                 except Exception:
                     pass
+
+    # ── Offline job tracking ──────────────────────────────────────────────────
+
+    def register_offline_job(self, offline_job_id: str, host_job_id: str,
+                              worker_label: str, total_strings: int) -> None:
+        """Register a dispatched offline job. Called once per worker."""
+        with self._lock:
+            self._offline_jobs[offline_job_id] = {
+                "host_job_id":   host_job_id,
+                "worker_label":  worker_label,
+                "total":         total_strings,
+                "done":          0,
+                "tps":           0.0,
+                "current_text":  "",
+                "finished":      False,
+            }
+            hj = self._offline_host_jobs.setdefault(host_job_id, {
+                "total_workers": 0, "done_workers": 0,
+            })
+            hj["total_workers"] += 1
+
+    def update_offline_progress(self, offline_job_id: str,
+                                done_delta: int = 0,
+                                tps: float = 0.0,
+                                current_text: str = "") -> None:
+        with self._lock:
+            oj = self._offline_jobs.get(offline_job_id)
+            if oj is None:
+                return
+            oj["done"] += done_delta
+            if tps:
+                oj["tps"] = tps
+            if current_text:
+                oj["current_text"] = current_text
+
+    def get_offline_jobs_for_host_job(self, host_job_id: str) -> list[dict]:
+        with self._lock:
+            return [v for v in self._offline_jobs.values()
+                    if v.get("host_job_id") == host_job_id]
+
+    def finish_offline_job(self, offline_job_id: str) -> bool:
+        """Mark one worker's offline job as done.
+        Returns True if ALL workers for the host job are now done."""
+        with self._lock:
+            oj = self._offline_jobs.get(offline_job_id)
+            if oj is None:
+                return False
+            oj["finished"] = True
+            hj = self._offline_host_jobs.get(oj["host_job_id"])
+            if hj is None:
+                return True
+            hj["done_workers"] += 1
+            return hj["done_workers"] >= hj["total_workers"]
+
+    def get_offline_job(self, offline_job_id: str) -> dict | None:
+        with self._lock:
+            return self._offline_jobs.get(offline_job_id)

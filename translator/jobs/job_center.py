@@ -88,7 +88,8 @@ class JobCenter:
 
         try:
             fn(job)
-            if job.status not in (JobStatus.FAILED, JobStatus.CANCELLED):
+            if job.status not in (JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.PAUSED,
+                                   JobStatus.OFFLINE_DISPATCHED):
                 job.status      = JobStatus.DONE
                 job.finished_at = time.time()
                 log.info("Job DONE [pool]: %s — %.1fs", job.name, job._elapsed())

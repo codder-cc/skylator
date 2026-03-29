@@ -1,10 +1,11 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, Link } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState, useEffect, useRef } from 'react'
 import { workersApi } from '@/api/workers'
+import { jobsApi } from '@/api/jobs'
 import { QK } from '@/lib/queryKeys'
 import { timeAgo, cn } from '@/lib/utils'
-import type { WorkerInfo, SetupReport, CachedModel, BenchmarkResult } from '@/types'
+import type { WorkerInfo, SetupReport, CachedModel, BenchmarkResult, Job } from '@/types'
 import {
   MODEL_CATALOG,
   estimateVram,
@@ -648,9 +649,10 @@ interface WorkerRowProps {
   onLoad: (worker: WorkerInfo) => void
   onBenchmark: (worker: WorkerInfo) => void
   onOtaActiveChange: (active: boolean) => void
+  assignedJobs?: Job[]
 }
 
-function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange }: WorkerRowProps) {
+function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange, assignedJobs = [] }: WorkerRowProps) {
   const qc = useQueryClient()
   const hw  = worker.hardware
 
@@ -776,6 +778,43 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange 
               ↳ {worker.current_task}
             </div>
           )}
+          {assignedJobs.length > 0 && (
+            <div className="flex items-center gap-1 flex-wrap mt-1">
+              {assignedJobs.map(j => (
+                <Link
+                  key={j.id}
+                  to="/jobs/$jobId"
+                  params={{ jobId: j.id }}
+                  className={cn(
+                    'text-[9px] px-1.5 py-0.5 rounded font-mono border no-underline transition-colors',
+                    j.status === 'running'
+                      ? 'bg-accent/15 text-accent border-accent/30 hover:bg-accent/25'
+                      : j.status === 'offline_dispatched'
+                        ? 'bg-violet-500/15 text-violet-400 border-violet-500/30 hover:bg-violet-500/25'
+                        : 'bg-sky-500/15 text-sky-400 border-sky-500/30 hover:bg-sky-500/25',
+                  )}
+                  title={j.name}
+                >
+                  {j.status === 'running' ? '▶' : j.status === 'offline_dispatched' ? '📡' : '⏸'} {j.name.length > 28 ? j.name.slice(0, 28) + '…' : j.name}
+                </Link>
+              ))}
+            </div>
+          )}
+          {/* Offline job progress */}
+          {(worker.offline_jobs ?? []).map(oj => (
+            <div key={oj.offline_job_id} className="mt-1 space-y-0.5">
+              <div className="flex items-center gap-2 text-[10px] text-violet-400">
+                <span className="w-1.5 h-1.5 rounded-full bg-violet-400 animate-pulse shrink-0" />
+                <span>Offline: {oj.done}/{oj.total} strings</span>
+                {oj.tps > 0 && <span className="text-text-muted">{oj.tps.toFixed(1)} tok/s</span>}
+              </div>
+              {oj.current_text && (
+                <div className="text-[9px] text-text-muted/70 truncate pl-3" title={oj.current_text}>
+                  ↳ {oj.current_text}
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       </div>
 
@@ -1022,10 +1061,26 @@ function ServersPage() {
     refetchInterval: 60_000,
   })
 
+  const jobsQ = useQuery({
+    queryKey: QK.jobs(),
+    queryFn: jobsApi.list,
+    refetchInterval: 10_000,
+  })
+
   const workers = workersQ.data ?? []
   const servers = serversQ.data ?? []
   const reports = reportsQ.data ?? []
   const hostCommit = hostStatusQ.data?.commit ?? ''
+
+  // Map worker label → running/paused jobs assigned to it
+  const assignedJobsByWorker: Record<string, Job[]> = {}
+  for (const job of (jobsQ.data ?? [])) {
+    if (job.status !== 'running' && job.status !== 'paused') continue
+    for (const label of (job.assigned_machines ?? [])) {
+      if (!assignedJobsByWorker[label]) assignedJobsByWorker[label] = []
+      assignedJobsByWorker[label].push(job)
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -1070,6 +1125,7 @@ function ServersPage() {
                 onLoad={setLoadModalWorker}
                 onBenchmark={setBenchmarkWorker}
                 onOtaActiveChange={setOtaActive}
+                assignedJobs={assignedJobsByWorker[w.label] ?? []}
               />
             ))}
           </div>

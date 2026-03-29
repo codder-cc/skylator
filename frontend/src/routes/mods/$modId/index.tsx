@@ -24,6 +24,7 @@ import {
   Wrench,
   RotateCcw,
   Zap,
+  Radio,
 } from 'lucide-react'
 import { useState } from 'react'
 import { modsApi } from '@/api/mods'
@@ -589,6 +590,20 @@ function ModDetailPage() {
     },
   })
 
+  const offlineTranslateMut = useMutation({ // eslint-disable-line react-hooks/rules-of-hooks
+    mutationFn: () =>
+      jobsApi.create({
+        type: 'translate_strings', mods: [folderName],
+        options: { machines, offline: true },
+      }),
+    onSuccess: (data) => {
+      if (data.ok && data.job_id) {
+        queryClient.invalidateQueries({ queryKey: QK.jobs() })
+        navigate({ to: '/jobs/$jobId', params: { jobId: data.job_id } })
+      }
+    },
+  })
+
   const resetTranslationsMut = useMutation({
     mutationFn: () => modsApi.resetTranslations(folderName),
     onSuccess: () => {
@@ -923,6 +938,14 @@ function ModDetailPage() {
               icon={<Zap size={14} />}
               label="Force Translate (AI, no cache)"
             />
+            {machines.length > 0 && (
+              <ActionButton
+                onClick={() => offlineTranslateMut.mutate()}
+                isPending={offlineTranslateMut.isPending}
+                icon={<Radio size={14} />}
+                label="Offline Translate (dispatch to workers)"
+              />
+            )}
             <ActionButton
               onClick={() => scanMut.mutate()}
               isPending={scanMut.isPending}

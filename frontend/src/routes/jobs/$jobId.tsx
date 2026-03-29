@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { QK } from '@/lib/queryKeys'
 import { jobsApi } from '@/api/jobs'
+import { workersApi } from '@/api/workers'
 import { useJobStream } from '@/hooks/useJobStream'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { SourceBadge } from '@/components/shared/SourceBadge'
@@ -13,7 +14,7 @@ import { Breadcrumbs } from '@/components/shared/Breadcrumbs'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { JOB_TERMINAL_STATUSES } from '@/lib/constants'
 import { cn } from '@/lib/utils'
-import type { WorkerStatus, StringUpdate } from '@/types'
+import type { Job, WorkerStatus, StringUpdate } from '@/types'
 import {
   Clock,
   Timer,
@@ -24,6 +25,10 @@ import {
   RefreshCw,
   SkipForward,
   RotateCcw,
+  Pause,
+  Plus,
+  X,
+  ArrowDownToLine,
 } from 'lucide-react'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -303,7 +308,103 @@ function StringUpdatesPanel({ updates }: { updates: StringUpdate[] }) {
   )
 }
 
+// ── Worker assignment panel ───────────────────────────────────────────────────
+
+function WorkerAssignmentPanel({ job }: { job: Job }) {
+  const isTranslate = job.job_type.includes('translate')
+  if (!isTranslate) return null
+
+  const qc       = useQueryClient()
+  const navigate = useNavigate()
+  const { data: workers = [] } = useQuery({ queryKey: QK.workers(), queryFn: workersApi.list })
+
+  const assigned   = (job.assigned_machines ?? []) as string[]
+  const unassigned = workers.filter(w => w.alive && !assigned.includes(w.label)).map(w => w.label)
+  const canEdit    = job.status === 'paused' || job.status === 'running'
+
+  const assignMut = useMutation({
+    mutationFn: (label: string) => jobsApi.assign(job.id, [label]),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: QK.jobs() })
+      qc.invalidateQueries({ queryKey: QK.job(job.id) })
+      if (data.resumed && data.job_id) {
+        navigate({ to: '/jobs/$jobId', params: { jobId: data.job_id! } })
+      }
+    },
+  })
+
+  const unassignMut = useMutation({
+    mutationFn: (label: string) => jobsApi.unassign(job.id, [label]),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.jobs() })
+      qc.invalidateQueries({ queryKey: QK.job(job.id) })
+    },
+  })
+
+  return (
+    <div className="card p-4">
+      <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-3 flex items-center gap-2">
+        <Activity size={12} />
+        Assigned Workers
+      </h3>
+      {assigned.length === 0 && job.status === 'paused' && (
+        <p className="text-xs text-warning mb-3">No workers assigned — assign a worker to resume automatically.</p>
+      )}
+      <div className="flex flex-wrap gap-2">
+        {assigned.map(label => (
+          <span key={label} className="inline-flex items-center gap-1 px-2 py-1 rounded bg-accent/15 text-accent text-xs font-mono border border-accent/30">
+            {label}
+            {canEdit && (
+              <button
+                onClick={() => unassignMut.mutate(label)}
+                disabled={unassignMut.isPending}
+                className="ml-0.5 hover:text-danger transition-colors"
+                title="Unassign"
+              >
+                <X size={10} />
+              </button>
+            )}
+          </span>
+        ))}
+        {canEdit && unassigned.map(label => (
+          <button
+            key={label}
+            onClick={() => assignMut.mutate(label)}
+            disabled={assignMut.isPending}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-bg-card2 text-text-muted text-xs font-mono border border-border-subtle hover:border-accent/40 hover:text-accent transition-colors"
+            title="Assign"
+          >
+            <Plus size={10} />
+            {label}
+          </button>
+        ))}
+        {!canEdit && assigned.length === 0 && (
+          <span className="text-xs text-text-muted/50 italic">none</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Cancel / Resume buttons ───────────────────────────────────────────────────
+
+function PauseButton({ jobId }: { jobId: string }) {
+  const qc = useQueryClient()
+  const mut = useMutation({
+    mutationFn: () => jobsApi.pause(jobId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: QK.job(jobId) }),
+  })
+  return (
+    <button
+      onClick={() => mut.mutate()}
+      disabled={mut.isPending}
+      className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-sky-500/20 text-sky-400 border border-sky-500/30 hover:bg-sky-500/30 disabled:opacity-50 transition-colors"
+    >
+      {mut.isPending ? <RefreshCw size={11} className="animate-spin" /> : <Pause size={11} />}
+      Pause
+    </button>
+  )
+}
 
 function CancelButton({ jobId }: { jobId: string }) {
   const qc = useQueryClient()
@@ -361,6 +462,40 @@ function ResumeButton({ jobId }: { jobId: string }) {
       {mut.isPending ? <RefreshCw size={11} className="animate-spin" /> : <SkipForward size={11} />}
       Resume
     </button>
+  )
+}
+
+function DispatchBackButton({ jobId }: { jobId: string }) {
+  const qc = useQueryClient()
+  const [open, setOpen] = useState(false)
+  const mut = useMutation({
+    mutationFn: () => jobsApi.dispatchBack(jobId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.job(jobId) })
+      setOpen(false)
+    },
+  })
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-violet-500/20 text-violet-400 border border-violet-500/30 hover:bg-violet-500/30 transition-colors"
+      >
+        <ArrowDownToLine size={11} />
+        Dispatch Back
+      </button>
+      <ConfirmDialog
+        open={open}
+        onOpenChange={setOpen}
+        title="Dispatch back?"
+        description="Workers will stop at the next batch boundary and deliver partial results to the host. The job will complete when all buffered results arrive."
+        confirmLabel="Dispatch back"
+        variant="danger"
+        loading={mut.isPending}
+        onConfirm={() => mut.mutate()}
+      />
+    </>
   )
 }
 
@@ -430,11 +565,24 @@ function JobDetailPage() {
           {job.name}
         </h1>
         <StatusBadge status={job.status} />
+        {job.status === 'running' && <PauseButton jobId={jobId} />}
         {job.status === 'running' && <CancelButton jobId={jobId} />}
+        {job.status === 'paused' && (
+          <>
+            <ResumeButton jobId={jobId} />
+            <CancelButton jobId={jobId} />
+          </>
+        )}
+        {job.status === 'offline_dispatched' && (
+          <>
+            <DispatchBackButton jobId={jobId} />
+            <CancelButton jobId={jobId} />
+          </>
+        )}
         {(job.status === 'failed' || job.status === 'cancelled') && (
           <>
             <RetryButton jobId={jobId} />
-            {job.job_type === 'translate_mod' && <ResumeButton jobId={jobId} />}
+            {job.job_type.includes('translate') && <ResumeButton jobId={jobId} />}
           </>
         )}
       </div>
@@ -450,8 +598,21 @@ function JobDetailPage() {
       {/* Timing / throughput */}
       <TimingCard job={job} />
 
+      {/* Offline dispatched banner */}
+      {job.status === 'offline_dispatched' && (
+        <div className="card p-4 border border-violet-500/30 bg-violet-500/5">
+          <div className="text-xs font-semibold text-violet-400 uppercase tracking-wide mb-1 flex items-center gap-2">
+            <ArrowDownToLine size={12} />
+            Offline Mode
+          </div>
+          <div className="text-sm text-text-muted">
+            {job.progress?.message || `Awaiting results from ${(job.params?.offline_job_ids as string[] | undefined)?.length ?? 1} worker(s)`}
+          </div>
+        </div>
+      )}
+
       {/* Progress bar */}
-      {(job.status === 'running' || (job.pct > 0 && job.pct < 100)) && job.progress && (
+      {(job.status === 'running' || job.status === 'offline_dispatched' || (job.pct > 0 && job.pct < 100)) && job.progress && (
         <div className="card p-4">
           <ProgressBar
             pct={job.pct}
@@ -463,6 +624,9 @@ function JobDetailPage() {
 
       {/* Workers */}
       <WorkersTable workers={job.worker_updates ?? []} updates={job.string_updates ?? []} />
+
+      {/* Worker assignment */}
+      <WorkerAssignmentPanel job={job} />
 
       {/* String updates */}
       <StringUpdatesPanel updates={job.string_updates ?? []} />

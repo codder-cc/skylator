@@ -17,12 +17,24 @@ export const jobsApi = {
   cancel: (id: string) =>
     apiPost<{ ok: boolean }>(`/jobs/${id}/cancel`),
 
+  pause: (id: string) =>
+    apiPost<{ ok: boolean }>(`/jobs/${id}/pause`),
+
   resume: (id: string) =>
     apiPost<{ ok: boolean; job_id: string }>(`/jobs/${id}/resume`),
 
   retry: (id: string) =>
     apiPost<{ ok: boolean; job_id: string }>(`/jobs/${id}/retry`),
 
+  assign: (id: string, machines: string[]) =>
+    apiPost<{ ok: boolean; resumed: boolean; job_id?: string }>(`/jobs/${id}/assign`, { machines }),
+
+  unassign: (id: string, machines: string[]) =>
+    apiPost<{ ok: boolean }>(`/jobs/${id}/unassign`, { machines }),
+
   clear: () =>
     apiPost<{ ok: boolean }>('/jobs/clear'),
+
+  dispatchBack: (id: string) =>
+    apiPost<{ ok: boolean; warnings?: string[] }>(`/jobs/${id}/dispatch-back`),
 }

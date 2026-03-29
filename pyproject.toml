@@ -29,3 +29,6 @@ skylator-server  = "server:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["translator*", "scripts*"]
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths    = ["tests"]

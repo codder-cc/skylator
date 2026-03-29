@@ -177,12 +177,20 @@ class RegistryPullBackend:
             else:
                 raw = self._registry.collect_result(chunk_id, timeout=self._timeout)
 
+            from translator.models.remote_backend import RemoteServerDeadError
             if raw is None:
                 log.error("PullBackend [%s]: chunk %s timed out after %.0fs — marking dead",
                           self._label, chunk_id[:8], self._timeout)
-                from translator.models.remote_backend import RemoteServerDeadError
                 raise RemoteServerDeadError(
                     f"[{self._label}] chunk {chunk_id[:8]} timed out after {self._timeout:.0f}s"
+                )
+            if raw and raw.startswith("\x00"):
+                # Remote signalled a hard error (e.g. no model loaded, inference crash).
+                error_type = raw.strip("\x00")
+                log.error("PullBackend [%s]: chunk %s remote error: %s — marking dead",
+                          self._label, chunk_id[:8], error_type)
+                raise RemoteServerDeadError(
+                    f"[{self._label}] remote reported '{error_type}' for chunk {chunk_id[:8]}"
                 )
 
             elapsed = max(_time.monotonic() - t_chunk, 0.001)

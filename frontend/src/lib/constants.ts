@@ -4,7 +4,10 @@ export const DEFAULT_STRINGS_PER_PAGE = 100
 
 export const HEARTBEAT_TTL = 45000
 
-export const JOB_TERMINAL_STATUSES = ['done', 'failed', 'cancelled'] as const
+export const JOB_TERMINAL_STATUSES = ['done', 'failed', 'cancelled', 'paused'] as const
+
+// Statuses that require active polling / SSE stream (not terminal, not settled)
+export const JOB_ACTIVE_STATUSES = ['running', 'pending', 'offline_dispatched'] as const
 
 export const SCOPES = ['all', 'esp', 'mcm', 'bsa', 'swf', 'review', 'untranslatable', 'reserved'] as const
 

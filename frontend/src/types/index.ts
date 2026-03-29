@@ -1,4 +1,4 @@
-export type JobStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled'
+export type JobStatus = 'pending' | 'running' | 'paused' | 'done' | 'failed' | 'cancelled' | 'offline_dispatched'
 
 export type ModStatus = 'unknown' | 'no_strings' | 'pending' | 'partial' | 'done'
 
@@ -47,8 +47,10 @@ export interface Job {
   error: string | null
   params: Record<string, unknown>
   mod_name: string
+  assigned_machines: string[]
   tokens_generated?: number
   tps_avg?: number
+  offline_job_ids?: string[]
 }
 
 export interface ModFileInfo {
@@ -153,6 +155,13 @@ export interface WorkerInfo {
   ota_status?: 'idle' | 'updating' | 'restarting' | 'success' | 'failed'
   ota_steps?: string[]
   ota_restart_at?: number
+  offline_jobs?: {
+    offline_job_id: string
+    total: number
+    done: number
+    tps: number
+    current_text: string
+  }[]
 }
 
 export interface BenchmarkSampleResult {

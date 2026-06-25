@@ -61,4 +61,11 @@ export const workersApi = {
     apiPost<{ ok: boolean; chunk_id?: string }>(
       `/api/workers/${encodeURIComponent(label)}/ota-update`,
     ),
+
+  // Phase 7 — operator action: immediately orphan a dead agent's active assignments so
+  // its undelivered strings become reassignable (instead of waiting the multi-day horizon).
+  abandon: (label: string) =>
+    apiPost<{ ok: boolean; orphaned: string[]; reassignable: number }>(
+      `/api/workers/${encodeURIComponent(label)}/abandon`,
+    ),
 }

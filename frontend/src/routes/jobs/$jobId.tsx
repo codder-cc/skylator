@@ -561,6 +561,73 @@ function RetryButton({ jobId }: { jobId: string }) {
   )
 }
 
+function CollectButton({ jobId }: { jobId: string }) {
+  const qc = useQueryClient()
+  const [open, setOpen] = useState(false)
+  const mut = useMutation({
+    mutationFn: () => jobsApi.collect(jobId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.jobs() })
+      setOpen(false)
+    },
+  })
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-success/20 text-success border border-success/30 hover:bg-success/30 transition-colors"
+      >
+        <ArrowDownToLine size={11} />
+        Deploy What We Have
+      </button>
+      <ConfirmDialog
+        open={open}
+        onOpenChange={setOpen}
+        title="Deploy partial results?"
+        description="Apply every translated string for this job's mods to the game files now — even if some strings are still pending or a worker died. Pending strings stay pending and can be translated later."
+        confirmLabel="Deploy"
+        loading={mut.isPending}
+        onConfirm={() => mut.mutate()}
+      />
+    </>
+  )
+}
+
+// Live funnel — assigned → delivered → translated → pending. Derived from durable
+// assignments on the host, so it stays accurate across master restarts and detach/reattach.
+function TallyCard({ jobId, live }: { jobId: string; live: boolean }) {
+  const { data: t } = useQuery({
+    queryKey: QK.jobTally(jobId),
+    queryFn: () => jobsApi.tally(jobId),
+    refetchInterval: live ? 5_000 : false,
+  })
+  if (!t || (t.assigned === 0 && t.translated === 0 && t.pending === 0)) return null
+
+  const cells: Array<[string, number, string]> = [
+    ['Assigned', t.assigned, 'text-text-main'],
+    ['Delivered', t.delivered, 'text-accent'],
+    ['Translated', t.translated, 'text-success'],
+    ['Pending', t.pending, 'text-warning'],
+    ['Needs review', t.needs_review, 'text-warning'],
+  ]
+  return (
+    <div className="card p-4">
+      <div className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-3">
+        Progress funnel
+      </div>
+      <div className="grid grid-cols-3 sm:grid-cols-5 gap-4">
+        {cells.map(([label, val, color]) => (
+          <div key={label}>
+            <div className={cn('text-2xl font-bold font-mono', color)}>{val}</div>
+            <div className="text-xs text-text-muted">{label}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ── Job detail page ───────────────────────────────────────────────────────────
 
 function JobDetailPage() {
@@ -616,9 +683,14 @@ function JobDetailPage() {
         )}
         {job.status === 'offline_dispatched' && (
           <>
+            <CollectButton jobId={jobId} />
             <DispatchBackButton jobId={jobId} />
             <CancelButton jobId={jobId} />
           </>
+        )}
+        {(job.status === 'failed' || job.status === 'cancelled' || job.status === 'paused')
+          && job.job_type.includes('translate') && (
+          <CollectButton jobId={jobId} />
         )}
         {(job.status === 'failed' || job.status === 'cancelled') && (
           <>
@@ -638,6 +710,9 @@ function JobDetailPage() {
 
       {/* Timing / throughput */}
       <TimingCard job={job} />
+
+      {/* Progress funnel (assigned → delivered → translated → pending) */}
+      {job.job_type.includes('translate') && <TallyCard jobId={jobId} live={!isTerminal} />}
 
       {/* Offline dispatched banner */}
       {job.status === 'offline_dispatched' && (

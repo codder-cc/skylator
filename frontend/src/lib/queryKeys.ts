@@ -8,6 +8,7 @@ export const QK = {
   modLiveUpdates:  (modName: string) => ['modLiveUpdates', modName] as const,
   jobs:            () => ['jobs'] as const,
   job:             (id: string) => ['jobs', id] as const,
+  jobTally:        (id: string) => ['jobs', id, 'tally'] as const,
   workers:         () => ['workers'] as const,
   servers:         () => ['servers'] as const,
   tokenStats:      () => ['tokenStats'] as const,

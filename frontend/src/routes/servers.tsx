@@ -709,6 +709,10 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange,
     onSuccess: () => qc.invalidateQueries({ queryKey: QK.workers() }),
     onError: () => clearFlight(),
   })
+  const abandonMut = useMutation({
+    mutationFn: () => workersApi.abandon(worker.label),
+    onSuccess: () => qc.invalidateQueries({ queryKey: QK.workers() }),
+  })
 
   const workerCommit = worker.commit ?? ''
   const upToDate = hostCommit && workerCommit && workerCommit === hostCommit
@@ -886,6 +890,17 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange,
         >
           <Play className="w-3 h-3" />Benchmark
         </button>
+        {!worker.alive && (
+          <button
+            onClick={() => abandonMut.mutate()}
+            disabled={abandonMut.isPending}
+            title="Reassign this dead worker's unfinished strings to other machines now"
+            className="flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-warning/20 text-warning border border-warning/30 hover:bg-warning/30 disabled:opacity-50 transition-colors"
+          >
+            {abandonMut.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+            Abandon
+          </button>
+        )}
       </div>
 
       {/* ── OTA steps (live during update, persisted after) ── */}

@@ -296,6 +296,7 @@ class ServerState:
         self.offline_pending_done: bool = False
         # Durable result store (fault-tolerance core) — opened in lifespan
         self.result_store = None         # ResultStore | None
+        self.stalled: bool = False       # watchdog: offline production appears stuck
 
     @property
     def tps_avg(self) -> float:
@@ -1022,6 +1023,50 @@ async def _deliver_loop(base: str, label: str, state: ServerState) -> None:
             await asyncio.sleep(3.0)
 
 
+async def _watchdog_loop(state: ServerState) -> None:
+    """Detect a hung/degraded model during offline production: if the durable result seq
+    stops advancing while an offline job is active, flag a stall (surfaced via /digest and
+    heartbeat). Auto-recycle of the backend is OPT-IN via SKYLATOR_WATCHDOG_RECYCLE, since
+    a blind model reload is risky; recovery is safe regardless because progress is durable
+    and the runner resumes from the manifest."""
+    import os
+    import time as _t
+    stall_s = int(os.environ.get("SKYLATOR_WATCHDOG_STALL", "600"))
+    recycle = os.environ.get("SKYLATOR_WATCHDOG_RECYCLE", "") not in ("", "0", "false", "False")
+    last_seq = 0
+    last_change = _t.monotonic()
+    while True:
+        try:
+            await asyncio.sleep(30)
+            if state.result_store is None:
+                continue
+            cur = state.result_store.max_seq()
+            now = _t.monotonic()
+            producing = state.offline_job is not None
+            if cur != last_seq:
+                last_seq, last_change, state.stalled = cur, now, False
+            elif producing and (now - last_change) > stall_s:
+                if not state.stalled:
+                    log.warning("Watchdog: offline production stalled %ds (seq stuck at %d)",
+                                int(now - last_change), cur)
+                    state.stalled = True
+                if recycle and state.backend is not None and state._model_lock is not None:
+                    log.warning("Watchdog: recycling backend due to stall (opt-in)")
+                    async with state._model_lock:
+                        loop = asyncio.get_running_loop()
+                        try:
+                            await loop.run_in_executor(None, state.backend.unload)
+                            await loop.run_in_executor(None, state.backend.load)
+                            last_change = _t.monotonic()
+                            state.stalled = False
+                        except Exception as exc:
+                            log.error("Watchdog recycle failed: %s", exc)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("watchdog error: %s", exc)
+
+
 async def _produce_assignment(state, loop, aid: str, meta: dict) -> None:
     """Run the store-driven runner for one assignment, then mark it complete.
     Safe to call on a fresh dispatch OR on resume after a crash — the runner reads
@@ -1459,6 +1504,10 @@ def create_server_app(
             _register_mdns(mdns_host, mdns_port, state)
 
         bg_tasks: list[asyncio.Task] = []
+        # Inference watchdog runs regardless of host connectivity (acts only during
+        # offline production).
+        if state.result_store is not None:
+            bg_tasks.append(asyncio.create_task(_watchdog_loop(state)))
         if host_url:
             bg_tasks.append(asyncio.create_task(
                 _register_and_heartbeat(host_url, mdns_host, mdns_port, caps, state)
@@ -1549,6 +1598,7 @@ def create_server_app(
         # idle_starved: agent is up but has no open work to do.
         health["idle_starved"] = (health.get("open_assignments", 0) == 0
                                   and state.offline_job is None)
+        health["stalled"] = state.stalled
         d["health"] = health
         return d
 

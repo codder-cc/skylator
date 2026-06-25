@@ -789,6 +789,9 @@ async def _async_register(client, host_url: str, my_url: str,
                            caps: list[str], state: ServerState) -> bool:
     """Register with host. Returns True on success."""
     label = f"{platform.system().lower()}-{socket.gethostname()}"
+    # Reconnect handshake: tell the host what open assignments we hold so it can reply
+    # with which to resume / stop / abandon (Phase 5).
+    digest = state.result_store.digest() if state.result_store is not None else None
     try:
         r = await client.post(
             f"{host_url.rstrip('/')}/api/workers/register",
@@ -801,16 +804,40 @@ async def _async_register(client, host_url: str, my_url: str,
                 "capabilities": caps,
                 "commit":       _get_git_commit(),
                 "hardware":     state.hardware,
+                "digest":       digest,
             },
             timeout=10.0,
         )
         if r.status_code == 200:
             log.info("Registered with host %s as %s", host_url, label)
+            try:
+                reconcile = (r.json() or {}).get("reconcile") or {}
+                _apply_reconcile(state, reconcile)
+            except Exception as exc:
+                log.debug("register: could not apply reconcile: %s", exc)
             return True
         log.warning("Host registration returned HTTP %s", r.status_code)
     except Exception as exc:
         log.warning("Could not register with host %s: %s", host_url, exc)
     return False
+
+
+def _apply_reconcile(state: ServerState, reconcile: dict) -> None:
+    """Act on the host's handshake verdict. 'resume'/'unknown' → keep working;
+    'reconciled' → host has it all, stop; 'reassigned' → host gave it away, abandon.
+    Safe by construction: marking an assignment complete/abandoned only stops *future*
+    production; nothing already produced is lost (it stays durable until delivered)."""
+    if not reconcile or state.result_store is None:
+        return
+    for aid, action in reconcile.items():
+        if action == "reconciled":
+            state.result_store.set_assignment_state(aid, "complete")
+            log.info("Handshake: assignment %s already reconciled by host — stopping", aid[:8])
+        elif action == "reassigned":
+            state.result_store.set_assignment_state(aid, "abandoned")
+            log.info("Handshake: assignment %s reassigned by host — abandoning", aid[:8])
+            if (state.offline_job or {}).get("offline_job_id") == aid and state.offline_job_runner:
+                state.offline_job_runner.cancel()
 
 
 async def _async_unregister(client, host_url: str) -> None:

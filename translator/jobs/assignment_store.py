@@ -177,6 +177,31 @@ class AssignmentStore:
         ).fetchone()
         return (row[0], row[1]) if row else (0, 0)
 
+    def diff_handshake(self, agent_label: str, digest: dict) -> dict:
+        """Compare an agent's reported open assignments (from its ResultStore digest)
+        against host state and decide what each should do on reconnect:
+
+          resume      — host still expects this agent to finish it → keep working
+          reconciled  — host already has everything (assignment complete) → stop
+          reassigned  — host gave it to another agent → abandon it
+          unknown     — host has no record (e.g. master DB restored older) → keep working;
+                        the master will relearn it via pull/push
+
+        Returns {assignment_id: action}. Pure read — safe to call from a request handler.
+        """
+        out: dict[str, str] = {}
+        for aid in (digest.get("open_assignments") or []):
+            a = self.get_assignment(aid)
+            if a is None:
+                out[aid] = "unknown"
+            elif a["agent_id"] != agent_label:
+                out[aid] = "reassigned"
+            elif a["state"] in TERMINAL_STATES and a["state"] == "complete":
+                out[aid] = "reconciled"
+            else:
+                out[aid] = "resume"
+        return out
+
     def expected_hash(self, mod_name: str, esp_name: str, key: str) -> str | None:
         """The hash the master expects for a string — for cross-checking deliveries
         against what was actually dispatched (used once manifests exist, Phase 3)."""

@@ -1147,7 +1147,20 @@ def workers_register():
     )
     registry.register(info)
     log.info("Worker registered: %s @ %s  model=%s", label, url, info.model)
-    return jsonify({"ok": True, "label": label})
+
+    # Reconnect handshake (Phase 5): if the agent reported a digest of its open
+    # assignments, tell it which to resume / stop / abandon. This auto-recovers an
+    # agent that died and relaunched, with no operator action.
+    reconcile = {}
+    digest = data.get("digest")
+    repo   = current_app.config.get("STRING_REPO")
+    if digest and repo is not None:
+        try:
+            from translator.jobs.assignment_store import AssignmentStore
+            reconcile = AssignmentStore(repo.db).diff_handshake(label, digest)
+        except Exception as exc:
+            log.warning("register: handshake diff failed for %s: %s", label, exc)
+    return jsonify({"ok": True, "label": label, "reconcile": reconcile})
 
 
 @bp.route("/workers/heartbeat", methods=["POST"])
@@ -1172,6 +1185,16 @@ def workers_heartbeat():
                                offline_jobs=offline_jobs)
     if not found:
         return jsonify({"ok": False, "reregister": True}), 404
+
+    # A live heartbeat refreshes the lease on this agent's active assignments, so the
+    # Phase 7 reaper only reassigns work from agents that have genuinely gone silent.
+    repo = current_app.config.get("STRING_REPO")
+    if repo is not None:
+        try:
+            from translator.jobs.assignment_store import AssignmentStore
+            AssignmentStore(repo.db).touch_lease(label)
+        except Exception:
+            pass
     return jsonify({"ok": True})
 
 

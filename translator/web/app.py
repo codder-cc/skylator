@@ -226,6 +226,21 @@ def create_app(config_path: Path | None = None) -> Flask:
 
     _threading.Thread(target=_bg_backup_db, daemon=True, name="db-backup").start()
 
+    # ── Conservative reassignment reaper (Phase 7) ───────────────────────────
+    def _bg_reap_assignments():
+        while True:
+            _time.sleep(3600)  # hourly; the horizon itself is multi-day
+            try:
+                orphaned = _assignment_mgr.reap()
+                if orphaned:
+                    n = len(_assignment_mgr.reassignable_string_ids())
+                    log.warning("Reaper orphaned %d presumed-dead assignment(s); "
+                                "%d strings now reassignable", len(orphaned), n)
+            except Exception as exc:
+                log.warning("assignment reaper error: %s", exc)
+
+    _threading.Thread(target=_bg_reap_assignments, daemon=True, name="assignment-reaper").start()
+
     # ── Register blueprints ─────────────────────────────────────────────────
     from translator.web.routes import register_routes
     register_routes(app)

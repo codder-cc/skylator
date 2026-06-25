@@ -12,10 +12,18 @@ Policy layer on top of AssignmentStore (data access). It owns:
 from __future__ import annotations
 
 import logging
+import time
 
 from translator.jobs.assignment_store import AssignmentStore, ACTIVE_STATES, TERMINAL_STATES
 
 log = logging.getLogger(__name__)
+
+# Reassignment horizon — how long an agent's lease may be expired before we presume it
+# dead and reassign its undelivered work. DELIBERATELY long (days), because for a
+# months-long autonomous run "silent for a while" is normal, not death. Reassignment is a
+# throughput optimization, never a correctness requirement (dedup makes any double-work
+# safe), so we err strongly toward patience.
+PRESUMED_DEAD_HORIZON = 3 * 24 * 3600   # 3 days
 
 # Legal transitions. Terminal states are sinks except 'failed'/'orphaned', which may be
 # requeued (Phase 7 reassignment moves their undelivered strings to a fresh assignment).
@@ -105,3 +113,54 @@ class AssignmentManager:
         if not rows:
             return False
         return all(a["state"] in TERMINAL_STATES for a in rows)
+
+    # ── two-tier liveness + conservative reassignment (Phase 7) ───────────────────
+
+    def liveness_tier(self, assignment: dict, now: float, horizon: float) -> str:
+        """Classify an assignment's agent:
+          connected     — lease still valid (recent heartbeat)
+          disconnected  — lease expired but within the presumed-dead horizon → KEEP,
+                          the agent may simply be offline while still producing locally
+          presumed_dead — silent beyond the horizon → eligible for reassignment
+        """
+        exp = assignment.get("lease_expires_at") or 0
+        if exp >= now:
+            return "connected"
+        if (now - exp) < horizon:
+            return "disconnected"
+        return "presumed_dead"
+
+    def reap(self, now: float | None = None,
+             horizon: float = PRESUMED_DEAD_HORIZON) -> list[str]:
+        """Orphan assignments whose agent is presumed dead. Conservative: only touches
+        agents silent beyond the (long) horizon; 'disconnected' agents are left alone.
+        Returns the list of orphaned assignment ids. Their undelivered strings become
+        reassignable; if the original agent ever revives and delivers, dedup collapses it."""
+        now = now if now is not None else time.time()
+        orphaned: list[str] = []
+        for a in self.store.list_active():
+            if self.liveness_tier(a, now, horizon) == "presumed_dead":
+                if self.transition(a["assignment_id"], "orphaned"):
+                    orphaned.append(a["assignment_id"])
+        if orphaned:
+            log.warning("Reaper: orphaned %d presumed-dead assignment(s): %s",
+                        len(orphaned), [x[:8] for x in orphaned])
+        return orphaned
+
+    def abandon_agent(self, agent_id: str) -> list[str]:
+        """Operator action: immediately orphan all of an agent's active assignments
+        (e.g. you know a machine is gone for good and don't want to wait the horizon)."""
+        orphaned: list[str] = []
+        for a in self.store.list_assignments(agent_id=agent_id):
+            if a["state"] in ACTIVE_STATES and self.transition(a["assignment_id"], "orphaned"):
+                orphaned.append(a["assignment_id"])
+        log.info("abandon_agent(%s): orphaned %d assignment(s)", agent_id, len(orphaned))
+        return orphaned
+
+    def reassignable_string_ids(self) -> list[int]:
+        """Undelivered string ids across all orphaned assignments — the work that a fresh
+        dispatch should pick up. Deduped."""
+        ids: set[int] = set()
+        for a in self.store.list_assignments(state="orphaned"):
+            ids.update(self.store.undelivered_string_ids(a["assignment_id"]))
+        return sorted(ids)

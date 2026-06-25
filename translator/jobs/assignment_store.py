@@ -22,6 +22,10 @@ log = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 
+# Wire-protocol version (must match remote_worker/result_store.PROTOCOL_VERSION). Bumped
+# only on an incompatible payload change; a mismatch is logged, not fatal.
+PROTOCOL_VERSION = 1
+
 # Assignment lifecycle states (the persisted state machine, exercised fully in Phase 6).
 ACTIVE_STATES   = ("queued", "leased", "in_progress", "partially_delivered")
 TERMINAL_STATES = ("complete", "failed", "orphaned")

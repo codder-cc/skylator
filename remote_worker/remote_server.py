@@ -793,6 +793,10 @@ async def _async_register(client, host_url: str, my_url: str,
     # with which to resume / stop / abandon (Phase 5).
     digest = state.result_store.digest() if state.result_store is not None else None
     try:
+        from result_store import PROTOCOL_VERSION as _PROTO
+    except Exception:
+        _PROTO = None
+    try:
         r = await client.post(
             f"{host_url.rstrip('/')}/api/workers/register",
             json={
@@ -805,6 +809,7 @@ async def _async_register(client, host_url: str, my_url: str,
                 "commit":       _get_git_commit(),
                 "hardware":     state.hardware,
                 "digest":       digest,
+                "protocol":     _PROTO,
             },
             timeout=10.0,
         )
@@ -1534,10 +1539,18 @@ def create_server_app(
 
     @app.get("/digest")
     async def get_digest():
-        """Compact state summary for the reconnect handshake (Phase 5)."""
+        """Compact state summary for the reconnect handshake (Phase 5) + health flags
+        (Phase 10): disk pressure, open work, idle_starved."""
         if state.result_store is None:
-            return {"open_assignments": [], "per_assignment": {}, "max_seq": 0, "undelivered": 0}
-        return state.result_store.digest()
+            return {"open_assignments": [], "per_assignment": {}, "max_seq": 0,
+                    "undelivered": 0, "health": {}}
+        d = state.result_store.digest()
+        health = state.result_store.health()
+        # idle_starved: agent is up but has no open work to do.
+        health["idle_starved"] = (health.get("open_assignments", 0) == 0
+                                  and state.offline_job is None)
+        d["health"] = health
+        return d
 
     # ── Model management ──────────────────────────────────────────────────────
 

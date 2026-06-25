@@ -1,0 +1,27 @@
+# systemd unit for the Skylator master host (Flask web server).
+#
+# Install:
+#   sudo cp deploy/skylator-master.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now skylator-master
+#
+# Recommended topology: run the master as an always-on service so "how is it going?"
+# always has a live answer. Restart=always means the master self-heals across reboots;
+# on startup it preserves all in-flight assignments (boot recovery) and the pull loop
+# reconciles whatever the agents produced while it was down.
+
+[Unit]
+Description=Skylator Translation Master (Flask)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/skylator
+ExecStart=/opt/skylator/venv/bin/python web_server.py --host 0.0.0.0 --port 5000
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target

@@ -1148,6 +1148,15 @@ def workers_register():
     registry.register(info)
     log.info("Worker registered: %s @ %s  model=%s", label, url, info.model)
 
+    # Protocol negotiation (Phase 10d): warn on a version skew rather than failing, so an
+    # agent mid-OTA keeps producing locally and just defers anything it can't speak.
+    agent_proto = data.get("protocol")
+    if agent_proto is not None:
+        from translator.jobs.assignment_store import PROTOCOL_VERSION as _HOST_PROTO
+        if agent_proto != _HOST_PROTO:
+            log.warning("Worker %s protocol v%s != host v%s — proceeding in compat mode",
+                        label, agent_proto, _HOST_PROTO)
+
     # Reconnect handshake (Phase 5): if the agent reported a digest of its open
     # assignments, tell it which to resume / stop / abandon. This auto-recovers an
     # agent that died and relaunched, with no operator action.
@@ -1160,7 +1169,9 @@ def workers_register():
             reconcile = AssignmentStore(repo.db).diff_handshake(label, digest)
         except Exception as exc:
             log.warning("register: handshake diff failed for %s: %s", label, exc)
-    return jsonify({"ok": True, "label": label, "reconcile": reconcile})
+    from translator.jobs.assignment_store import PROTOCOL_VERSION as _HOST_PROTO
+    return jsonify({"ok": True, "label": label, "reconcile": reconcile,
+                    "protocol": _HOST_PROTO})
 
 
 @bp.route("/workers/heartbeat", methods=["POST"])

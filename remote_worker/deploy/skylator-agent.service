@@ -1,0 +1,34 @@
+# systemd unit for the Skylator remote translation worker (Linux).
+#
+# Install:
+#   sudo cp skylator-agent.service /etc/systemd/system/
+#   sudo mkdir -p /etc/skylator && sudo cp skylator-agent.env /etc/skylator/agent.env
+#   # edit /etc/skylator/agent.env to set SKYLATOR_HOST_URL and (optional) SKYLATOR_MODEL
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now skylator-agent
+#
+# Why this matters: for a months-long autonomous run the worker MUST come back on its
+# own after a reboot, power loss, OOM kill, or crash. Restart=always + the durable
+# ResultStore means a restart resumes the in-flight assignment with zero lost work.
+
+[Unit]
+Description=Skylator Remote Translation Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust these two paths to your install location:
+WorkingDirectory=/opt/skylator/remote_worker
+EnvironmentFile=/etc/skylator/agent.env
+ExecStart=/opt/skylator/remote_worker/venv/bin/python server.py \
+    --host-url ${SKYLATOR_HOST_URL} ${SKYLATOR_EXTRA_ARGS}
+Restart=always
+RestartSec=5
+# Give long model loads time; never give up restarting.
+StartLimitIntervalSec=0
+# Survive transient OOM by restarting rather than staying dead.
+OOMPolicy=continue
+
+[Install]
+WantedBy=multi-user.target

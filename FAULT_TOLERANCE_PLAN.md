@@ -1,5 +1,15 @@
 # Skylator — Fault-Tolerant Distributed Translation Plan
 
+> **Implementation status (all 10 phases landed on branch `feat/fault-tolerant-dispatch`).**
+> Phases 0–10 implemented and committed phase-by-phase; 47 dedicated tests pass, including
+> the end-to-end chaos test (`tests/test_recovery_chaos.py`): agent crash + master crash +
+> restart ⇒ **0 lost, 0 duplicated**, and partial results stay collectable when an agent
+> dies for good. Remaining as documented follow-ups (need a live server/GPU to verify, not
+> unit-testable here): the agent inference-watchdog *auto-recycle* action, automatic
+> *lease-more* re-dispatch wiring, and the frontend tally/collect *UI* (API methods added).
+
+
+
 **Goal:** Make every dispatched translation **recoverable end-to-end**. No completed
 string is ever lost to an agent crash, a master crash, a network outage, or a restart.
 A week-long run must survive any participant dying and resume automatically.

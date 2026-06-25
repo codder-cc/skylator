@@ -32,6 +32,18 @@ log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 
+# Wire-protocol version negotiated with the master at registration. Over a months-long
+# run an OTA update may change payloads on one side; both ends carry this so a mismatch
+# degrades gracefully (logged) instead of corrupting or silently dropping work.
+PROTOCOL_VERSION = 1
+
+# Idempotent agent-DB migrations applied in order. Each entry: (version, [sql, ...]).
+# The base schema is created by _SCHEMA; this is for future in-place changes so an
+# OTA-updated agent migrates worker_results.db without losing in-flight rows.
+_AGENT_MIGRATIONS: list[tuple[int, list[str]]] = [
+    # (2, ["ALTER TABLE agent_results ADD COLUMN ...", ...]),
+]
+
 _SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
@@ -101,6 +113,7 @@ class ResultStore:
         self._conn.row_factory = sqlite3.Row
         self._disk_full = False
         self._init_schema()
+        self.migrate()
         log.info("ResultStore opened at %s", self.db_path)
 
     # ── schema / lifecycle ────────────────────────────────────────────────────
@@ -118,9 +131,51 @@ class ResultStore:
                 )
             self._conn.commit()
 
+    def migrate(self) -> None:
+        """Apply any pending agent-DB migrations in place. Idempotent — safe on every
+        startup, including right after an OTA update that bumped the schema."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM agent_meta WHERE key='schema_version'"
+            ).fetchone()
+            current = int(row[0]) if row else 0
+            for version, statements in _AGENT_MIGRATIONS:
+                if version <= current:
+                    continue
+                log.info("ResultStore: applying agent migration %d", version)
+                for sql in statements:
+                    try:
+                        self._conn.execute(sql)
+                    except sqlite3.Error as exc:
+                        log.warning("agent migration %d stmt failed (maybe harmless): %s",
+                                    version, exc)
+                current = version
+            self._conn.execute(
+                "INSERT INTO agent_meta(key,value) VALUES('schema_version', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(current),),
+            )
+            self._conn.commit()
+
     @property
     def disk_full(self) -> bool:
         return self._disk_full
+
+    def health(self) -> dict:
+        """Operational flags for the heartbeat (Phase 10): disk pressure, whether the
+        agent has any open work, and how much is waiting to be delivered. The agent
+        derives `idle_starved` from open_assignments==0 while it is otherwise up."""
+        with self._lock:
+            open_n = self._conn.execute(
+                "SELECT COUNT(*) FROM agent_assignments WHERE state='open'"
+            ).fetchone()[0]
+        return {
+            "disk_full":        self._disk_full,
+            "open_assignments": open_n,
+            "undelivered":      self.undelivered_count(),
+            "max_seq":          self.max_seq(),
+            "protocol":         PROTOCOL_VERSION,
+        }
 
     def checkpoint(self) -> None:
         """Truncate the WAL so it does not grow without bound over a long run."""

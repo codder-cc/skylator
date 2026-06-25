@@ -1242,6 +1242,58 @@ def workers_post_result(label: str):
     return jsonify({"ok": True, "matched": found})
 
 
+@bp.route("/assignments", methods=["GET"])
+def assignments_overview():
+    """Observability ledger (Phase 9): per-assignment funnel + agent liveness tier, plus
+    aggregate totals. This is what an operator checks after days away to see how a
+    months-long run is progressing and whether anything is stuck."""
+    import time as _time
+    repo = current_app.config.get("STRING_REPO")
+    amgr = current_app.config.get("ASSIGNMENT_MGR")
+    if repo is None:
+        return jsonify({"assignments": [], "aggregate": {}})
+
+    from translator.jobs.assignment_store import AssignmentStore
+    from translator.jobs.assignment_manager import PRESUMED_DEAD_HORIZON
+    astore = amgr.store if amgr is not None else AssignmentStore(repo.db)
+    now = _time.time()
+
+    rows = [dict(r) for r in repo.db.execute(
+        "SELECT * FROM assignments ORDER BY created_at DESC LIMIT 500").fetchall()]
+    out = []
+    agg = {"total": 0, "delivered": 0, "active": 0, "presumed_dead": 0, "disconnected": 0}
+    for a in rows:
+        tier = (amgr.liveness_tier(a, now, PRESUMED_DEAD_HORIZON)
+                if amgr is not None else "unknown")
+        agg["total"]     += a["total"]
+        agg["delivered"] += a["delivered"]
+        from translator.jobs.assignment_store import ACTIVE_STATES
+        if a["state"] in ACTIVE_STATES:
+            agg["active"] += 1
+            if tier in ("presumed_dead", "disconnected"):
+                agg[tier] += 1
+        out.append({
+            "assignment_id": a["assignment_id"], "job_id": a["job_id"],
+            "agent_id": a["agent_id"], "mod_name": a["mod_name"], "state": a["state"],
+            "total": a["total"], "delivered": a["delivered"],
+            "undelivered": max(0, a["total"] - a["delivered"]), "tier": tier,
+        })
+    return jsonify({"assignments": out, "aggregate": agg})
+
+
+@bp.route("/workers/<label>/abandon", methods=["POST"])
+def worker_abandon(label: str):
+    """Operator action (Phase 7): immediately orphan an agent's active assignments
+    instead of waiting out the multi-day presumed-dead horizon. Its undelivered strings
+    become reassignable; dedup makes a later revival safe."""
+    amgr = current_app.config.get("ASSIGNMENT_MGR")
+    if amgr is None:
+        return jsonify({"ok": False, "error": "not initialized"}), 500
+    orphaned = amgr.abandon_agent(label)
+    return jsonify({"ok": True, "orphaned": orphaned,
+                    "reassignable": len(amgr.reassignable_string_ids())})
+
+
 @bp.route("/workers/<label>/offline-results", methods=["POST"])
 def workers_offline_results(label: str):
     """Remote posts incremental/final results from an offline translate job.

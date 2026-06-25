@@ -194,6 +194,19 @@ def create_app(config_path: Path | None = None) -> Flask:
     app.config["WORKER_REGISTRY"] = _registry
     app.config["SETUP_REPORTS"]   = []   # in-memory list of remote setup reports
 
+    # ── Assignment state machine + boot recovery ─────────────────────────────
+    from translator.jobs.assignment_store import AssignmentStore
+    from translator.jobs.assignment_manager import AssignmentManager
+    _assignment_mgr = AssignmentManager(AssignmentStore(_repo.db))
+    app.config["ASSIGNMENT_MGR"] = _assignment_mgr
+    try:
+        _recovery = _assignment_mgr.recover_on_boot()
+        if _recovery["active"]:
+            log.info("Boot recovery preserved %d active assignment(s), %d strings pending",
+                     _recovery["active"], _recovery["undelivered_strings"])
+    except Exception as exc:
+        log.warning("assignment boot recovery error: %s", exc)
+
     # ── Master-pull reconciliation (authoritative) ──────────────────────────
     from translator.web.pull_reconcile import pull_loop
     _threading.Thread(

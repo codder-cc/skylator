@@ -1303,6 +1303,13 @@ def workers_offline_results(label: str):
                 )
                 mods_touched.add(mod_name)
                 saved_count += 1
+                # Durable per-string delivery tracking (host manifest, Phase 3).
+                sid = r.get("string_id")
+                if astore is not None and sid is not None:
+                    try:
+                        astore.mark_string_delivered(offline_job_id, sid)
+                    except Exception:
+                        pass
         except Exception as exc:
             had_error = True
             log.warning("offline-results: save_string failed for %s/%s: %s", mod_name, key, exc)
@@ -1371,6 +1378,17 @@ def workers_offline_results(label: str):
         all_done = registry.finish_offline_job(offline_job_id)
         log.info("offline-results: %s done (saved=%d, all_workers_done=%s)",
                  offline_job_id[:8], saved_count, all_done)
+
+        # Settle the durable assignment's terminal state (Phase 3; refined in Phase 6).
+        if astore is not None:
+            try:
+                total, delivered = astore.counts(offline_job_id)
+                astore.set_state(
+                    offline_job_id,
+                    "complete" if (total > 0 and delivered >= total) else "partially_delivered",
+                )
+            except Exception:
+                pass
 
         if all_done and job is not None:
             job.status      = JobStatus.DONE

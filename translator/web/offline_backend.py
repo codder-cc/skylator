@@ -59,6 +59,48 @@ def _split_round_robin(strings: list[dict], n_workers: int) -> list[list[dict]]:
     return buckets
 
 
+def _make_remote_strings(bucket: list[dict], default_mod: str):
+    """Build the remote payload string dicts AND the host-side manifest items, sharing
+    one string_hash per string so the agent and master agree on the integrity anchor.
+
+    Returns (remote_strings, manifest_items) where manifest_items is
+    [(string_id, string_hash), ...] for every string with a real id.
+    """
+    from translator.data_manager.string_manager import _sha256_hash
+    remote: list[dict] = []
+    items:  list[tuple[int, str]] = []
+    for s in bucket:
+        original = s.get("original") or ""
+        h        = s.get("string_hash") or _sha256_hash(original)
+        sid      = s.get("id")
+        remote.append({
+            "id":          sid,
+            "key":         s.get("key") or "",
+            "esp":         s.get("esp") or s.get("esp_name") or "",
+            "mod_name":    s.get("mod_name") or default_mod,
+            "original":    original,
+            "string_hash": h,          # agent stores this → master/agent hashes always match
+        })
+        if sid is not None:
+            items.append((sid, h))
+    return remote, items
+
+
+def _persist_host_assignment(repo, offline_job_id, host_job_id, label, mod_name, items):
+    """Record a durable host-side assignment + manifest so recovery/reassignment and
+    delivery tracking have a source of truth that survives a master restart."""
+    if repo is None or not items:
+        return
+    try:
+        from translator.jobs.assignment_store import AssignmentStore
+        AssignmentStore(repo.db).create_assignment(
+            offline_job_id, host_job_id, label, mod_name, items, state="leased",
+        )
+    except Exception as exc:
+        log.warning("offline_backend: failed to persist host assignment %s: %s",
+                    offline_job_id[:8], exc)
+
+
 def dispatch(
     job,
     mod_name: str,
@@ -115,16 +157,8 @@ def dispatch(
         offline_job_id = str(uuid.uuid4())
         chunk_id       = str(uuid.uuid4())
 
-        # Normalise string dicts: remote expects 'esp' not 'esp_name' etc.
-        remote_strings = []
-        for s in bucket:
-            remote_strings.append({
-                "id":       s.get("id"),
-                "key":      s.get("key") or "",
-                "esp":      s.get("esp") or s.get("esp_name") or "",
-                "mod_name": s.get("mod_name") or mod_name,
-                "original": s.get("original") or "",
-            })
+        # Normalise string dicts (remote expects 'esp') + build the host manifest items.
+        remote_strings, manifest_items = _make_remote_strings(bucket, mod_name)
 
         package = {
             "chunk_id":        chunk_id,
@@ -172,6 +206,7 @@ def dispatch(
             raise RuntimeError(f"offline_backend: bad ACK from {label}: {exc}") from exc
 
         registry.register_offline_job(offline_job_id, host_job_id, label, len(remote_strings))
+        _persist_host_assignment(repo, offline_job_id, host_job_id, label, mod_name, manifest_items)
         offline_job_ids.append(offline_job_id)
         job.add_log(f"Dispatched {len(remote_strings)} strings to {label} (offline)")
 
@@ -264,23 +299,15 @@ def dispatch_multi(
         offline_job_id = str(uuid.uuid4())
         chunk_id       = str(uuid.uuid4())
 
-        remote_strings = [
-            {
-                "id":       s.get("id"),
-                "key":      s.get("key") or "",
-                "esp":      s.get("esp") or s.get("esp_name") or "",
-                "mod_name": s.get("mod_name") or "",
-                "original": s.get("original") or "",
-            }
-            for s in bucket
-        ]
+        remote_strings, manifest_items = _make_remote_strings(bucket, "")
+        multi_label = f"{len(mods)} mods"
 
         package = {
             "chunk_id":        chunk_id,
             "type":            "offline_translate",
             "offline_job_id":  offline_job_id,
             "host_job_id":     host_job_id,
-            "mod_name":        f"{len(mods)} mods",
+            "mod_name":        multi_label,
             "strings":         remote_strings,
             "context":         "",           # unused — per-mod context in mods_context
             "mods_context":    mods_context,
@@ -321,6 +348,7 @@ def dispatch_multi(
             raise RuntimeError(f"offline_backend.dispatch_multi: bad ACK from {label}: {exc}") from exc
 
         registry.register_offline_job(offline_job_id, host_job_id, label, len(remote_strings))
+        _persist_host_assignment(repo, offline_job_id, host_job_id, label, multi_label, manifest_items)
         offline_job_ids.append(offline_job_id)
         job.add_log(f"Dispatched {len(remote_strings)} strings to {label} (offline, multi-mod)")
 

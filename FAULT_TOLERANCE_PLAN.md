@@ -10,6 +10,15 @@
 > work to live workers** (`translator/web/redispatch.py`, wired into the reaper).
 > Known env issue (not code): the vite/rolldown production bundler needs a dep reinstall
 > (npm optional-deps bug #4828); `tsc -b` typechecks clean.
+>
+> **All post-implementation gaps closed too (72 tests passing):** autonomous work top-up
+> (`auto_feed.py` + `/api/auto-feed`), NAT-safe master-pull over the heartbeat channel,
+> job-status re-derivation on boot, observability UI (FleetOverview + agent health badges),
+> DB rebuild-from-agents (`/api/admin/rebuild-from-agents`), HTTP integration + agent-
+> migration tests, and the 4 pre-existing `test_pull_backend` failures fixed (resilient
+> `build_prompt` when `config.yaml` is absent). Production frontend build now succeeds.
+> Remaining items are non-code: Node 20.19+ upgrade (makes the build-binding fix permanent),
+> a live GPU smoke test, and merge to `main`.
 
 
 

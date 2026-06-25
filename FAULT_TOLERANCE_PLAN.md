@@ -1,12 +1,15 @@
 # Skylator — Fault-Tolerant Distributed Translation Plan
 
 > **Implementation status (all 10 phases landed on branch `feat/fault-tolerant-dispatch`).**
-> Phases 0–10 implemented and committed phase-by-phase; 47 dedicated tests pass, including
-> the end-to-end chaos test (`tests/test_recovery_chaos.py`): agent crash + master crash +
-> restart ⇒ **0 lost, 0 duplicated**, and partial results stay collectable when an agent
-> dies for good. Remaining as documented follow-ups (need a live server/GPU to verify, not
-> unit-testable here): the agent inference-watchdog *auto-recycle* action, automatic
-> *lease-more* re-dispatch wiring, and the frontend tally/collect *UI* (API methods added).
+> Phases 0–10 implemented and committed phase-by-phase; **51 dedicated tests pass**,
+> including the end-to-end chaos test (`tests/test_recovery_chaos.py`): agent crash +
+> master crash + restart ⇒ **0 lost, 0 duplicated**, and partial results stay collectable
+> when an agent dies for good. Follow-ups also landed: frontend tally/collect UI + servers
+> "Abandon" button (typecheck-clean), agent inference watchdog (stall flagging; opt-in
+> auto-recycle via `SKYLATOR_WATCHDOG_RECYCLE`), and **automatic re-dispatch of orphaned
+> work to live workers** (`translator/web/redispatch.py`, wired into the reaper).
+> Known env issue (not code): the vite/rolldown production bundler needs a dep reinstall
+> (npm optional-deps bug #4828); `tsc -b` typechecks clean.
 
 
 

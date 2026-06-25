@@ -35,7 +35,7 @@ ALLOWED_TRANSITIONS = {
     "partially_delivered": {"complete", "failed", "orphaned", "queued"},
     "complete":            set(),
     "failed":              {"queued"},
-    "orphaned":            {"queued"},
+    "orphaned":            {"queued", "failed"},   # 'failed' = closed after re-dispatch
 }
 
 

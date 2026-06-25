@@ -228,6 +228,7 @@ def create_app(config_path: Path | None = None) -> Flask:
 
     # ── Conservative reassignment reaper (Phase 7) ───────────────────────────
     def _bg_reap_assignments():
+        from translator.web.redispatch import auto_redispatch
         while True:
             _time.sleep(3600)  # hourly; the horizon itself is multi-day
             try:
@@ -236,6 +237,10 @@ def create_app(config_path: Path | None = None) -> Flask:
                     n = len(_assignment_mgr.reassignable_string_ids())
                     log.warning("Reaper orphaned %d presumed-dead assignment(s); "
                                 "%d strings now reassignable", len(orphaned), n)
+                # Automatically re-dispatch the dead agents' pending work to live workers.
+                new_job = auto_redispatch(app)
+                if new_job:
+                    log.warning("Reaper auto-redispatched orphaned work → job %s", new_job[:8])
             except Exception as exc:
                 log.warning("assignment reaper error: %s", exc)
 

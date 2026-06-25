@@ -104,10 +104,22 @@ class NeuralSummarizer:
             backend = LlamaCppBackend(model_cfg=model_cfg)
 
             log.info("Summarizing mod description with local LLM (%d chars input)...", len(trimmed))
+            # _chat expects a FULLY-assembled ChatML prompt (the prior bare-string +
+            # temperature= kwarg call raised TypeError → silently fell back to extractive).
+            # Wrap in ChatML with a </think> prefix to disable Qwen3 chain-of-thought, and
+            # pass sampling via InferenceParams.
+            from translator.models.inference_params import InferenceParams
+            formatted = (
+                "<|im_start|>system\nYou are a concise assistant that summarizes mod "
+                "descriptions in one or two plain sentences.<|im_end|>\n"
+                "<|im_start|>user\n" + prompt + "<|im_end|>\n"
+                "<|im_start|>assistant\n</think>\n\n"
+            )
             with backend:
-                result = backend._chat(prompt, temperature=0.2)
-
-            return result.strip()
+                result = backend._chat(formatted,
+                                       params=InferenceParams(temperature=0.2,
+                                                              max_tokens=256, thinking=False))
+            return (result or "").strip()
 
         except Exception as exc:
             log.warning("LLM summarizer failed (%s), falling back to extractive", exc)

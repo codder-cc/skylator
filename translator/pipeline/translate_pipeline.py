@@ -394,7 +394,14 @@ class TranslatePipeline:
             def _on_status(statuses) -> None:
                 job._worker_statuses = {st.label: st.to_dict() for st in statuses}
 
-            pool = WorkerPool(backends, chunk_size=10)
+            # Align chunk size with the configured inference batch size so one chunk maps
+            # to one inference call — avoids splitting a 10-string chunk into 3 calls that
+            # each re-pay the system+context prompt prefill (costly on no-prefix-reuse models).
+            try:
+                _chunk = int(getattr(self._cfg.ensemble.model_b, "batch_size", 10)) or 10
+            except Exception:
+                _chunk = 10
+            pool = WorkerPool(backends, chunk_size=max(1, _chunk))
 
             # on_progress uses n_dispatch_cache as offset so the bar reflects all strings
             _offset = n_dispatch_cache

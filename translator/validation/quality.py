@@ -85,14 +85,23 @@ def quality_score(original: str, translation: str) -> int:
     orig_plain  = _plain(original)
     trans_plain = _plain(translation)
     ratio = len(trans_plain) / max(len(orig_plain), 1)
-    if ratio > 5.0 or ratio < 0.15:
-        score -= 40
-    elif ratio > 3.0 or ratio < 0.25:
-        score -= 30
-    elif ratio > 2.0 or ratio < 0.4:
-        score -= 20
-    elif ratio > 1.8 or ratio < 0.5:
-        score -= 10
+    # Length-ratio penalty. Russian routinely runs 15–30% longer than English, and short
+    # UI strings legitimately blow past 2× per-char ("Use" → "Использовать"). Relax bands
+    # for short strings (fewer false needs_review) and widen the long bands a touch.
+    if len(orig_plain) <= 15:
+        if ratio > 8.0 or ratio < 0.1:
+            score -= 40            # extreme blow-up/shrink is still garbage even when short
+        elif ratio > 5.0:
+            score -= 10
+    else:
+        if ratio > 5.0 or ratio < 0.15:
+            score -= 40
+        elif ratio > 3.0 or ratio < 0.25:
+            score -= 30
+        elif ratio > 2.2 or ratio < 0.4:
+            score -= 20
+        elif ratio > 1.9 or ratio < 0.5:
+            score -= 10
 
     orig_tokens  = _INLINE_TOKEN_RE.findall(original)
     trans_tokens = _INLINE_TOKEN_RE.findall(translation)

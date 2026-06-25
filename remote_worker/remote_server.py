@@ -974,7 +974,7 @@ def _row_to_result(r: dict) -> dict:
 
 
 async def _post_offline_results(state, base, label, aid, results, done, batch_max_seq):
-    """POST a batch of durable results to the host. Returns (ok, confirmed_seq)."""
+    """POST a batch of durable results to the host. Returns (ok, confirmed_seq, failed_seqs)."""
     try:
         r = await state.http_client.post(
             f"{base}/api/workers/{label}/offline-results",
@@ -988,10 +988,10 @@ async def _post_offline_results(state, base, label, aid, results, done, batch_ma
         )
         r.raise_for_status()
         data = r.json() if r.content else {}
-        return True, int(data.get("confirmed_seq") or 0)
+        return True, int(data.get("confirmed_seq") or 0), (data.get("failed_seqs") or [])
     except Exception as exc:
         log.warning("offline-results delivery failed (aid=%s): %s", aid[:8], exc)
-        return False, 0
+        return False, 0, []
 
 
 async def _deliver_loop(base: str, label: str, state: ServerState) -> None:
@@ -1016,12 +1016,17 @@ async def _deliver_loop(base: str, label: str, state: ServerState) -> None:
                 for aid, rows in by_aid.items():
                     results       = [_row_to_result(r) for r in rows]
                     batch_max_seq = max(r["seq"] for r in rows)
-                    ok, confirmed = await _post_offline_results(
+                    ok, confirmed, failed = await _post_offline_results(
                         state, base, label, aid, results, False, batch_max_seq
                     )
-                    if ok and confirmed:
-                        store.mark_delivered(confirmed)
-                        high_confirmed = max(high_confirmed, confirmed)
+                    if ok:
+                        # Ack every row the host saved EXCEPT poison rows it reported
+                        # failed — so one bad string can't force endless full-batch resends.
+                        failed_set = {int(s) for s in failed}
+                        ok_seqs = [r["seq"] for r in rows if r["seq"] not in failed_set]
+                        store.mark_delivered_seqs(ok_seqs)
+                        if confirmed:
+                            high_confirmed = max(high_confirmed, confirmed)
 
             # Periodically prune confirmed results so the local DB stays bounded over
             # a months-long run. Only ever removes rows the host has confirmed (with a
@@ -1034,7 +1039,7 @@ async def _deliver_loop(base: str, label: str, state: ServerState) -> None:
                 aid = a["assignment_id"]
                 if (a["state"] == "complete" and not store.is_done_sent(aid)
                         and store.undelivered_count(aid) == 0):
-                    ok, _ = await _post_offline_results(
+                    ok, _, _ = await _post_offline_results(
                         state, base, label, aid, [], True, store.max_seq()
                     )
                     if ok:

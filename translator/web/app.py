@@ -228,6 +228,16 @@ def create_app(config_path: Path | None = None) -> Flask:
     except Exception as exc:
         log.warning("job status re-derivation error: %s", exc)
 
+    # Rebuild in-memory offline-job tracking from durable assignments so the
+    # /offline-results push path keeps working across a master restart — essential for
+    # NAT agents the host cannot pull from directly.
+    try:
+        for _a in _assignment_mgr.store.list_active():
+            _registry.register_offline_job(_a["assignment_id"], _a["job_id"],
+                                           _a["agent_id"], _a["total"])
+    except Exception as exc:
+        log.warning("offline-job tracking rebuild error: %s", exc)
+
     # ── Master-pull reconciliation (authoritative) ──────────────────────────
     from translator.web.pull_reconcile import pull_loop
     _threading.Thread(

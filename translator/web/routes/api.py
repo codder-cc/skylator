@@ -1423,14 +1423,29 @@ def workers_offline_results(label: str):
     done           = bool(data.get("done", False))
     batch_max_seq  = int(data.get("batch_max_seq") or 0)  # agent's durable seq high-water for this batch
     had_error      = False
+    failed_seqs: list[int] = []
 
     if not offline_job_id:
         return jsonify({"ok": False, "error": "offline_job_id required"}), 400
 
     oj = registry.get_offline_job(offline_job_id)
     if oj is None:
-        log.warning("offline-results: unknown offline_job_id %s from %s", offline_job_id[:8], label)
-        return jsonify({"ok": False, "error": "unknown offline_job_id"}), 404
+        # The master may have restarted (in-memory offline-job tracking is lost). Recover
+        # host_job_id from the DURABLE assignment and re-register, so push delivery keeps
+        # working across a master restart — critical for NAT agents the host can't pull from.
+        if repo is not None:
+            try:
+                from translator.jobs.assignment_store import AssignmentStore
+                a = AssignmentStore(repo.db).get_assignment(offline_job_id)
+                if a is not None:
+                    registry.register_offline_job(offline_job_id, a["job_id"], label, a["total"])
+                    oj = registry.get_offline_job(offline_job_id)
+            except Exception as exc:
+                log.warning("offline-results: assignment recovery failed for %s: %s",
+                            offline_job_id[:8], exc)
+        if oj is None:
+            log.warning("offline-results: unknown offline_job_id %s from %s", offline_job_id[:8], label)
+            return jsonify({"ok": False, "error": "unknown offline_job_id"}), 404
 
     host_job_id = oj["host_job_id"]
     job = jm.get_job(host_job_id)
@@ -1484,6 +1499,9 @@ def workers_offline_results(label: str):
                         pass
         except Exception as exc:
             had_error = True
+            _s = r.get("seq")
+            if _s:
+                failed_seqs.append(int(_s))
             log.warning("offline-results: save_string failed for %s/%s: %s", mod_name, key, exc)
 
         if job is not None:
@@ -1555,9 +1573,13 @@ def workers_offline_results(label: str):
         if astore is not None:
             try:
                 total, delivered = astore.counts(offline_job_id)
+                # Settle to a TERMINAL state on done. Using 'failed' (not the active
+                # 'partially_delivered') for partials RELEASES the undelivered strings:
+                # they stay 'pending' and become re-dispatchable immediately (auto-feed /
+                # next translate), instead of being locked until the multi-day reaper.
                 astore.set_state(
                     offline_job_id,
-                    "complete" if (total > 0 and delivered >= total) else "partially_delivered",
+                    "complete" if (total > 0 and delivered >= total) else "failed",
                 )
             except Exception:
                 pass
@@ -1594,12 +1616,12 @@ def workers_offline_results(label: str):
         except Exception as exc:
             log.warning("offline-results: cursor advance failed for %s: %s", label, exc)
 
-    # confirmed_seq tells the agent how far it may mark results delivered (and later prune).
-    # On a full success this is the batch high-water; on any save error we confirm nothing
-    # so the agent safely re-delivers the whole batch (idempotent on the host side).
-    confirmed_seq = batch_max_seq if not had_error else 0
+    # confirmed_seq = highest CONTIGUOUS successfully-saved seq (safe pruning high-water).
+    # failed_seqs lets the agent mark every other row delivered and re-deliver ONLY the
+    # poison rows, instead of re-sending the whole batch forever on one bad string.
+    confirmed_seq = (min(failed_seqs) - 1) if failed_seqs else batch_max_seq
     return jsonify({"ok": True, "saved": saved_count, "rejected": rejected,
-                    "confirmed_seq": confirmed_seq})
+                    "confirmed_seq": max(0, confirmed_seq), "failed_seqs": failed_seqs})
 
 
 @bp.route("/workers/<label>/benchmark", methods=["POST"])

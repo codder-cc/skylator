@@ -357,6 +357,22 @@ class ResultStore:
             )
             return [dict(r) for r in cur.fetchall()]
 
+    def mark_delivered_seqs(self, seqs: list[int]) -> int:
+        """Mark a specific set of seqs delivered. Lets the deliver loop ack every row the
+        host saved EXCEPT poison rows the host reported failed — so one bad string no longer
+        forces the whole batch to be re-sent forever."""
+        if not seqs:
+            return 0
+        with self._lock:
+            ph = ",".join("?" * len(seqs))
+            self._conn.execute(
+                f"UPDATE agent_results SET delivered=1 WHERE delivered=0 AND seq IN ({ph})",
+                tuple(int(s) for s in seqs),
+            )
+            n = self._conn.execute("SELECT changes()").fetchone()[0]
+            self._conn.commit()
+            return n
+
     def mark_delivered(self, up_to_seq: int) -> int:
         """Mark all rows seq <= up_to_seq as delivered (master acked them)."""
         with self._lock:

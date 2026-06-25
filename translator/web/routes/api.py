@@ -9,6 +9,30 @@ log = logging.getLogger(__name__)
 bp = Blueprint("api", __name__, url_prefix="/api")
 
 
+def _is_lan_url(url: str) -> bool:
+    """True only if `url`'s host resolves to a private/LAN/loopback address. Used to block
+    SSRF on the server-test fallback (no public IPs, no cloud-metadata 169.254.x)."""
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+    try:
+        host = urlparse(url if "://" in url else f"http://{url}").hostname
+        if not host:
+            return False
+        infos = socket.getaddrinfo(host, None)
+        addrs = {info[4][0] for info in infos}
+        if not addrs:
+            return False
+        for a in addrs:
+            ip = ipaddress.ip_address(a)
+            # link-local (incl. 169.254 metadata) is explicitly disallowed
+            if ip.is_link_local or not ip.is_private:
+                return False
+        return True
+    except Exception:
+        return False
+
+
 @bp.route("/setup-reports")
 def setup_reports():
     reports = current_app.config.get("SETUP_REPORTS", [])
@@ -567,7 +591,11 @@ def servers_test():
                     "source":      "registry",
                 })
 
-    # Fallback: direct HTTP (works for same-subnet LAN-scanned servers or legacy mode)
+    # Fallback: direct HTTP — only to PRIVATE/LAN addresses. Blocks SSRF (loopback,
+    # link-local, cloud-metadata 169.254.x, public IPs) so this can't be used to probe
+    # internal services or the metadata endpoint.
+    if not _is_lan_url(url):
+        return jsonify({"ok": False, "error": "url must be a private/LAN address"}), 400
     try:
         import requests as _requests
         r = _requests.get(f"{url}/health", timeout=5.0)

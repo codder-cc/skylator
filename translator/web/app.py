@@ -290,6 +290,25 @@ def create_app(config_path: Path | None = None) -> Flask:
     from translator.web.auto_feed import feed_loop
     _threading.Thread(target=feed_loop, args=(app,), daemon=True, name="auto-feed").start()
 
+    # ── Optional shared-token auth for machine-to-machine endpoints ──────────
+    # Opt-in: set SKYLATOR_TOKEN on the master + every agent to require a matching
+    # X-Skylator-Token header on agent/admin/OTA endpoints. Off by default (trusted LAN),
+    # but closes the result-injection / cursor-reset / OTA-RCE surface when enabled.
+    import os as _os
+    app.config["API_TOKEN"] = _os.environ.get("SKYLATOR_TOKEN", "")
+    _PROTECTED = ("/api/workers", "/api/admin", "/api/ota", "/ota", "/setup-report")
+
+    @app.before_request
+    def _require_token():
+        token = app.config.get("API_TOKEN")
+        if not token:
+            return  # not configured → no enforcement
+        from flask import request as _rq
+        if any(_rq.path.startswith(p) for p in _PROTECTED):
+            if _rq.headers.get("X-Skylator-Token") != token:
+                from flask import jsonify as _jsonify
+                return _jsonify({"error": "unauthorized"}), 401
+
     # ── Register blueprints ─────────────────────────────────────────────────
     from translator.web.routes import register_routes
     register_routes(app)

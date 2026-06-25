@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from flask import (Blueprint, abort, current_app, jsonify,
                    redirect, request)
-from translator.web.routes.utils import get_mod_path
+from translator.web.routes.utils import get_mod_path, safe_under
 
 log = logging.getLogger(__name__)
 
@@ -68,7 +68,7 @@ def restore_backup(backup_id: str):
     if cfg is None:
         return jsonify({"error": "No config"}), 500
 
-    backup_path = cfg.paths.backup_dir / backup_id
+    backup_path = safe_under(cfg.paths.backup_dir, backup_id)  # confine — no path traversal
     if not backup_path.exists():
         return jsonify({"error": "Backup not found"}), 404
 
@@ -87,10 +87,10 @@ def restore_backup(backup_id: str):
 
     # Directory backup → restore mod folder (restore to same dir it was backed up from)
     existing = get_mod_path(mod_name)
-    dest = existing if existing else (cfg.paths.mods_dir / mod_name)
+    dest = existing if existing else safe_under(cfg.paths.mods_dir, mod_name)
     if dest.exists():
         # Keep current as safety backup
-        safety = cfg.paths.backup_dir / f"{mod_name}__before_restore__{int(time.time())}"
+        safety = safe_under(cfg.paths.backup_dir, f"{mod_name}__before_restore__{int(time.time())}")
         shutil.copytree(str(dest), str(safety))
         shutil.rmtree(str(dest))
     shutil.copytree(str(backup_path), str(dest))
@@ -103,7 +103,7 @@ def delete_backup(backup_id: str):
     if cfg is None:
         return jsonify({"error": "No config"}), 500
 
-    backup_path = cfg.paths.backup_dir / backup_id
+    backup_path = safe_under(cfg.paths.backup_dir, backup_id)  # confine — no path traversal
     if not backup_path.exists():
         return jsonify({"error": "Not found"}), 404
 

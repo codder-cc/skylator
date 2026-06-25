@@ -1478,10 +1478,18 @@ def create_server_app(
         state.hardware     = state.detect_hardware()
         caps               = state.detect_capabilities()
 
-        # [FIX #9, #10] Persistent async HTTP client with keep-alive
+        # [FIX #9, #10] Persistent async HTTP client with keep-alive.
+        # Attach the shared auth token (if configured) as a default header on EVERY
+        # request to the host — register/heartbeat/results/chunk-poll all covered.
+        import os as _os
+        _auth_headers = {}
+        _token = _os.environ.get("SKYLATOR_TOKEN")
+        if _token:
+            _auth_headers["X-Skylator-Token"] = _token
         state.http_client = _httpx.AsyncClient(
             timeout = _httpx.Timeout(connect=10.0, read=25.0, write=15.0, pool=None),
             limits  = _httpx.Limits(max_keepalive_connections=5, max_connections=10),
+            headers = _auth_headers,
         )
 
         if model_cfg is not None:

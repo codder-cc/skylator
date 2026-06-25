@@ -3,7 +3,22 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from flask import current_app
+from flask import current_app, abort
+
+
+def safe_under(base: Path, *parts: str) -> Path:
+    """Join user-supplied path parts under `base` and confine the result to `base`.
+    Aborts 400 on any attempt to escape (path traversal). Use for ALL filesystem paths
+    built from request input (backup ids, mod names, tool paths)."""
+    base = Path(base).resolve()
+    candidate = base.joinpath(*[str(p) for p in parts])
+    try:
+        resolved = candidate.resolve()
+    except Exception:
+        abort(400, description="invalid path")
+    if resolved != base and base not in resolved.parents:
+        abort(400, description="path escapes allowed directory")
+    return resolved
 
 
 def get_mod_path(mod_name: str) -> Optional[Path]:

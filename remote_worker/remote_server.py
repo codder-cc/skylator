@@ -903,6 +903,7 @@ def _row_to_result(r: dict) -> dict:
     """Map a ResultStore row to the /offline-results payload shape."""
     return {
         "seq":           r["seq"],
+        "assignment_id": r["assignment_id"],
         "string_id":     r["string_id"],
         "string_hash":   r["string_hash"],
         "key":           r.get("str_key") or "",
@@ -944,9 +945,12 @@ async def _deliver_loop(base: str, label: str, state: ServerState) -> None:
     if store is None:
         return
     log.info("Deliver loop started → %s", base)
+    high_confirmed = 0      # highest seq the host has confirmed reconciled
+    cycles = 0
     while True:
         try:
             await asyncio.sleep(2.0)
+            cycles += 1
             undeliv = store.undelivered(limit=200)
             if undeliv:
                 by_aid: dict[str, list] = {}
@@ -960,6 +964,13 @@ async def _deliver_loop(base: str, label: str, state: ServerState) -> None:
                     )
                     if ok and confirmed:
                         store.mark_delivered(confirmed)
+                        high_confirmed = max(high_confirmed, confirmed)
+
+            # Periodically prune confirmed results so the local DB stays bounded over
+            # a months-long run. Only ever removes rows the host has confirmed (with a
+            # safety margin inside prune_confirmed).
+            if cycles % 60 == 0 and high_confirmed:
+                store.prune_confirmed(high_confirmed)
 
             # Signal done=True for assignments that are complete AND fully delivered.
             for a in store.all_assignments():
@@ -1478,6 +1489,28 @@ def create_server_app(
         version     = "2.0.0",
         lifespan    = lifespan,
     )
+
+    # ── Durable results: master-pull + reconnect handshake ────────────────────
+
+    @app.get("/results")
+    async def get_results(since: int = 0, limit: int = 500):
+        """Return durable results with seq > `since` (master-authoritative pull).
+        Read-only and safe to call anytime — the master reconciles from here and
+        can re-pull from any seq if it needs to (e.g. after restoring a backup)."""
+        if state.result_store is None:
+            return {"results": [], "max_seq": 0}
+        rows = state.result_store.results_since(since, limit)
+        return {
+            "results": [_row_to_result(r) for r in rows],
+            "max_seq": state.result_store.max_seq(),
+        }
+
+    @app.get("/digest")
+    async def get_digest():
+        """Compact state summary for the reconnect handshake (Phase 5)."""
+        if state.result_store is None:
+            return {"open_assignments": [], "per_assignment": {}, "max_seq": 0, "undelivered": 0}
+        return state.result_store.digest()
 
     # ── Model management ──────────────────────────────────────────────────────
 

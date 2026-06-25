@@ -89,3 +89,20 @@ class TranslationDB:
             "SELECT COUNT(*) FROM strings WHERE mod_name=?", (mod_name,)
         ).fetchone()
         return row[0] if row else 0
+
+    def backup_to(self, dest_path: Path) -> Path:
+        """Atomically snapshot the whole DB to dest_path via VACUUM INTO.
+
+        The master DB is the canonical record of a months-long run, so it is backed up
+        periodically. If it is ever lost, restore the latest snapshot and re-pull from
+        any agents that have not yet pruned past the snapshot's high-water (see
+        ResultStore.prune_confirmed, which keeps a safety margin for exactly this).
+        """
+        dest_path = Path(dest_path)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        if dest_path.exists():
+            dest_path.unlink()
+        # VACUUM INTO writes a clean, consistent copy without locking out readers for long.
+        self._connect().execute("VACUUM INTO ?", (str(dest_path),))
+        log.info("DB backup written to %s", dest_path)
+        return dest_path

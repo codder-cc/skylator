@@ -190,8 +190,28 @@ def create_app(config_path: Path | None = None) -> Flask:
 
     # ── Init worker registry (reverse-connected remote workers) ─────────────
     from translator.web.worker_registry import WorkerRegistry
-    app.config["WORKER_REGISTRY"] = WorkerRegistry()
+    _registry = WorkerRegistry()
+    app.config["WORKER_REGISTRY"] = _registry
     app.config["SETUP_REPORTS"]   = []   # in-memory list of remote setup reports
+
+    # ── Master-pull reconciliation (authoritative) ──────────────────────────
+    from translator.web.pull_reconcile import pull_loop
+    _threading.Thread(
+        target=pull_loop, args=(app, _registry), daemon=True, name="pull-reconcile",
+    ).start()
+
+    # ── Periodic DB backup (months-long run safety net) ──────────────────────
+    _backup_dir = (cfg.paths.translation_cache.parent if cfg else ROOT / "cache") / "db_backups"
+
+    def _bg_backup_db():
+        while True:
+            _time.sleep(6 * 3600)  # every 6h
+            try:
+                _db.backup_to(_backup_dir / "translations.backup.db")
+            except Exception as exc:
+                log.warning("DB backup failed: %s", exc)
+
+    _threading.Thread(target=_bg_backup_db, daemon=True, name="db-backup").start()
 
     # ── Register blueprints ─────────────────────────────────────────────────
     from translator.web.routes import register_routes

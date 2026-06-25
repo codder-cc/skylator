@@ -30,6 +30,25 @@ def test_agent_migrate_is_idempotent():
         s2.close()
 
 
+def test_agent_migration_runner_applies_real_step():
+    """Exercise the agent migration runner with an actual ALTER (Gap 6 coverage)."""
+    import result_store as rs_mod
+    saved = list(rs_mod._AGENT_MIGRATIONS)
+    rs_mod._AGENT_MIGRATIONS.append((2, ["ALTER TABLE agent_results ADD COLUMN extra TEXT"]))
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "w.db"
+            s = ResultStore(p)   # __init__ runs migrate()
+            cols = {r[1] for r in s._conn.execute("PRAGMA table_info(agent_results)").fetchall()}
+            assert "extra" in cols
+            assert s.get_meta("schema_version") == "2"
+            s.migrate()          # idempotent — no error, version unchanged
+            assert s.get_meta("schema_version") == "2"
+            s.close()
+    finally:
+        rs_mod._AGENT_MIGRATIONS[:] = saved
+
+
 def test_health_flags():
     with tempfile.TemporaryDirectory() as d:
         s = ResultStore(Path(d) / "w.db")

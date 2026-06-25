@@ -1191,9 +1191,10 @@ def workers_heartbeat():
     hardware      = data.get("hardware")      # {ram_total_mb, vram_total_mb, cpu_name, …}
     commit        = data.get("commit")        # short git commit hash
     offline_jobs  = data.get("offline_jobs")  # [{offline_job_id, total, done, tps, current_text}]
+    health        = data.get("health")        # {disk_full, idle_starved, stalled, undelivered}
     found = registry.heartbeat(label, models=models, model=model, backend_type=backend_type,
                                stats=stats, hardware=hardware, commit=commit,
-                               offline_jobs=offline_jobs)
+                               offline_jobs=offline_jobs, health=health)
     if not found:
         return jsonify({"ok": False, "reregister": True}), 404
 

@@ -163,6 +163,36 @@ export interface WorkerInfo {
     tps: number
     current_text: string
   }[]
+  health?: {
+    disk_full?: boolean
+    idle_starved?: boolean
+    stalled?: boolean
+    undelivered?: number
+    open_assignments?: number
+  }
+}
+
+export interface AssignmentRow {
+  assignment_id: string
+  job_id: string
+  agent_id: string
+  mod_name: string
+  state: string
+  total: number
+  delivered: number
+  undelivered: number
+  tier: string
+}
+
+export interface AssignmentsOverview {
+  assignments: AssignmentRow[]
+  aggregate: {
+    total: number
+    delivered: number
+    active: number
+    presumed_dead: number
+    disconnected: number
+  }
 }
 
 export interface BenchmarkSampleResult {

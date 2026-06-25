@@ -1,5 +1,5 @@
 import { apiFetch, apiPost } from './client'
-import type { WorkerInfo, SetupReport, CachedModel, BenchmarkResult } from '@/types'
+import type { WorkerInfo, SetupReport, CachedModel, BenchmarkResult, AssignmentsOverview } from '@/types'
 
 interface ModelLoadBody {
   model: string
@@ -68,4 +68,8 @@ export const workersApi = {
     apiPost<{ ok: boolean; orphaned: string[]; reassignable: number }>(
       `/api/workers/${encodeURIComponent(label)}/abandon`,
     ),
+
+  // Gap 4 — fleet observability: per-assignment funnel + liveness tiers + aggregate.
+  assignments: () =>
+    apiFetch<AssignmentsOverview>('/api/assignments'),
 }

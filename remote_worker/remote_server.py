@@ -890,6 +890,18 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
             else:
                 offline_jobs_payload = []
 
+            # Health flags for the observability UI (Gap 4).
+            health_payload = {}
+            if state.result_store is not None:
+                try:
+                    health_payload = state.result_store.health()
+                    health_payload["idle_starved"] = (
+                        health_payload.get("open_assignments", 0) == 0
+                        and state.offline_job is None)
+                    health_payload["stalled"] = state.stalled
+                except Exception:
+                    health_payload = {}
+
             r = await state.http_client.post(
                 f"{host_url.rstrip('/')}/api/workers/heartbeat",
                 json={
@@ -900,6 +912,7 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
                     "hardware":     state.hardware,
                     "commit":       _get_git_commit(),
                     "offline_jobs": offline_jobs_payload,
+                    "health":       health_payload,
                     "stats": {
                         "tps_avg":        state.tps_avg,
                         "tps_last":       state.tps_last,

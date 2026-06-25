@@ -731,6 +731,18 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange,
         <span className={cn('w-2 h-2 rounded-full flex-shrink-0', dotClass)} />
         <span className="text-sm font-semibold text-text-main">{worker.label}</span>
         <span className="text-[10px] font-mono text-text-muted/60">{worker.url}</span>
+        {worker.health?.disk_full && (
+          <span className="px-1 rounded text-[9px] bg-danger/20 text-danger" title="Agent disk is full — production paused">disk full</span>
+        )}
+        {worker.health?.stalled && (
+          <span className="px-1 rounded text-[9px] bg-warning/20 text-warning" title="Offline production appears stalled">stalled</span>
+        )}
+        {worker.health?.idle_starved && (
+          <span className="px-1 rounded text-[9px] bg-bg-card2 text-text-muted border border-border-subtle" title="Agent is up but has no work">idle</span>
+        )}
+        {(worker.health?.undelivered ?? 0) > 0 && (
+          <span className="px-1 rounded text-[9px] bg-accent/20 text-accent" title="Results buffered locally, awaiting delivery to host">{worker.health!.undelivered} undelivered</span>
+        )}
         <span className="ml-auto text-[10px] text-text-muted whitespace-nowrap">{timeAgo(worker.last_seen)}</span>
       </div>
 
@@ -1019,6 +1031,59 @@ function HostOtaCard() {
   )
 }
 
+// ── Fleet assignments overview (Gap 4 observability) ───────────────────────────
+function FleetOverview() {
+  const { data } = useQuery({
+    queryKey: QK.assignments(),
+    queryFn: workersApi.assignments,
+    refetchInterval: 10_000,
+  })
+  if (!data || data.assignments.length === 0) return null
+  const agg = data.aggregate
+  const pct = agg.total > 0 ? Math.round((agg.delivered / agg.total) * 100) : 0
+  const tierClass = (t: string) =>
+    t === 'presumed_dead' ? 'text-danger'
+      : t === 'disconnected' ? 'text-warning'
+        : t === 'connected' ? 'text-success' : 'text-text-muted'
+  return (
+    <div className="bg-bg-card border border-border-subtle rounded-lg">
+      <div className="flex items-center gap-2 px-5 py-4 border-b border-border-subtle">
+        <Server className="w-4 h-4 text-accent" />
+        <h2 className="font-semibold text-text-main">Fleet assignments</h2>
+        <span className="ml-auto text-xs text-text-muted">{agg.delivered}/{agg.total} delivered ({pct}%)</span>
+      </div>
+      <div className="px-5 py-3 grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div><div className="text-lg font-bold font-mono text-text-main">{agg.active}</div><div className="text-xs text-text-muted">active</div></div>
+        <div><div className="text-lg font-bold font-mono text-warning">{agg.disconnected}</div><div className="text-xs text-text-muted">disconnected</div></div>
+        <div><div className="text-lg font-bold font-mono text-danger">{agg.presumed_dead}</div><div className="text-xs text-text-muted">presumed dead</div></div>
+        <div><div className="text-lg font-bold font-mono text-accent">{agg.delivered}</div><div className="text-xs text-text-muted">delivered</div></div>
+      </div>
+      <div className="px-5 pb-4 overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-text-muted text-left">
+              <th className="py-1 pr-3">Agent</th><th className="pr-3">Mod</th>
+              <th className="pr-3">State</th><th className="pr-3">Tier</th>
+              <th className="pr-3 text-right">Delivered</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.assignments.slice(0, 50).map((a) => (
+              <tr key={a.assignment_id} className="border-t border-border-subtle/50">
+                <td className="py-1 pr-3 font-mono">{a.agent_id}</td>
+                <td className="pr-3 truncate max-w-[10rem]" title={a.mod_name}>{a.mod_name}</td>
+                <td className="pr-3">{a.state}</td>
+                <td className={cn('pr-3', tierClass(a.tier))}>{a.tier}</td>
+                <td className="pr-3 text-right font-mono">{a.delivered}/{a.total}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 function ServersPage() {
   const qc = useQueryClient()
@@ -1116,6 +1181,9 @@ function ServersPage() {
 
       {/* Host Server OTA */}
       <HostOtaCard />
+
+      {/* Fleet assignments overview */}
+      <FleetOverview />
 
       {/* Registered Workers card */}
       <div className="bg-bg-card border border-border-subtle rounded-lg">

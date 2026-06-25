@@ -38,6 +38,7 @@ class WorkerInfo:
     ota_steps:    list = field(default_factory=list)  # step strings from last OTA run
     ota_restart_at: float = 0.0   # time.time() when restarting phase began
     offline_jobs:   list  = field(default_factory=list)  # [{offline_job_id, total, done, tps, current_text}]
+    health:         dict  = field(default_factory=dict)  # {disk_full, idle_starved, stalled, undelivered}
 
     def to_dict(self) -> dict:
         return {
@@ -59,6 +60,7 @@ class WorkerInfo:
             "ota_steps":    self.ota_steps,
             "ota_restart_at": self.ota_restart_at,
             "offline_jobs": self.offline_jobs,
+            "health":       self.health,
         }
 
 
@@ -124,7 +126,8 @@ class WorkerRegistry:
                   model: str | None = None, backend_type: str | None = None,
                   stats: dict | None = None, hardware: dict | None = None,
                   commit: str | None = None,
-                  offline_jobs: list | None = None) -> bool:
+                  offline_jobs: list | None = None,
+                  health: dict | None = None) -> bool:
         """Update last_seen and any pushed fields.
         Returns False if unknown (caller should ask remote to re-register)."""
         with self._lock:
@@ -138,6 +141,7 @@ class WorkerRegistry:
             if stats        is not None: w.stats        = stats
             if hardware     is not None: w.hardware     = hardware
             if commit       is not None: w.commit       = commit
+            if health       is not None: w.health       = health
             if offline_jobs is not None:
                 w.offline_jobs = offline_jobs
                 # Update progress tracking from heartbeat

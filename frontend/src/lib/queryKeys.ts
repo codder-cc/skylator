@@ -11,6 +11,7 @@ export const QK = {
   jobTally:        (id: string) => ['jobs', id, 'tally'] as const,
   workers:         () => ['workers'] as const,
   servers:         () => ['servers'] as const,
+  assignments:     () => ['assignments'] as const,
   tokenStats:      () => ['tokenStats'] as const,
   tokenPerf:       () => ['tokenPerf'] as const,
   config:          () => ['config'] as const,

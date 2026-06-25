@@ -1206,7 +1206,13 @@ def workers_heartbeat():
             AssignmentStore(repo.db).touch_lease(label)
         except Exception:
             pass
-    return jsonify({"ok": True})
+    # Master-pull-over-poll (Gap 2): if the master asked this (possibly NAT) agent to
+    # resend results, deliver the request now over its outbound heartbeat channel.
+    resend_since = registry.take_resend(label)
+    resp = {"ok": True}
+    if resend_since is not None:
+        resp["resend_since"] = resend_since
+    return jsonify(resp)
 
 
 @bp.route("/workers/<label>", methods=["DELETE"])
@@ -1350,16 +1356,25 @@ def rebuild_from_agents():
 
     registry = current_app.config.get("WORKER_REGISTRY")
     pulled = 0
+    requested = 0
     if registry is not None:
         from translator.web.pull_reconcile import reconcile_agent
         app_obj = current_app._get_current_object()
         for w in registry.get_all():
+            # Reachable agents: pull directly now. All agents (incl. NAT): also queue a
+            # resend request, delivered on their next heartbeat, so unreachable ones recover too.
             try:
                 pulled += reconcile_agent(app_obj, w)
             except Exception as exc:
                 log.warning("rebuild-from-agents: pull from %s failed: %s",
                             getattr(w, "label", "?"), exc)
-    return jsonify({"ok": True, "cursors_reset": n, "pulled": pulled})
+            try:
+                registry.request_resend(w.label, 0)
+                requested += 1
+            except Exception:
+                pass
+    return jsonify({"ok": True, "cursors_reset": n, "pulled": pulled,
+                    "resend_requested": requested})
 
 
 @bp.route("/workers/<label>/abandon", methods=["POST"])

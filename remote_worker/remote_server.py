@@ -921,8 +921,19 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
                     _async_register(state.http_client, host_url, my_url, caps, state)
                 )
             needs_register = False
-            # (Result delivery is now handled by the always-on _deliver_loop, which
-            #  reads undelivered rows straight from the durable ResultStore.)
+            # (Result delivery is handled by the always-on _deliver_loop.)
+            # Master-pull-over-poll (Gap 2): if the host asked us to resend (e.g. it
+            # restored an older backup), re-arm those durable results so the deliver loop
+            # re-pushes them. Works even though the host can't reach us directly (NAT).
+            if r.status_code == 200 and state.result_store is not None:
+                try:
+                    body = r.json()
+                    rs = body.get("resend_since")
+                    if rs is not None:
+                        n = state.result_store.mark_undelivered_since(int(rs))
+                        log.info("Heartbeat: host requested resend since seq %s — re-armed %d results", rs, n)
+                except Exception as exc:
+                    log.debug("heartbeat resend handling skipped: %s", exc)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

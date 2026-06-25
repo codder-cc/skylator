@@ -83,6 +83,21 @@ class WorkerRegistry:
         self._offline_jobs: dict[str, dict] = {}
         # Count of completed workers per host job: host_job_id → {total_workers, done_workers}
         self._offline_host_jobs: dict[str, dict] = {}
+        # Master-pull-over-poll (NAT): label → seq the master wants the agent to resend from.
+        # Delivered on the agent's next heartbeat reply; the agent re-arms those results.
+        self._resend: dict[str, int] = {}
+
+    def request_resend(self, label: str, since: int = 0) -> None:
+        """Ask an agent (incl. NAT/pull-mode) to re-deliver results with seq > `since`.
+        Used by rebuild-from-agents so the master can recover even from unreachable agents."""
+        with self._lock:
+            cur = self._resend.get(label)
+            self._resend[label] = since if cur is None else min(cur, since)
+
+    def take_resend(self, label: str) -> int | None:
+        """Pop a pending resend request for an agent (called by the heartbeat handler)."""
+        with self._lock:
+            return self._resend.pop(label, None)
 
     # ── Worker lifecycle ──────────────────────────────────────────────────────
 

@@ -373,6 +373,19 @@ class ResultStore:
             r = self._conn.execute("SELECT COALESCE(MAX(seq),0) FROM agent_results").fetchone()
             return r[0] if r else 0
 
+    def mark_undelivered_since(self, since_seq: int) -> int:
+        """Re-arm results with seq > since_seq for delivery (set delivered=0). Used when the
+        master asks us to resend (e.g. it restored an older backup) — the always-on deliver
+        loop then re-pushes them. Idempotent on the master side."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE agent_results SET delivered=0 WHERE seq>? AND delivered=1",
+                (since_seq,),
+            )
+            n = self._conn.execute("SELECT changes()").fetchone()[0]
+            self._conn.commit()
+            return n
+
     def undelivered_count(self, assignment_id: str | None = None) -> int:
         with self._lock:
             if assignment_id is None:

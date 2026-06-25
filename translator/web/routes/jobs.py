@@ -438,6 +438,92 @@ def _resume_job_with_machines(jm, cfg, job):
     )
 
 
+def _job_mods(repo, job) -> list[str]:
+    """Distinct mods this job actually touched (via job_strings), falling back to params."""
+    mods: list[str] = []
+    if repo is not None:
+        try:
+            rows = repo.db.execute(
+                "SELECT DISTINCT s.mod_name FROM job_strings js "
+                "JOIN strings s ON s.id = js.string_id WHERE js.job_id=?",
+                (job.id,),
+            ).fetchall()
+            mods = [r[0] for r in rows if r[0]]
+        except Exception:
+            mods = []
+    if not mods:
+        single = (job.params or {}).get("mod_name")
+        if single:
+            mods = [single]
+    return mods
+
+
+@bp.route("/<job_id>/tally", methods=["GET"])
+def job_tally(job_id: str):
+    """Live funnel for a job: how much was assigned, delivered, translated, pending.
+    Survives master restart because it is derived from durable assignments + the DB."""
+    jm   = current_app.config["JOB_MANAGER"]
+    repo = current_app.config.get("STRING_REPO")
+    amgr = current_app.config.get("ASSIGNMENT_MGR")
+    job  = jm.get_job(job_id)
+    if job is None:
+        return jsonify({"error": "job not found"}), 404
+
+    assigned = delivered = 0
+    if amgr is not None:
+        try:
+            assigned, delivered = amgr.job_progress(job_id)
+        except Exception:
+            pass
+
+    translated = pending = needs_review = 0
+    if repo is not None:
+        try:
+            rows = repo.db.execute(
+                "SELECT s.status, COUNT(*) FROM job_strings js "
+                "JOIN strings s ON s.id = js.string_id WHERE js.job_id=? GROUP BY s.status",
+                (job_id,),
+            ).fetchall()
+            counts = {r[0]: r[1] for r in rows}
+            translated   = counts.get("translated", 0)
+            pending      = counts.get("pending", 0)
+            needs_review = counts.get("needs_review", 0)
+        except Exception:
+            pass
+
+    return jsonify({
+        "job_id": job_id, "status": str(getattr(job, "status", "")),
+        "assigned": assigned, "delivered": delivered,
+        "translated": translated, "pending": pending, "needs_review": needs_review,
+        "mods": _job_mods(repo, job),
+    })
+
+
+@bp.route("/<job_id>/collect", methods=["POST"])
+def collect_job(job_id: str):
+    """Deploy whatever is done — apply all translated strings for this job's mods to
+    ESP/BSA/SWF, even if some strings are still pending or an agent failed. Partial
+    results are first-class: a job never has to be 100% complete to be useful."""
+    jm   = current_app.config["JOB_MANAGER"]
+    cfg  = current_app.config.get("TRANSLATOR_CFG")
+    repo = current_app.config.get("STRING_REPO")
+    job  = jm.get_job(job_id)
+    if job is None:
+        return jsonify({"error": "job not found"}), 404
+
+    mods = _job_mods(repo, job)
+    if not mods:
+        return jsonify({"error": "no mods to collect for this job"}), 400
+
+    created = []
+    for mod in mods:
+        apply_job = _create_apply_mod_job(jm, cfg, mod, {})
+        created.append({"mod": mod, "job_id": apply_job.id})
+    job.add_log(f"Collect: deploying partial results for {len(mods)} mod(s)")
+    log.info("collect: job %s → %d apply job(s)", job_id[:8], len(created))
+    return jsonify({"ok": True, "applied_jobs": created})
+
+
 @bp.route("/clear", methods=["POST"])
 def clear_finished():
     jm = current_app.config["JOB_MANAGER"]

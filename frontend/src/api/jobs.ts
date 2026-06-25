@@ -43,4 +43,24 @@ export const jobsApi = {
       `/jobs/${id}/dispatch-offline`,
       machines ? { machines } : {},
     ),
+
+  // Phase 8 — partial results: live funnel + "deploy what we have"
+  tally: (id: string) =>
+    apiFetch<JobTally>(`/jobs/${id}/tally`),
+
+  collect: (id: string) =>
+    apiPost<{ ok: boolean; applied_jobs: { mod: string; job_id: string }[] }>(
+      `/jobs/${id}/collect`,
+    ),
+}
+
+export interface JobTally {
+  job_id: string
+  status: string
+  assigned: number
+  delivered: number
+  translated: number
+  pending: number
+  needs_review: number
+  mods: string[]
 }

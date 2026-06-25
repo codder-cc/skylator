@@ -1232,6 +1232,7 @@ def workers_offline_results(label: str):
     """
     from translator.web.job_manager import JobStatus
     from translator.data_manager.string_manager import StringManager
+    from translator.jobs.assignment_store import AssignmentStore, verify_result_hash
     from pathlib import Path
 
     registry      = current_app.config.get("WORKER_REGISTRY")
@@ -1248,6 +1249,8 @@ def workers_offline_results(label: str):
     offline_job_id = data.get("offline_job_id", "")
     results        = data.get("results") or []
     done           = bool(data.get("done", False))
+    batch_max_seq  = int(data.get("batch_max_seq") or 0)  # agent's durable seq high-water for this batch
+    had_error      = False
 
     if not offline_job_id:
         return jsonify({"ok": False, "error": "offline_job_id required"}), 400
@@ -1265,7 +1268,9 @@ def workers_offline_results(label: str):
         string_mgr = StringManager(repo, Path(mods_dir))
 
     saved_count = 0
+    rejected    = 0
     mods_touched: set[str] = set()
+    astore = AssignmentStore(repo.db) if repo is not None else None
 
     for r in results:
         key         = r.get("key") or ""
@@ -1279,6 +1284,15 @@ def workers_offline_results(label: str):
         if not translation or not key or not mod_name:
             continue
 
+        # Integrity gate: reject (do not apply) results whose claimed hash does not
+        # match the original the agent delivered. Rejected results are dropped, not
+        # retried forever — the string stays pending and can be re-dispatched later.
+        if not verify_result_hash(original, r.get("string_hash")):
+            rejected += 1
+            log.warning("offline-results: hash mismatch from %s for %s/%s — rejected",
+                        label, mod_name, key)
+            continue
+
         try:
             if repo is not None and cfg is not None:
                 string_mgr.save_string(
@@ -1290,6 +1304,7 @@ def workers_offline_results(label: str):
                 mods_touched.add(mod_name)
                 saved_count += 1
         except Exception as exc:
+            had_error = True
             log.warning("offline-results: save_string failed for %s/%s: %s", mod_name, key, exc)
 
         if job is not None:
@@ -1381,7 +1396,20 @@ def workers_offline_results(label: str):
         job.progress.message = f"Receiving offline results ({job.progress.current}/{job.progress.total})"
         jm._notify(job)
 
-    return jsonify({"ok": True, "saved": saved_count})
+    # Advance this agent's durable pull cursor (monotonic high-water). Survives master
+    # restarts; used by recovery to know what has already been reconciled from each agent.
+    if astore is not None and batch_max_seq and not had_error:
+        try:
+            astore.advance_agent_cursor(label, batch_max_seq)
+        except Exception as exc:
+            log.warning("offline-results: cursor advance failed for %s: %s", label, exc)
+
+    # confirmed_seq tells the agent how far it may mark results delivered (and later prune).
+    # On a full success this is the batch high-water; on any save error we confirm nothing
+    # so the agent safely re-delivers the whole batch (idempotent on the host side).
+    confirmed_seq = batch_max_seq if not had_error else 0
+    return jsonify({"ok": True, "saved": saved_count, "rejected": rejected,
+                    "confirmed_seq": confirmed_seq})
 
 
 @bp.route("/workers/<label>/benchmark", methods=["POST"])

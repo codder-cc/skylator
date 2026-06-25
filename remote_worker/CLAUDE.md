@@ -10,8 +10,17 @@ Instructions for AI assistants working in this directory.
 the Skylator translation cluster. It runs on macOS / Linux / Windows machines
 that are separate from the main Flask host (which lives in `translator/`).
 
-The remote's only job: receive strings from the host, run the LLM, return
-translations. No database, no files, no config except the model.
+The remote's core job: receive strings from the host, run the LLM, return
+translations.
+
+**Durability (fault tolerance):** for offline/autonomous jobs the worker now keeps a
+local SQLite database, `worker_data/worker_results.db` (see `result_store.py`). Every
+translation is written there the instant inference returns — *before* any network
+delivery — so a crash, reboot, or week-long host outage never loses produced work. On
+relaunch the worker resumes unfinished assignments from this store automatically. The
+`OfflineTranslateRunner` is store-driven (reads its work list from the manifest, not from
+an in-memory list); a separate always-on deliver loop pushes durable results to the host
+and marks them delivered on ack. Regular (non-offline) inference remains stateless.
 
 ---
 
@@ -111,8 +120,8 @@ deps for the detected OS, and starts the server pointing back at the host.
   and returns 404, the worker re-registers automatically.
 - **Model hot-swap**: the host UI can send `POST /model/load` at any time to
   switch models without restarting the server.
-- **No per-mod state**: all translation data lives on the host. The remote is
-  completely stateless between jobs.
+- **Per-job durability**: offline jobs persist to `worker_data/worker_results.db` and
+  auto-resume after a crash. The remote is stateless only for live (non-offline) inference.
 
 ---
 

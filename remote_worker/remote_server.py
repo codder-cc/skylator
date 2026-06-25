@@ -294,6 +294,8 @@ class ServerState:
         self.offline_job_runner = None   # OfflineTranslateRunner | None
         self.offline_pending_results: list = []
         self.offline_pending_done: bool = False
+        # Durable result store (fault-tolerance core) — opened in lifespan
+        self.result_store = None         # ResultStore | None
 
     @property
     def tps_avg(self) -> float:
@@ -886,11 +888,8 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
                     _async_register(state.http_client, host_url, my_url, caps, state)
                 )
             needs_register = False
-            # Flush any results buffered while host was unreachable
-            if state.offline_pending_results or state.offline_pending_done:
-                asyncio.create_task(
-                    _flush_pending_results(state, host_url.rstrip("/"), label)
-                )
+            # (Result delivery is now handled by the always-on _deliver_loop, which
+            #  reads undelivered rows straight from the durable ResultStore.)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -898,29 +897,106 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
             needs_register = True
 
 
-# ── Offline translate helpers ──────────────────────────────────────────────────
+# ── Offline translate: durable production + decoupled delivery ──────────────────
 
-async def _flush_pending_results(state: ServerState, base: str, label: str) -> None:
-    """Deliver buffered offline results that failed while host was unreachable."""
-    if not state.offline_pending_results and not state.offline_pending_done:
-        return
-    results = state.offline_pending_results[:]
-    done    = state.offline_pending_done
-    job_id  = (state.offline_job or {}).get("offline_job_id", "")
-    if not job_id:
-        return
+def _row_to_result(r: dict) -> dict:
+    """Map a ResultStore row to the /offline-results payload shape."""
+    return {
+        "seq":           r["seq"],
+        "string_id":     r["string_id"],
+        "string_hash":   r["string_hash"],
+        "key":           r.get("str_key") or "",
+        "esp_name":      r.get("esp_name") or "",
+        "mod_name":      r.get("mod_name") or "",
+        "original":      r["original"],
+        "translation":   r["translation"],
+        "status":        r["status"],
+        "quality_score": r["quality_score"],
+    }
+
+
+async def _post_offline_results(state, base, label, aid, results, done, batch_max_seq):
+    """POST a batch of durable results to the host. Returns (ok, confirmed_seq)."""
     try:
         r = await state.http_client.post(
             f"{base}/api/workers/{label}/offline-results",
-            json={"offline_job_id": job_id, "results": results, "done": done},
-            timeout=20.0,
+            json={
+                "offline_job_id": aid,
+                "results":        results,
+                "done":           done,
+                "batch_max_seq":  batch_max_seq,
+            },
+            timeout=30.0,
         )
         r.raise_for_status()
-        state.offline_pending_results.clear()
-        state.offline_pending_done = False
-        log.info("Flushed %d pending offline results (done=%s)", len(results), done)
+        data = r.json() if r.content else {}
+        return True, int(data.get("confirmed_seq") or 0)
     except Exception as exc:
-        log.warning("Flush pending results failed: %s", exc)
+        log.warning("offline-results delivery failed (aid=%s): %s", aid[:8], exc)
+        return False, 0
+
+
+async def _deliver_loop(base: str, label: str, state: ServerState) -> None:
+    """Always-on loop: push undelivered durable results to the host and mark them
+    delivered on ack. Fully decoupled from production — if the host is unreachable,
+    produced work simply waits in the ResultStore and is retried here."""
+    store = state.result_store
+    if store is None:
+        return
+    log.info("Deliver loop started → %s", base)
+    while True:
+        try:
+            await asyncio.sleep(2.0)
+            undeliv = store.undelivered(limit=200)
+            if undeliv:
+                by_aid: dict[str, list] = {}
+                for row in undeliv:
+                    by_aid.setdefault(row["assignment_id"], []).append(row)
+                for aid, rows in by_aid.items():
+                    results       = [_row_to_result(r) for r in rows]
+                    batch_max_seq = max(r["seq"] for r in rows)
+                    ok, confirmed = await _post_offline_results(
+                        state, base, label, aid, results, False, batch_max_seq
+                    )
+                    if ok and confirmed:
+                        store.mark_delivered(confirmed)
+
+            # Signal done=True for assignments that are complete AND fully delivered.
+            for a in store.all_assignments():
+                aid = a["assignment_id"]
+                if (a["state"] == "complete" and not store.is_done_sent(aid)
+                        and store.undelivered_count(aid) == 0):
+                    ok, _ = await _post_offline_results(
+                        state, base, label, aid, [], True, store.max_seq()
+                    )
+                    if ok:
+                        store.set_done_sent(aid)
+                        log.info("Deliver loop: signalled done for assignment %s", aid[:8])
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("Deliver loop error: %s", exc)
+            await asyncio.sleep(3.0)
+
+
+async def _produce_assignment(state, loop, aid: str, meta: dict) -> None:
+    """Run the store-driven runner for one assignment, then mark it complete.
+    Safe to call on a fresh dispatch OR on resume after a crash — the runner reads
+    its work list from the durable manifest either way."""
+    from offline_translate import OfflineTranslateRunner
+    runner = OfflineTranslateRunner(state.result_store, aid, meta)
+    state.offline_job        = {"offline_job_id": aid}
+    state.offline_job_runner = runner
+    try:
+        await runner.run(state, loop)
+        if not runner._stop and state.result_store is not None:
+            state.result_store.set_assignment_state(aid, "complete")
+    except Exception as exc:
+        log.error("Offline produce error (aid=%s): %s", aid[:8], exc)
+    finally:
+        state.offline_job        = None
+        state.offline_job_runner = None
+        log.info("Offline produce task finished for %s", aid[:8])
 
 
 async def _run_offline_job(
@@ -930,39 +1006,22 @@ async def _run_offline_job(
     base: str,
     label: str,
 ) -> None:
-    """Async task: run OfflineTranslateRunner and deliver results to host."""
-    from offline_translate import OfflineTranslateRunner
-    offline_job_id = chunk.get("offline_job_id", "")
-
-    async def deliver(results: list, done: bool) -> None:
-        try:
-            r = await state.http_client.post(
-                f"{base}/api/workers/{label}/offline-results",
-                json={"offline_job_id": offline_job_id, "results": results, "done": done},
-                timeout=20.0,
-            )
-            r.raise_for_status()
-        except Exception as exc:
-            log.warning("Offline result delivery failed: %s — buffering", exc)
-            state.offline_pending_results.extend(results)
-            if done:
-                state.offline_pending_done = True
-
-    runner = OfflineTranslateRunner(chunk)
-    state.offline_job_runner = runner
-    try:
-        await runner.run(state, loop, deliver_cb=deliver)
-    except Exception as exc:
-        log.error("OfflineTranslateRunner error: %s", exc)
-        # Try to deliver partial + done so the host job doesn't hang
-        try:
-            await deliver([], done=True)
-        except Exception:
-            state.offline_pending_done = True
-    finally:
-        state.offline_job        = None
-        state.offline_job_runner = None
-        log.info("Offline job %s complete", offline_job_id[:8])
+    """Persist the assignment + manifest durably, then produce. Delivery is handled
+    by the always-on deliver loop, so this no longer pushes results itself."""
+    import json as _json
+    aid   = chunk.get("offline_job_id", "")
+    meta  = {k: v for k, v in chunk.items() if k != "strings"}
+    items = chunk.get("strings") or []
+    if state.result_store is not None:
+        state.result_store.add_assignment(
+            aid,
+            job_id      = chunk.get("host_job_id", ""),
+            mod_name    = chunk.get("mod_name"),
+            context     = chunk.get("context"),
+            params_json = _json.dumps(meta),
+            items       = items,
+        )
+    await _produce_assignment(state, loop, aid, meta)
 
 
 # ── Pull-mode worker loop ──────────────────────────────────────────────────────
@@ -1342,6 +1401,17 @@ def create_server_app(
 
         worker_task = asyncio.create_task(_worker(state))
 
+        # ── Durable result store (fault-tolerance core) ──────────────────────
+        import json as _json
+        from pathlib import Path as _Path
+        from result_store import ResultStore as _ResultStore
+        try:
+            store_path = _Path(__file__).parent / "worker_data" / "worker_results.db"
+            state.result_store = _ResultStore(store_path)
+        except Exception as exc:
+            log.error("Failed to open ResultStore (%s) — offline durability disabled", exc)
+            state.result_store = None
+
         if mdns_enabled:
             _register_mdns(mdns_host, mdns_port, state)
 
@@ -1353,6 +1423,30 @@ def create_server_app(
             bg_tasks.append(asyncio.create_task(
                 _pull_worker_loop(host_url, mdns_host, mdns_port, state)
             ))
+            # Always-on delivery of durable results to the host.
+            _base  = host_url.rstrip("/")
+            _label = f"{platform.system().lower()}-{socket.gethostname()}"
+            bg_tasks.append(asyncio.create_task(_deliver_loop(_base, _label, state)))
+
+            # Auto-resume any unfinished assignment from a previous run / crash.
+            if state.result_store is not None:
+                _loop = asyncio.get_running_loop()
+                for a in state.result_store.open_assignments():
+                    aid          = a["assignment_id"]
+                    total, done  = state.result_store.assignment_progress(aid)
+                    if done < total:
+                        try:
+                            meta = _json.loads(a.get("params_json") or "{}")
+                        except Exception:
+                            meta = {}
+                        log.info("Resuming offline assignment %s (%d/%d already done)",
+                                 aid[:8], done, total)
+                        bg_tasks.append(asyncio.create_task(
+                            _produce_assignment(state, _loop, aid, meta)
+                        ))
+                        break  # one offline job at a time
+                    else:
+                        state.result_store.set_assignment_state(aid, "complete")
 
         yield
 
@@ -1370,6 +1464,13 @@ def create_server_app(
             await _async_unregister(state.http_client, host_url)
 
         await state.http_client.aclose()
+
+        if state.result_store is not None:
+            try:
+                state.result_store.checkpoint()
+                state.result_store.close()
+            except Exception:
+                pass
 
     app = FastAPI(
         title       = "Skylator Remote Worker",

@@ -127,6 +127,32 @@ CREATE TABLE IF NOT EXISTS mod_stats_cache (
     validation_issues_count  INTEGER DEFAULT -1,
     last_computed_at         REAL    DEFAULT (unixepoch('now', 'subsec'))
 );
+
+-- Fault-tolerant dispatch (migration 8) — keep in sync with translator/db/migrations.py
+CREATE TABLE IF NOT EXISTS assignments (
+    assignment_id    TEXT PRIMARY KEY,
+    job_id           TEXT NOT NULL,
+    agent_id         TEXT NOT NULL,
+    mod_name         TEXT NOT NULL DEFAULT '',
+    state            TEXT NOT NULL DEFAULT 'queued',
+    total            INTEGER NOT NULL DEFAULT 0,
+    delivered        INTEGER NOT NULL DEFAULT 0,
+    lease_expires_at REAL,
+    created_at       REAL DEFAULT (unixepoch('now','subsec')),
+    updated_at       REAL DEFAULT (unixepoch('now','subsec'))
+);
+CREATE TABLE IF NOT EXISTS assignment_strings (
+    assignment_id TEXT    NOT NULL,
+    string_id     INTEGER NOT NULL,
+    string_hash   TEXT    NOT NULL,
+    delivered     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (assignment_id, string_id)
+);
+CREATE TABLE IF NOT EXISTS agent_cursors (
+    agent_id   TEXT PRIMARY KEY,
+    last_seq   INTEGER NOT NULL DEFAULT 0,
+    updated_at REAL DEFAULT (unixepoch('now','subsec'))
+);
 """
 
 

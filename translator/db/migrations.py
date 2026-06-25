@@ -101,6 +101,45 @@ MIGRATION_STEPS: list[tuple[int, str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_waiters_job  ON dispatch_waiters(waiter_job_id)",
         ],
     ),
+    (
+        8,
+        "Fault-tolerant dispatch: durable assignments, manifests, agent pull cursors",
+        [
+            # One row per (job, agent) work parcel — the unit of recovery.
+            """CREATE TABLE IF NOT EXISTS assignments (
+                assignment_id    TEXT PRIMARY KEY,
+                job_id           TEXT NOT NULL,
+                agent_id         TEXT NOT NULL,
+                mod_name         TEXT NOT NULL DEFAULT '',
+                state            TEXT NOT NULL DEFAULT 'queued',
+                    -- queued|leased|in_progress|partially_delivered|complete|failed|orphaned
+                total            INTEGER NOT NULL DEFAULT 0,
+                delivered        INTEGER NOT NULL DEFAULT 0,
+                lease_expires_at REAL,
+                created_at       REAL DEFAULT (unixepoch('now','subsec')),
+                updated_at       REAL DEFAULT (unixepoch('now','subsec'))
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_assign_job   ON assignments(job_id)",
+            "CREATE INDEX IF NOT EXISTS idx_assign_agent ON assignments(agent_id, state)",
+            "CREATE INDEX IF NOT EXISTS idx_assign_lease ON assignments(state, lease_expires_at)",
+            # Host-side manifest + per-string delivery tracking.
+            """CREATE TABLE IF NOT EXISTS assignment_strings (
+                assignment_id TEXT    NOT NULL,
+                string_id     INTEGER NOT NULL REFERENCES strings(id) ON DELETE CASCADE,
+                string_hash   TEXT    NOT NULL,
+                delivered     INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (assignment_id, string_id)
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_astr_hash    ON assignment_strings(string_hash)",
+            "CREATE INDEX IF NOT EXISTS idx_astr_undeliv ON assignment_strings(assignment_id, delivered)",
+            # Pull high-water mark per agent (survives master restart).
+            """CREATE TABLE IF NOT EXISTS agent_cursors (
+                agent_id   TEXT PRIMARY KEY,
+                last_seq   INTEGER NOT NULL DEFAULT 0,
+                updated_at REAL DEFAULT (unixepoch('now','subsec'))
+            )""",
+        ],
+    ),
 ]
 
 

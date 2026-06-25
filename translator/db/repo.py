@@ -229,7 +229,7 @@ class StringRepo:
                        quality_score, form_id, rec_type, field_type, field_index,
                        vmad_str_idx
                 FROM strings WHERE mod_name=? AND esp_name=?
-                ORDER BY esp_name, field_index, key
+                ORDER BY esp_name, form_id, rec_type, field_type, field_index
             """, (mod_name, esp_name)).fetchall()
         else:
             rows = self.db.execute("""
@@ -237,7 +237,7 @@ class StringRepo:
                        quality_score, form_id, rec_type, field_type, field_index,
                        vmad_str_idx
                 FROM strings WHERE mod_name=?
-                ORDER BY esp_name, field_index, key
+                ORDER BY esp_name, form_id, rec_type, field_type, field_index
             """, (mod_name,)).fetchall()
         return [dict(r) for r in rows]
 
@@ -305,7 +305,7 @@ class StringRepo:
             _dir = "ASC" if sort_dir.lower() == "asc" else "DESC"
             _order = f"ORDER BY {sort_by} {_dir} NULLS LAST"
         else:
-            _order = "ORDER BY esp_name, field_index, key"
+            _order = "ORDER BY esp_name, form_id, rec_type, field_type, field_index"
 
         count_row = self.db.execute(
             f"SELECT COUNT(*) FROM strings WHERE {where}", params

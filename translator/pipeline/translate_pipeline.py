@@ -236,9 +236,25 @@ class TranslatePipeline:
             if len(tm):
                 job.add_log(f"TM: {len(tm)} pairs loaded for {mod_name}")
 
-            def _build_chunk_context(originals: list[str]) -> str:
+            # Human-readable hints for the common record types (cheap per-record context).
+            _REC_HINTS = {
+                "DIAL": "dialogue", "INFO": "dialogue response", "BOOK": "book/note text",
+                "QUST": "quest", "NPC_": "character name", "MGEF": "magic effect",
+                "PERK": "perk", "SPEL": "spell", "ARMO": "armor", "WEAP": "weapon",
+                "ALCH": "potion/ingredient", "MESG": "UI message", "ACTI": "activator",
+            }
+
+            def _build_chunk_context(chunk) -> str:
+                # `chunk` is the list of string dicts for this batch (record-grouped).
+                originals = [s.get("original", "") for s in chunk] if chunk and isinstance(chunk[0], dict) else list(chunk)
                 ai_preview, _ = prepare_for_ai(originals)
-                return enrich_context(context, tm.build_block(ai_preview), ai_preview)
+                base = enrich_context(context, tm.build_block(ai_preview), ai_preview)
+                # Per-record hint: what kind of text this is (dialogue vs book vs item name).
+                rtypes = {s.get("rec_type") for s in chunk if isinstance(s, dict) and s.get("rec_type")}
+                if rtypes:
+                    labels = sorted({_REC_HINTS.get(rt, rt) for rt in rtypes})
+                    return f"Text type: {', '.join(labels)}\n{base}".strip()
+                return base
 
             # ── Step 8: Dispatch to WorkerPool ───────────────────────────────
             # Steps 9-12 happen inside the on_string_done callback below.

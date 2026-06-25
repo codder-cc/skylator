@@ -332,8 +332,11 @@ class SwfStringCache:
                  "-importText", str(swf_path), str(out_swf), str(import_dir)],
                 capture_output=True, timeout=120,
             )
-            if r.returncode == 0 and out_swf.exists():
-                swf_path.replace(out_swf)
+            if r.returncode == 0 and out_swf.exists() and out_swf.stat().st_size > 0:
+                # Move the FFDec-produced TRANSLATED output onto the live SWF (atomic).
+                # (Was backwards: swf_path.replace(out_swf) overwrote the translation with
+                #  the original and never applied anything.)
+                out_swf.replace(swf_path)
                 log.info("SwfStringCache: applied %d translations to %s",
                          len(ru_files), swf_path.name)
                 return True

@@ -13,6 +13,7 @@ Programmatic usage via translator.cli:
 """
 
 import argparse
+import os
 import subprocess
 import json
 import re
@@ -147,17 +148,30 @@ def repack_bsa(bsa_path: str, extract_dir: Path):
         backup_dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(bsa, backup_dest)
         print(f"    Backed up BSA to {backup_dest}")
+    # Pack to a temp file and atomically swap, so a crash/cancel mid-pack can never leave
+    # a half-written (bricked) live BSA. The original is already backed up above.
+    tmp_out = bsa.with_name(bsa.name + ".tmp")
     try:
+        if tmp_out.exists():
+            tmp_out.unlink()
         r = subprocess.run(
-            [str(paths.bsarch_exe), 'pack', str(extract_dir), bsa_path, '-sse', '-mt'],
+            [str(paths.bsarch_exe), 'pack', str(extract_dir), str(tmp_out), '-sse', '-mt'],
             capture_output=True, text=True, timeout=600
         )
-        if r.returncode != 0:
+        if r.returncode != 0 or not tmp_out.exists() or tmp_out.stat().st_size == 0:
             print(f"    [WARN] BSArch repack failed: {r.stderr[:120]}")
+            if tmp_out.exists():
+                tmp_out.unlink()
         else:
+            os.replace(tmp_out, bsa)   # atomic on the same filesystem
             print(f"    Repacked BSA: {bsa.name}")
     except Exception as e:
         print(f"    [WARN] BSArch repack error: {e}")
+        try:
+            if tmp_out.exists():
+                tmp_out.unlink()
+        except Exception:
+            pass
 
 
 # ── core translation of one file ──────────────────────────────────────────────

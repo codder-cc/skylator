@@ -39,6 +39,14 @@ def create_app(config_path: Path | None = None) -> Flask:
 
     app.config["TRANSLATOR_CFG"] = cfg
 
+    # Apply embedded-string output encoding (default utf-8; 'cp1251' for RU installs).
+    if cfg is not None:
+        try:
+            from scripts.esp_engine import set_string_encoding
+            set_string_encoding(getattr(cfg.translation, "string_encoding", "utf-8"))
+        except Exception as exc:
+            log.warning("could not set string encoding: %s", exc)
+
     # ── Init SQLite translation DB ─────────────────────────────────────────
     from translator.db.database import TranslationDB
     from translator.db.repo import StringRepo

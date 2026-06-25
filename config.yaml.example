@@ -76,6 +76,9 @@ context:
 translation:
   source_lang:    "English"
   target_lang:    "Russian"
+  # Embedded (non-localized) ESP string output encoding. Default utf-8 (Skyrim SE
+  # localized plugins). Set to "cp1251" if Russian text shows as mojibake in-game.
+  string_encoding: "utf-8"
   preserve_tokens:
     - "<Alias="
     - "<mag>"

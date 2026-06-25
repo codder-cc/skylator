@@ -102,6 +102,7 @@ class TranslationConfig:
     min_latin_ratio:    float = 0.15
     max_cyrillic_ratio: float = 0.30
     use_global_dict:    bool  = True   # reuse cross-mod translations without AI
+    string_encoding:    str   = "utf-8"  # embedded-string output encoding; 'cp1251' for RU installs showing mojibake
 
 
 @dataclass
@@ -245,6 +246,7 @@ def load_config(config_file: Path = _CONFIG_FILE) -> TranslatorConfig:
         min_latin_ratio    = tr.get("min_latin_ratio", 0.15),
         max_cyrillic_ratio = tr.get("max_cyrillic_ratio", 0.30),
         use_global_dict    = tr.get("use_global_dict", True),
+        string_encoding    = tr.get("string_encoding", "utf-8"),
     )
 
     lg = raw.get("logging", {})

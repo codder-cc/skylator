@@ -76,10 +76,23 @@ def u16(data, off): return struct.unpack_from('<H', data, off)[0]
 def p32(v):         return struct.pack('<I', v)
 def p16(v):         return struct.pack('<H', v)
 
+# Output encoding for embedded (non-localized) plugin strings.
+# Skyrim SE *localized* plugins use UTF-8 (.STRINGS); some Russian setups expect
+# Windows-1251 for *embedded* strings and will show mojibake with UTF-8. We keep UTF-8 as
+# the default (current behavior — do NOT flip blindly) and make it overridable for installs
+# that need cp1251. Decoding always tries cp1251 too, so existing cp1251 plugins read cleanly.
+_OUTPUT_ENCODING = 'utf-8'
+
+def set_string_encoding(enc: str) -> None:
+    """Override the embedded-string output encoding (e.g. 'cp1251' for RU installs that
+    render UTF-8 as mojibake). Affects write_cstring + VMAD string encoding."""
+    global _OUTPUT_ENCODING
+    _OUTPUT_ENCODING = enc
+
 def read_cstring(data: bytes) -> str:
     end = data.find(b'\x00')
     raw = data[:end] if end >= 0 else data
-    for enc in ('utf-8', 'cp1252', 'latin-1'):
+    for enc in ('utf-8', 'cp1251', 'cp1252', 'latin-1'):
         try:
             return raw.decode(enc)
         except Exception:
@@ -87,7 +100,7 @@ def read_cstring(data: bytes) -> str:
     return raw.decode('latin-1', errors='replace')
 
 def write_cstring(s: str) -> bytes:
-    return s.encode('utf-8') + b'\x00'
+    return s.encode(_OUTPUT_ENCODING, errors='replace') + b'\x00'
 
 
 # ── Subrecord parser / builder ────────────────────────────────────────────────
@@ -223,7 +236,7 @@ def parse_vmad_strings(data: bytes) -> list:
         off = pos[0]
         length = read_u16()
         raw = data[pos[0]:pos[0] + length]; pos[0] += length
-        for enc in ('utf-8', 'cp1252', 'latin-1'):
+        for enc in ('utf-8', 'cp1251', 'cp1252', 'latin-1'):
             try: text = raw.decode(enc); break
             except Exception: continue
         else:
@@ -285,7 +298,13 @@ def rewrite_vmad_strings(data: bytes, translations: dict) -> tuple:
 
     result = bytearray(data)
     for off, old_len, new_text in sorted(patches, key=lambda x: -x[0]):
-        new_bytes = new_text.encode('utf-8')
+        # Defensive guard: only splice if the recorded length-prefix still matches at this
+        # offset and is in-bounds. If a parse desync ever produced a bad offset, skip the
+        # patch rather than corrupting the VMAD (silent corruption → in-game CTD).
+        if off + 2 + old_len > len(result) or u16(bytes(result), off) != old_len:
+            print(f"    [WARN] VMAD offset mismatch at {off} (len {old_len}) — skipping patch")
+            continue
+        new_bytes = new_text.encode(_OUTPUT_ENCODING, errors='replace')
         result = (result[:off] + p16(len(new_bytes)) +
                   new_bytes + result[off + 2 + old_len:])
     return bytes(result), True

@@ -1292,6 +1292,51 @@ def assignments_overview():
     return jsonify({"assignments": out, "aggregate": agg})
 
 
+@bp.route("/auto-feed", methods=["GET"])
+def auto_feed_status():
+    """Autonomous backlog draining status + how many strings remain unassigned."""
+    from translator.web.auto_feed import next_unassigned_batch
+    state = current_app.config.get("AUTO_FEED") or {}
+    repo  = current_app.config.get("STRING_REPO")
+    backlog = None
+    if repo is not None:
+        try:
+            backlog = repo.db.execute(
+                """SELECT COUNT(*) FROM strings s
+                   WHERE s.status='pending' AND COALESCE(s.source,'') != 'untranslatable'
+                     AND s.id NOT IN (
+                       SELECT astr.string_id FROM assignment_strings astr
+                       JOIN assignments a ON a.assignment_id=astr.assignment_id
+                       WHERE a.state IN ('queued','leased','in_progress','partially_delivered')
+                         AND astr.delivered=0)""").fetchone()[0]
+        except Exception:
+            backlog = None
+    return jsonify({"enabled": bool(state.get("enabled")),
+                    "batch_size": state.get("batch_size", 50),
+                    "unassigned_pending": backlog})
+
+
+@bp.route("/auto-feed/start", methods=["POST"])
+def auto_feed_start():
+    """Turn on autonomous top-up: idle workers are continuously fed the next batch from
+    the global pending backlog until it is drained."""
+    data  = request.get_json(silent=True) or {}
+    state = current_app.config.setdefault("AUTO_FEED", {"enabled": False, "batch_size": 50})
+    state["enabled"] = True
+    if data.get("batch_size"):
+        state["batch_size"] = int(data["batch_size"])
+    log.info("Auto-feed ENABLED (batch_size=%d)", state["batch_size"])
+    return jsonify({"ok": True, "enabled": True, "batch_size": state["batch_size"]})
+
+
+@bp.route("/auto-feed/stop", methods=["POST"])
+def auto_feed_stop():
+    state = current_app.config.setdefault("AUTO_FEED", {"enabled": False, "batch_size": 50})
+    state["enabled"] = False
+    log.info("Auto-feed DISABLED")
+    return jsonify({"ok": True, "enabled": False})
+
+
 @bp.route("/admin/rebuild-from-agents", methods=["POST"])
 def rebuild_from_agents():
     """Recovery (Gap 5): after restoring an older master DB backup, reset all agent pull

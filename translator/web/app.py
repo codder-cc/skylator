@@ -267,6 +267,11 @@ def create_app(config_path: Path | None = None) -> Flask:
 
     _threading.Thread(target=_bg_reap_assignments, daemon=True, name="assignment-reaper").start()
 
+    # ── Autonomous work top-up feeder (Gap 1) ────────────────────────────────
+    app.config["AUTO_FEED"] = {"enabled": False, "batch_size": 50}
+    from translator.web.auto_feed import feed_loop
+    _threading.Thread(target=feed_loop, args=(app,), daemon=True, name="auto-feed").start()
+
     # ── Register blueprints ─────────────────────────────────────────────────
     from translator.web.routes import register_routes
     register_routes(app)

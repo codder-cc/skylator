@@ -153,6 +153,27 @@ CREATE TABLE IF NOT EXISTS agent_cursors (
     last_seq   INTEGER NOT NULL DEFAULT 0,
     updated_at REAL DEFAULT (unixepoch('now','subsec'))
 );
+
+-- Hash-based dispatch pool (migration 7) — keep in sync with translator/db/migrations.py
+CREATE TABLE IF NOT EXISTS string_dispatch (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    string_hash   TEXT    NOT NULL UNIQUE,
+    status        TEXT    NOT NULL DEFAULT 'queued',
+    owner_job_id  TEXT,
+    owner_machine TEXT,
+    translation   TEXT,
+    quality_score INTEGER,
+    claimed_at    REAL,
+    completed_at  REAL
+);
+CREATE TABLE IF NOT EXISTS dispatch_waiters (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    string_hash    TEXT    NOT NULL,
+    waiter_job_id  TEXT    NOT NULL,
+    waiter_mod     TEXT    NOT NULL,
+    string_id      INTEGER NOT NULL,
+    UNIQUE(string_hash, string_id)
+);
 """
 
 

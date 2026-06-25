@@ -33,6 +33,7 @@ import asyncio
 import json
 import logging
 import platform
+import random
 import socket
 import time
 import uuid
@@ -872,7 +873,9 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
 
     needs_register = False
     while True:
-        await asyncio.sleep(15)
+        # ±20% jitter so a fleet started in lockstep (same service/boot) doesn't all
+        # heartbeat at once and spike the master every 15s.
+        await asyncio.sleep(15 + random.uniform(-3, 3))
         try:
             # [FIX #8] Refresh free memory before every heartbeat
             state.refresh_free_memory()
@@ -1165,6 +1168,7 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
     base  = host_url.rstrip("/")
     log.info("Pull worker started — polling %s/api/workers/%s/chunk", base, label)
 
+    empty_polls = 0
     while True:
         try:
             # [FIX #9] Direct async call — no blocking thread consumed during long-poll
@@ -1177,8 +1181,13 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
             data  = r.json()
             chunk = data.get("chunk")
             if not chunk:
-                await asyncio.sleep(0.1)
+                # Adaptive backoff so a host that returns immediately (misconfig/race)
+                # can't turn this into a 10 Hz hot loop. Caps at 3s; the host normally
+                # long-polls ~15s so this rarely trips.
+                empty_polls += 1
+                await asyncio.sleep(min(0.1 * empty_polls, 3.0))
                 continue
+            empty_polls = 0
 
             chunk_id   = chunk["chunk_id"]
             chunk_type = chunk.get("type", "infer")

@@ -57,7 +57,12 @@ def create_app(config_path: Path | None = None) -> Flask:
     app.config["TRANSLATION_DB"] = _db
     app.config["STRING_REPO"] = _repo
 
-    # ── Init ReservationManager (legacy — kept for backward compat) ─────────
+    # ── Init ReservationManager (LEGACY/ZOMBIE — slated for removal) ─────────
+    # Superseded by HashDispatchPool (live dedup) + the assignments layer (durability).
+    # Its translate-path branch is dead (DISPATCH_POOL is always present), and the
+    # 'reserved' stat now derives from string_dispatch, not string_reservations.
+    # TODO(consolidate): remove this manager, its expiry thread, and the
+    # string_reservations table in a dedicated migration once no code references it.
     from translator.reservation.reservation_manager import ReservationManager
     _reservation_mgr = ReservationManager(_db, ttl_seconds=300)
     _reservation_mgr.release_all_active()

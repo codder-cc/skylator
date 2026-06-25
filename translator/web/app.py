@@ -207,6 +207,27 @@ def create_app(config_path: Path | None = None) -> Flask:
     except Exception as exc:
         log.warning("assignment boot recovery error: %s", exc)
 
+    # Gap 3 — re-derive offline job progress from durable assignments on boot, so a
+    # restored OFFLINE_DISPATCHED job shows the right totals immediately (and completes
+    # if all its assignments already finished) instead of waiting for new results.
+    try:
+        for _jid, _j in list(jm._jobs.items()):
+            if _j.status != JobStatus.OFFLINE_DISPATCHED:
+                continue
+            _total, _delivered = _assignment_mgr.job_progress(_jid)
+            if _total > 0:
+                _j.progress.total   = _total
+                _j.progress.current = _delivered
+                if _assignment_mgr.is_job_done(_jid):
+                    _j.status = JobStatus.DONE
+                    _j.progress.message = "Done — recovered from assignments on boot"
+                else:
+                    _j.progress.message = (f"Recovered: {_delivered}/{_total} delivered "
+                                           f"— resuming")
+        jm._persist()
+    except Exception as exc:
+        log.warning("job status re-derivation error: %s", exc)
+
     # ── Master-pull reconciliation (authoritative) ──────────────────────────
     from translator.web.pull_reconcile import pull_loop
     _threading.Thread(

@@ -256,8 +256,14 @@ def build_prompt(
     thinking      : if False (default), appends ``</think>`` in the assistant
                     opener to disable Qwen3 chain-of-thought reasoning.
     """
-    cfg = get_config()
-    preserve = _preserve_note(cfg.translation.preserve_tokens)
+    # Config is optional here — only preserve_tokens is needed. Degrade gracefully if
+    # config.yaml is absent (e.g. a fresh checkout or a minimal worker context) so prompt
+    # assembly never hard-fails on a missing file.
+    try:
+        preserve_tokens = get_config().translation.preserve_tokens
+    except Exception:
+        preserve_tokens = []
+    preserve = _preserve_note(preserve_tokens)
     terms    = _terms_block(tgt_lang)
 
     ctx_block = f"\nContext: {context}\n" if context else ""

@@ -1292,6 +1292,31 @@ def assignments_overview():
     return jsonify({"assignments": out, "aggregate": agg})
 
 
+@bp.route("/admin/rebuild-from-agents", methods=["POST"])
+def rebuild_from_agents():
+    """Recovery (Gap 5): after restoring an older master DB backup, reset all agent pull
+    cursors to 0 and immediately re-pull from every reachable agent that still holds its
+    durable results. Idempotent (re-applying results is a no-op)."""
+    repo = current_app.config.get("STRING_REPO")
+    if repo is None:
+        return jsonify({"ok": False, "error": "not initialized"}), 500
+    from translator.jobs.assignment_store import AssignmentStore
+    n = AssignmentStore(repo.db).reset_agent_cursors()
+
+    registry = current_app.config.get("WORKER_REGISTRY")
+    pulled = 0
+    if registry is not None:
+        from translator.web.pull_reconcile import reconcile_agent
+        app_obj = current_app._get_current_object()
+        for w in registry.get_all():
+            try:
+                pulled += reconcile_agent(app_obj, w)
+            except Exception as exc:
+                log.warning("rebuild-from-agents: pull from %s failed: %s",
+                            getattr(w, "label", "?"), exc)
+    return jsonify({"ok": True, "cursors_reset": n, "pulled": pulled})
+
+
 @bp.route("/workers/<label>/abandon", methods=["POST"])
 def worker_abandon(label: str):
     """Operator action (Phase 7): immediately orphan an agent's active assignments

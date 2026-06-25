@@ -53,6 +53,22 @@ class AssignmentStore:
         ).fetchone()
         return row[0] if row else 0
 
+    def reset_agent_cursors(self, agent_id: str | None = None) -> int:
+        """Reset pull cursors to 0 so the master re-pulls everything from agents. Used
+        after restoring an older master DB backup to rebuild state from the agents that
+        still hold their results. Returns rows affected."""
+        with _lock:
+            if agent_id:
+                self.db.execute(
+                    "UPDATE agent_cursors SET last_seq=0, updated_at=unixepoch('now','subsec') "
+                    "WHERE agent_id=?", (agent_id,))
+            else:
+                self.db.execute(
+                    "UPDATE agent_cursors SET last_seq=0, updated_at=unixepoch('now','subsec')")
+            n = self.db.execute("SELECT changes()").fetchone()[0]
+            self.db.commit()
+        return n
+
     def advance_agent_cursor(self, agent_id: str, seq: int) -> None:
         """Monotonic advance — never moves the cursor backwards."""
         if seq <= 0:

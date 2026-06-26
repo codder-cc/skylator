@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState, useEffect, useRef } from 'react'
 import { workersApi } from '@/api/workers'
 import { jobsApi } from '@/api/jobs'
+import { modelsApi } from '@/api/models'
 import { QK } from '@/lib/queryKeys'
 import { timeAgo, cn } from '@/lib/utils'
 import type { WorkerInfo, SetupReport, CachedModel, BenchmarkResult, Job } from '@/types'
@@ -31,6 +32,7 @@ import {
   MemoryStick,
   Play,
   ArrowDownCircle,
+  Rocket,
   GitCommit,
   GitBranch,
 } from 'lucide-react'
@@ -1096,6 +1098,122 @@ function HostOtaCard() {
   )
 }
 
+// ── Send a model to multiple agents at once (A4 multi-agent dispatch) ─────────
+function DispatchFleetDialog({ workers, onClose }: { workers: WorkerInfo[]; onClose: () => void }) {
+  const live = workers.filter((w) => w.alive)
+  const [modelId, setModelId]     = useState(MODEL_CATALOG[0]?.id ?? '')
+  const [repoId, setRepoId]       = useState(MODEL_CATALOG[0]?.repoId ?? '')
+  const [ggufFile, setGgufFile]   = useState(MODEL_CATALOG[0]?.ggufFilename ?? '')
+  const [backend, setBackend]     = useState<'llamacpp' | 'mlx'>(MODEL_CATALOG[0]?.backend ?? 'llamacpp')
+  const [nCtx, setNCtx]           = useState(8192)
+  const [delivery, setDelivery]   = useState<'auto' | 'agent' | 'push'>('auto')
+  const [hfToken, setHfToken]     = useState('')
+  const [downloadOnly, setDownloadOnly] = useState(true)
+  const [selected, setSelected]   = useState<Set<string>>(new Set(live.map((w) => w.label)))
+  const [status, setStatus]       = useState<'idle' | 'sending' | 'done'>('idle')
+  const [result, setResult]       = useState<{ label: string; ok: boolean; error?: string }[]>([])
+
+  const pickCatalog = (id: string) => {
+    const m = MODEL_CATALOG.find((e) => e.id === id)
+    if (!m) return
+    setModelId(id); setRepoId(m.repoId); setGgufFile(m.ggufFilename); setBackend(m.backend)
+  }
+  const toggle = (label: string) =>
+    setSelected((s) => { const n = new Set(s); n.has(label) ? n.delete(label) : n.add(label); return n })
+
+  const dispatch = async () => {
+    setStatus('sending')
+    try {
+      const r = await modelsApi.dispatch({
+        model: {
+          backend_type: backend, repo_id: repoId, gguf_filename: ggufFile,
+          n_ctx: nCtx, delivery, ...(hfToken ? { hf_token: hfToken } : {}),
+        },
+        targets: Array.from(selected),
+        load: !downloadOnly,
+      })
+      setResult(r.dispatched)
+      setStatus('done')
+    } catch {
+      setStatus('idle')
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 overflow-y-auto py-4">
+      <div className="bg-bg-card border border-border-subtle rounded-lg w-full max-w-lg mx-4">
+        <div className="flex items-center gap-2 px-5 py-4 border-b border-border-subtle">
+          <Rocket className="w-4 h-4 text-accent" />
+          <h2 className="font-semibold text-text-main">Send model to fleet</h2>
+          <button onClick={onClose} className="ml-auto text-text-muted hover:text-text-main"><X className="w-4 h-4" /></button>
+        </div>
+
+        <div className="px-5 py-4 space-y-3">
+          <div>
+            <label className="block text-xs text-text-muted mb-1">Model</label>
+            <select value={modelId} onChange={(e) => pickCatalog(e.target.value)}
+                    className="w-full px-2 py-1.5 rounded text-sm bg-bg-base border border-border-subtle">
+              {MODEL_CATALOG.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <input value={repoId} onChange={(e) => setRepoId(e.target.value)} placeholder="repo_id"
+                   className="px-2 py-1.5 rounded text-xs bg-bg-base border border-border-subtle font-mono" />
+            <input value={ggufFile} onChange={(e) => setGgufFile(e.target.value)} placeholder="gguf filename (blank=MLX)"
+                   className="px-2 py-1.5 rounded text-xs bg-bg-base border border-border-subtle font-mono" />
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <select value={delivery} onChange={(e) => setDelivery(e.target.value as 'auto'|'agent'|'push')}
+                    className="px-2 py-1.5 rounded text-xs bg-bg-base border border-border-subtle">
+              <option value="auto">Auto</option><option value="agent">Agent→HF</option><option value="push">Master push</option>
+            </select>
+            <input type="number" value={nCtx} onChange={(e) => setNCtx(Number(e.target.value))} placeholder="n_ctx"
+                   className="px-2 py-1.5 rounded text-xs bg-bg-base border border-border-subtle" />
+            <label className="flex items-center gap-1 text-xs text-text-muted">
+              <input type="checkbox" checked={downloadOnly} onChange={(e) => setDownloadOnly(e.target.checked)} />
+              Download only
+            </label>
+          </div>
+          <input type="password" value={hfToken} onChange={(e) => setHfToken(e.target.value)}
+                 placeholder="HF token (optional, blank = master default)"
+                 className="w-full px-2 py-1.5 rounded text-xs bg-bg-base border border-border-subtle font-mono" />
+
+          <div>
+            <div className="flex items-center justify-between text-xs text-text-muted mb-1">
+              <span>Targets ({selected.size}/{live.length})</span>
+              <button className="hover:text-text-main"
+                      onClick={() => setSelected(new Set(selected.size === live.length ? [] : live.map((w) => w.label)))}>
+                {selected.size === live.length ? 'none' : 'all'}
+              </button>
+            </div>
+            <div className="max-h-40 overflow-y-auto border border-border-subtle rounded">
+              {live.length === 0 && <div className="px-2 py-2 text-xs text-text-muted">No live agents.</div>}
+              {live.map((w) => {
+                const r = result.find((x) => x.label === w.label)
+                return (
+                  <label key={w.label} className="flex items-center gap-2 px-2 py-1 text-xs hover:bg-bg-card2/40">
+                    <input type="checkbox" checked={selected.has(w.label)} onChange={() => toggle(w.label)} />
+                    <span className="font-mono">{w.label}</span>
+                    {r && <span className={cn('ml-auto', r.ok ? 'text-success' : 'text-danger')}>{r.ok ? 'queued' : (r.error || 'failed')}</span>}
+                  </label>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 px-5 py-4 border-t border-border-subtle">
+          <button onClick={onClose} className="px-4 py-2 rounded text-sm text-text-muted bg-bg-card2 border border-border-subtle">Close</button>
+          <button onClick={dispatch} disabled={status === 'sending' || selected.size === 0}
+                  className="px-4 py-2 rounded text-sm font-medium bg-accent text-bg-base hover:opacity-90 disabled:opacity-50">
+            {status === 'sending' ? 'Sending…' : status === 'done' ? 'Sent ✓' : `Send to ${selected.size} agent(s)`}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Fleet assignments overview (Gap 4 observability) ───────────────────────────
 function FleetOverview() {
   const { data } = useQuery({
@@ -1154,6 +1272,7 @@ function ServersPage() {
   const qc = useQueryClient()
   const [loadModalWorker, setLoadModalWorker]       = useState<WorkerInfo | null>(null)
   const [benchmarkWorker, setBenchmarkWorker] = useState<WorkerInfo | null>(null)
+  const [fleetOpen, setFleetOpen] = useState(false)
   const [scanPoll, setScanPoll] = useState(false)
   const scanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -1232,6 +1351,13 @@ function ServersPage() {
       {/* Page header */}
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-text-main">Servers</h1>
+        <button
+          onClick={() => setFleetOpen(true)}
+          className="flex items-center gap-2 px-3 py-2 rounded text-sm bg-accent/20 text-accent border border-accent/30 hover:bg-accent/30 transition-colors"
+        >
+          <Rocket className="w-4 h-4" />
+          Send to fleet
+        </button>
         <button
           onClick={() => {
             qc.invalidateQueries({ queryKey: QK.workers() })
@@ -1363,6 +1489,10 @@ function ServersPage() {
           worker={loadModalWorker}
           onClose={() => setLoadModalWorker(null)}
         />
+      )}
+
+      {fleetOpen && (
+        <DispatchFleetDialog workers={workers} onClose={() => setFleetOpen(false)} />
       )}
 
       {/* Benchmark Modal */}

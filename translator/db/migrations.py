@@ -140,6 +140,14 @@ MIGRATION_STEPS: list[tuple[int, str, list[str]]] = [
             )""",
         ],
     ),
+    (
+        9,
+        "Add norm_hash for fuzzy (case/whitespace-insensitive) translation reuse",
+        [
+            "ALTER TABLE strings ADD COLUMN norm_hash TEXT",
+            "CREATE INDEX IF NOT EXISTS idx_strings_norm_hash ON strings(norm_hash) WHERE norm_hash IS NOT NULL",
+        ],
+    ),
 ]
 
 

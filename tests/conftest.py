@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS strings (
     translated_by     TEXT,
     translated_at     REAL,
     source            TEXT     DEFAULT 'pending',
+    norm_hash         TEXT,
     UNIQUE(mod_name, esp_name, key)
 );
 

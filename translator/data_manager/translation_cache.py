@@ -77,6 +77,31 @@ class TranslationCache:
         for orig in originals:
             h = _hash(orig)
             result[orig] = hash_to_trans.get(h)
+
+        # G10 — fuzzy fallback: for exact misses, reuse a translation whose ORIGINAL differs
+        # only by case/whitespace (norm_hash). Conservative (no punctuation normalization).
+        misses = [o for o in originals if result.get(o) is None]
+        if misses:
+            from translator.data_manager.string_manager import normalize_text
+            norm_to_orig: dict[str, str] = {}
+            for o in misses:
+                nh = _hash(normalize_text(o))
+                norm_to_orig.setdefault(nh, o)
+            ph = ",".join("?" * len(norm_to_orig))
+            nrows = self._db.execute(
+                f"""SELECT norm_hash, translation FROM strings
+                    WHERE norm_hash IN ({ph}) AND status='translated'
+                      AND source NOT IN ('untranslatable','pending')""",
+                list(norm_to_orig.keys()),
+            ).fetchall()
+            norm_trans = {r[0]: r[1] for r in nrows}
+            # Fill EVERY miss whose normalized form matched (multiple variants can share one
+            # norm_hash, e.g. 'USE' / '  use '), not just the first.
+            for o in misses:
+                if result.get(o) is None:
+                    t = norm_trans.get(_hash(normalize_text(o)))
+                    if t:
+                        result[o] = t
         return result
 
     def populate_hashes(self, batch_size: int = 1000) -> int:
@@ -94,10 +119,12 @@ class TranslationCache:
             if not rows:
                 break
 
-            updates = [(_hash(r["original"]), r["id"]) for r in rows]
+            from translator.data_manager.string_manager import normalize_text
+            updates = [(_hash(r["original"]), _hash(normalize_text(r["original"])), r["id"])
+                       for r in rows]
             conn = self._db._connect()
             conn.executemany(
-                "UPDATE strings SET string_hash=? WHERE id=?", updates
+                "UPDATE strings SET string_hash=?, norm_hash=? WHERE id=?", updates
             )
             conn.commit()
             total += len(rows)
@@ -106,6 +133,25 @@ class TranslationCache:
                 break
             time.sleep(0.01)  # yield to other threads
 
+        # Backfill norm_hash for rows that already had string_hash but no norm_hash (G10).
+        while True:
+            rows = self._db.execute(
+                "SELECT id, original FROM strings "
+                "WHERE norm_hash IS NULL AND string_hash IS NOT NULL LIMIT ?",
+                (batch_size,),
+            ).fetchall()
+            if not rows:
+                break
+            from translator.data_manager.string_manager import normalize_text
+            nupd = [(_hash(normalize_text(r["original"])), r["id"]) for r in rows]
+            conn = self._db._connect()
+            conn.executemany("UPDATE strings SET norm_hash=? WHERE id=?", nupd)
+            conn.commit()
+            total += len(rows)
+            if len(rows) < batch_size:
+                break
+            time.sleep(0.01)
+
         if total:
-            log.info("TranslationCache: populated %d string hashes", total)
+            log.info("TranslationCache: populated %d string/norm hashes", total)
         return total

@@ -38,6 +38,22 @@ def _sha256_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
 
 
+import re as _re
+_WS_RE = _re.compile(r"\s+")
+
+
+def normalize_text(text: str) -> str:
+    """Conservative normalization for fuzzy reuse: collapse whitespace + casefold ONLY.
+    (We deliberately do NOT strip punctuation — that would change meaning, e.g. a trailing
+    period belongs in the translation.) Safe to reuse a translation across case/whitespace
+    variants like '  Use ' / 'use' / 'USE'."""
+    return _WS_RE.sub(" ", (text or "").strip()).casefold()
+
+
+def _norm_hash(text: str) -> str | None:
+    return _sha256_hash(normalize_text(text)) if text else None
+
+
 class StringManager:
     """Single write gate for all string mutations."""
 
@@ -99,6 +115,7 @@ class StringManager:
             computed_status = "pending"
 
         string_hash = _sha256_hash(original) if original else None
+        norm_hash = _norm_hash(original)
         translated_at = time.time() if translation else None
 
         with _write_lock:
@@ -106,8 +123,9 @@ class StringManager:
             sql_upsert = """
             INSERT INTO strings
                 (mod_name, esp_name, key, original, translation, status,
-                 quality_score, updated_at, source, translated_by, translated_at, string_hash)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                 quality_score, updated_at, source, translated_by, translated_at,
+                 string_hash, norm_hash)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(mod_name, esp_name, key) DO UPDATE SET
                 translation   = excluded.translation,
                 status        = excluded.status,
@@ -116,13 +134,14 @@ class StringManager:
                 source        = COALESCE(excluded.source, source),
                 translated_by = COALESCE(excluded.translated_by, translated_by),
                 translated_at = COALESCE(excluded.translated_at, translated_at),
-                string_hash   = COALESCE(excluded.string_hash, string_hash)
+                string_hash   = COALESCE(excluded.string_hash, string_hash),
+                norm_hash     = COALESCE(excluded.norm_hash, norm_hash)
             """
             self._repo.db.execute(sql_upsert, (
                 mod_name, esp_name, key, original, translation,
                 computed_status or "pending", computed_qs,
                 time.time(), source,
-                machine_label or None, translated_at, string_hash,
+                machine_label or None, translated_at, string_hash, norm_hash,
             ))
 
             # Fetch id for history

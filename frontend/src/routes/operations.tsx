@@ -4,7 +4,12 @@ import { Activity, Cpu, Zap, AlertTriangle, ArrowDownToLine, Download, RotateCcw
 import { QK } from '@/lib/queryKeys'
 import { workersApi } from '@/api/workers'
 import { jobsApi } from '@/api/jobs'
+import { apiFetch } from '@/api/client'
 import { cn } from '@/lib/utils'
+
+interface CampaignEstimate {
+  pending: number; eta_human: string; eta_seconds: number; fleet_tps: number; agents: number
+}
 
 // ── Active translate jobs: pull-done-now (collect) + export + resume (B2/B3) ──
 function ActiveJobCard({ jobId, name, status }: { jobId: string; name: string; status: string }) {
@@ -107,6 +112,11 @@ function OperationsPage() {
   const { data: jobs = [] } = useQuery({
     queryKey: QK.jobs(), queryFn: jobsApi.list, refetchInterval: 4000,
   })
+  const { data: campaign } = useQuery({
+    queryKey: ['campaign'],
+    queryFn: () => apiFetch<CampaignEstimate>('/api/campaign/estimate'),
+    refetchInterval: 15000,
+  })
   const activeJobs = jobs.filter(
     (j) => ['running', 'offline_dispatched', 'paused'].includes(j.status) &&
            (j.job_type || '').includes('translate'),
@@ -136,6 +146,17 @@ function OperationsPage() {
           {alive.length}/{workers.length} agents live · {totalTps.toFixed(1)} tok/s total
         </span>
       </div>
+
+      {campaign && campaign.pending > 0 && (
+        <div className="card p-3 flex items-center gap-3 text-sm">
+          <span className="text-text-muted">Backlog ETA</span>
+          <span className="font-mono font-semibold text-accent">≈ {campaign.eta_human}</span>
+          <span className="text-text-muted">
+            for {campaign.pending.toLocaleString()} pending strings on {campaign.agents} agent(s)
+          </span>
+          <span className="ml-auto text-[11px] text-text-muted">approx</span>
+        </div>
+      )}
 
       {/* Global funnel */}
       {agg && (

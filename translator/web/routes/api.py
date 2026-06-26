@@ -1368,6 +1368,38 @@ def models_estimate():
     ))
 
 
+@bp.route("/campaign/estimate", methods=["GET"])
+def campaign_estimate():
+    """G8 — estimate time to finish the pending backlog across the live fleet's combined TPS.
+    Optional ?mod= to scope to one mod."""
+    from translator.web.campaign import estimate_campaign
+    repo     = current_app.config.get("STRING_REPO")
+    registry = current_app.config.get("WORKER_REGISTRY")
+    mod      = request.args.get("mod")
+
+    pending, avg_chars = 0, 0.0
+    if repo is not None:
+        sql = ("SELECT COUNT(*), COALESCE(AVG(LENGTH(original)),0) FROM strings "
+               "WHERE status='pending' AND COALESCE(source,'') != 'untranslatable'")
+        params: tuple = ()
+        if mod:
+            sql += " AND mod_name=?"; params = (mod,)
+        row = repo.db.execute(sql, params).fetchone()
+        if row:
+            pending, avg_chars = int(row[0]), float(row[1] or 0)
+
+    fleet_tps = 0.0
+    agents = 0
+    if registry is not None:
+        for w in registry.get_active():
+            fleet_tps += float((w.stats or {}).get("tps_avg") or 0)
+            agents += 1
+
+    est = estimate_campaign(pending, avg_chars, fleet_tps)
+    est["agents"] = agents
+    return jsonify(est)
+
+
 @bp.route("/models/dispatch", methods=["POST"])
 def models_dispatch():
     """A4 — fan out a model download/load to several agents at once (non-blocking).

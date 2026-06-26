@@ -1,11 +1,16 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Activity, Cpu, Zap, AlertTriangle, ArrowDownToLine, Download, RotateCcw } from 'lucide-react'
 import { QK } from '@/lib/queryKeys'
 import { workersApi } from '@/api/workers'
 import { jobsApi } from '@/api/jobs'
 import { apiFetch } from '@/api/client'
+import { Sparkline } from '@/components/shared/Sparkline'
+import { useSSE } from '@/hooks/useSSE'
 import { cn } from '@/lib/utils'
+
+interface FeedItem { key: string; translation: string; mod: string; machine: string }
 
 interface CampaignEstimate {
   pending: number; eta_human: string; eta_seconds: number; fleet_tps: number; agents: number
@@ -133,6 +138,40 @@ function OperationsPage() {
   const totalTps = workers.reduce((s, w) => s + (w.stats?.tps_last ?? 0), 0)
   const alive = workers.filter((w) => w.alive)
 
+  // RT5 — accumulate TPS samples over polls into per-agent + global trend sparklines.
+  const [tpsHist, setTpsHist] = useState<Record<string, number[]>>({})
+  const [globalHist, setGlobalHist] = useState<number[]>([])
+  useEffect(() => {
+    setTpsHist((prev) => {
+      const next: Record<string, number[]> = { ...prev }
+      for (const w of workers) {
+        next[w.label] = [...(next[w.label] ?? []), w.stats?.tps_last ?? 0].slice(-40)
+      }
+      return next
+    })
+    setGlobalHist((prev) => [...prev, totalTps].slice(-40))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workers])
+
+  // RT2 — true push: live feed of strings as they're translated, straight off the SSE
+  // stream (instant, not the 4s poll). Survives reconnect (the stream auto-reconnects).
+  const [feed, setFeed] = useState<FeedItem[]>([])
+  useSSE('/jobs/stream-all', (data) => {
+    if (!data || data.startsWith(':')) return
+    try {
+      const job = JSON.parse(data)
+      const ups = job.new_string_updates
+      if (Array.isArray(ups) && ups.length) {
+        setFeed((prev) => [
+          ...ups.map((u: { key: string; translation: string; machine_label?: string }) => ({
+            key: u.key, translation: u.translation, mod: job.mod_name || '', machine: u.machine_label || '',
+          })),
+          ...prev,
+        ].slice(0, 40))
+      }
+    } catch { /* ignore non-JSON pings */ }
+  })
+
   const tierClass = (t?: string) =>
     t === 'no' || t === 'presumed_dead' ? 'text-danger'
       : t === 'tight' || t === 'disconnected' ? 'text-warning' : 'text-success'
@@ -142,8 +181,9 @@ function OperationsPage() {
       <div className="flex items-center gap-2">
         <Activity className="w-5 h-5 text-accent" />
         <h1 className="text-2xl font-bold text-text-main">Operations</h1>
-        <span className="ml-auto text-sm text-text-muted">
+        <span className="ml-auto flex items-center gap-2 text-sm text-text-muted">
           {alive.length}/{workers.length} agents live · {totalTps.toFixed(1)} tok/s total
+          <span className="text-accent"><Sparkline data={globalHist} width={110} height={22} fill /></span>
         </span>
       </div>
 
@@ -173,6 +213,23 @@ function OperationsPage() {
               <div className="text-xs text-text-muted">{label}</div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* RT2 — live translation feed (push, instant) */}
+      {feed.length > 0 && (
+        <div className="card p-3">
+          <div className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-2">
+            Live translations
+          </div>
+          <div className="space-y-1 max-h-48 overflow-y-auto font-mono text-[11px]">
+            {feed.map((f, i) => (
+              <div key={i} className="flex gap-2 items-baseline">
+                <span className="text-success truncate flex-1">{f.translation}</span>
+                {f.machine && <span className="text-text-muted/60 shrink-0">{f.machine}</span>}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -211,8 +268,9 @@ function OperationsPage() {
                 {h.disk_full && <span className="px-1 rounded text-[9px] bg-danger/20 text-danger">disk full</span>}
                 {h.stalled && <span className="px-1 rounded text-[9px] bg-warning/20 text-warning">stalled</span>}
                 {h.idle_starved && <span className="px-1 rounded text-[9px] bg-bg-card2 text-text-muted border border-border-subtle">idle</span>}
-                <span className="ml-auto flex items-center gap-1 text-xs text-accent font-mono">
-                  <Zap className="w-3 h-3" />{(w.stats?.tps_last ?? 0).toFixed(1)} t/s
+                <span className="ml-auto flex items-center gap-2 text-xs text-accent font-mono">
+                  <Sparkline data={tpsHist[w.label] ?? []} width={70} height={16} />
+                  <span className="flex items-center gap-1"><Zap className="w-3 h-3" />{(w.stats?.tps_last ?? 0).toFixed(1)} t/s</span>
                 </span>
               </div>
 

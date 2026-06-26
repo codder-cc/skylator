@@ -1327,6 +1327,45 @@ def assignments_overview():
     return jsonify({"assignments": out, "aggregate": agg})
 
 
+@bp.route("/models/catalog", methods=["GET"])
+def models_catalog():
+    """Curated model catalog + per-default-ctx memory estimates (A3). Pass ?vram_mb= to get
+    a fit verdict per model for a specific agent's VRAM/unified memory."""
+    from translator.web.model_catalog import catalog
+    vram_mb = float(request.args.get("vram_mb") or 0)
+    return jsonify({"models": catalog(vram_mb=vram_mb)})
+
+
+@bp.route("/models/estimate", methods=["GET"])
+def models_estimate():
+    """VRAM/KV estimate + fit + max_n_ctx (A2). Either pass ?catalog_id=&n_ctx=&vram_mb=
+    or raw ?file_size_mb=&n_layers=&n_kv_heads=&head_dim=&n_ctx=&vram_mb=."""
+    from translator.web.model_estimator import estimate
+    from translator.web.model_catalog import get_entry
+
+    a = request.args
+    n_ctx   = int(a.get("n_ctx") or 8192)
+    vram_mb = float(a.get("vram_mb") or 0)
+
+    cat_id = a.get("catalog_id")
+    if cat_id:
+        e = get_entry(cat_id)
+        if not e:
+            return jsonify({"error": f"unknown catalog_id '{cat_id}'"}), 404
+        return jsonify(estimate(
+            weights_mb=e["file_size_mb"], n_ctx=n_ctx, n_layers=e["n_layers"],
+            n_kv_heads=e["n_kv_heads"], head_dim=e["head_dim"], vram_mb=vram_mb))
+
+    return jsonify(estimate(
+        weights_mb=float(a.get("file_size_mb") or 0),
+        n_ctx=n_ctx,
+        n_layers=int(a.get("n_layers") or 0),
+        n_kv_heads=int(a.get("n_kv_heads") or 0),
+        head_dim=int(a.get("head_dim") or 0),
+        vram_mb=vram_mb,
+    ))
+
+
 @bp.route("/auto-feed", methods=["GET"])
 def auto_feed_status():
     """Autonomous backlog draining status + how many strings remain unassigned."""

@@ -305,6 +305,24 @@ class TranslatePipeline:
 
                 actual_label = r.get("machine_label") or (backends[0][0] if backends else "")
 
+                # G6 — multi-agent quality: if this string already had a translation (a
+                # re-translation pass, e.g. routed to a bigger-model agent), keep whichever
+                # candidate scores higher, so quality is monotonic and a worse re-translation
+                # never clobbers a good one.
+                save_qs     = r.get("quality_score")
+                save_status = r.get("status")
+                save_source = "ai"
+                prev = (s.get("translation") or "").strip()
+                if prev and prev != translation:
+                    from translator.validation.quality import pick_better
+                    best = pick_better(s.get("original", ""), prev, translation)
+                    if best["chose"] == "a":          # the existing translation won
+                        job.add_log(f"[keep] existing translation better for [{s.get('key','?')}]")
+                    translation = best["translation"]
+                    save_qs     = best["quality_score"]
+                    save_status = best["status"]
+                    save_source = "consensus"
+
                 # Step 10: Save via StringManager
                 result = self._string_mgr.save_string(
                     mod_name=mod_name,
@@ -312,11 +330,11 @@ class TranslatePipeline:
                     key=s["key"],
                     translation=translation,
                     original=s.get("original", ""),
-                    source="ai",
+                    source=save_source,
                     machine_label=actual_label,
                     job_id=job.id,
-                    quality_score=r.get("quality_score"),
-                    status=r.get("status"),
+                    quality_score=save_qs,
+                    status=save_status,
                 )
 
                 # Step 11: Invalidate stats cache

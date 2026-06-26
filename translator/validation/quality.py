@@ -136,3 +136,25 @@ def compute_string_status(original: str, translation: str) -> tuple[int, bool, l
     qs = quality_score(original, translation)
     status = "translated" if (tok_ok and qs > 70) else "needs_review"
     return qs, tok_ok, tok_issues, status
+
+
+def _candidate_score(original: str, t: str) -> float:
+    """Comparable score for picking between two candidate translations: quality_score plus a
+    bonus for preserving all game tokens. Empty/missing → -1 (never chosen over real text)."""
+    if not t or not t.strip():
+        return -1.0
+    qs, tok_ok, _, _ = compute_string_status(original, t)
+    return qs + (5.0 if tok_ok else 0.0)
+
+
+def pick_better(original: str, a: str | None, b: str | None) -> dict:
+    """Choose the better of two candidate translations (G6 — multi-agent quality). Lets a
+    re-translation (e.g. on a bigger-model agent) only WIN if it actually scores higher, so
+    quality is monotonic across passes. Returns {translation, quality_score, status, chose}."""
+    sa, sb = _candidate_score(original, a), _candidate_score(original, b)
+    winner = b if sb > sa else a
+    chose  = "b" if sb > sa else "a"
+    if not winner:
+        return {"translation": "", "quality_score": 0, "status": "pending", "chose": chose}
+    qs, _, _, st = compute_string_status(original, winner)
+    return {"translation": winner, "quality_score": qs, "status": st, "chose": chose}

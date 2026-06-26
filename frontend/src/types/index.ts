@@ -170,6 +170,13 @@ export interface WorkerInfo {
     undelivered?: number
     open_assignments?: number
   }
+  download_progress?: {
+    model?: string
+    stage?: string
+    downloaded_mb?: number
+    total_mb?: number
+    pct?: number | null
+  }
 }
 
 export interface AssignmentRow {

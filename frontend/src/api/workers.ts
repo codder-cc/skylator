@@ -36,6 +36,13 @@ export const workersApi = {
       body,
     ),
 
+  // A4 — download/stage a model on the worker WITHOUT loading it into VRAM (pre-provision).
+  downloadModel: (label: string, body: ModelLoadBody) =>
+    apiPost<{ ok: boolean; downloaded?: boolean; path?: string }>(
+      `/api/workers/${encodeURIComponent(label)}/model/download`,
+      body,
+    ),
+
   unloadModel: (label: string) =>
     apiPost<{ ok: boolean }>(
       `/api/workers/${encodeURIComponent(label)}/model/unload`,

@@ -96,6 +96,8 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
   const [draftRepoId, setDraftRepoId]  = useState(defaultPreset.draftRepoId ?? '')
   const [loadStatus, setLoadStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
   const [errorMsg, setErrorMsg]     = useState('')
+  const [hfToken, setHfToken]       = useState('')
+  const [delivery, setDelivery]     = useState<'auto' | 'agent' | 'push'>('auto')
 
   const handlePresetChange = (id: string) => {
     const p = presets.find((e) => e.id === id)
@@ -136,7 +138,7 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
     ? vramTotalMb - vramAvailMb
     : 0
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (downloadOnly = false) => {
     setLoadStatus('loading')
     setErrorMsg('')
     try {
@@ -147,7 +149,9 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
         n_batch:        nBatch,
         batch_size:     batchSize,
         max_new_tokens: maxNewTokens,
+        delivery,                       // auto | agent | push
       }
+      if (hfToken) body.hf_token = hfToken    // override master default for gated repos
       if (draftRepoId) body.draft_repo_id = draftRepoId
       if (tab === 'hf') {
         body.repo_id = repoId
@@ -157,7 +161,8 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
         body.model_path = localPath
         body.model = localPath
       }
-      await workersApi.loadModel(worker.label, body as Parameters<typeof workersApi.loadModel>[1])
+      const fn = downloadOnly ? workersApi.downloadModel : workersApi.loadModel
+      await fn(worker.label, body as Parameters<typeof workersApi.loadModel>[1])
       setLoadStatus('success')
       qc.invalidateQueries({ queryKey: QK.workers() })
       setTimeout(onClose, 1200)
@@ -437,6 +442,34 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
           )}
         </div>
 
+        {/* HF token + delivery mode (only relevant for HuggingFace downloads) */}
+        {tab === 'hf' && (
+          <div className="px-5 pb-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-text-muted mb-1">HF token (gated/private — blank = master default)</label>
+              <input
+                type="password"
+                value={hfToken}
+                onChange={(e) => setHfToken(e.target.value)}
+                placeholder="hf_… (optional)"
+                className="w-full px-2 py-1.5 rounded text-sm bg-bg-base border border-border-subtle font-mono"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-text-muted mb-1">Delivery</label>
+              <select
+                value={delivery}
+                onChange={(e) => setDelivery(e.target.value as 'auto' | 'agent' | 'push')}
+                className="w-full px-2 py-1.5 rounded text-sm bg-bg-base border border-border-subtle"
+              >
+                <option value="auto">Auto (agent → fallback to master-push)</option>
+                <option value="agent">Agent downloads from HuggingFace</option>
+                <option value="push">Push from master (air-gapped agent)</option>
+              </select>
+            </div>
+          </div>
+        )}
+
         {/* Footer */}
         <div className="flex justify-end gap-2 px-5 py-4 border-t border-border-subtle">
           <button
@@ -445,8 +478,18 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
           >
             Cancel
           </button>
+          {tab === 'hf' && (
+            <button
+              onClick={() => handleSubmit(true)}
+              disabled={loadStatus === 'loading'}
+              title="Download/stage on the agent without loading into VRAM (pre-provision)"
+              className="px-4 py-2 rounded text-sm font-medium bg-bg-card2 text-text-main border border-border-subtle hover:bg-bg-card disabled:opacity-50"
+            >
+              Download only
+            </button>
+          )}
           <button
-            onClick={handleSubmit}
+            onClick={() => handleSubmit(false)}
             disabled={loadStatus === 'loading'}
             className="px-4 py-2 rounded text-sm font-medium bg-accent text-bg-base hover:opacity-90 disabled:opacity-50"
           >
@@ -745,6 +788,28 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange,
         )}
         <span className="ml-auto text-[10px] text-text-muted whitespace-nowrap">{timeAgo(worker.last_seen)}</span>
       </div>
+
+      {/* Live model-download progress (A5) */}
+      {worker.download_progress?.stage === 'downloading' && (
+        <div className="mb-2">
+          <div className="flex items-center justify-between text-[10px] text-text-muted mb-0.5">
+            <span className="truncate" title={worker.download_progress.model}>
+              ⬇ {worker.download_progress.model}
+            </span>
+            <span>
+              {worker.download_progress.pct != null
+                ? `${worker.download_progress.pct}%`
+                : `${worker.download_progress.downloaded_mb ?? 0} MB`}
+            </span>
+          </div>
+          <div className="h-1.5 rounded bg-bg-base overflow-hidden">
+            <div
+              className="h-full bg-accent transition-all"
+              style={{ width: `${worker.download_progress.pct ?? 30}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* ── Row 2: hardware left · model+task right ── */}
       <div className="flex gap-4 mb-2">

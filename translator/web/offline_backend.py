@@ -51,11 +51,70 @@ def _build_terminology(originals: list[str]) -> str:
 
 
 def _split_round_robin(strings: list[dict], n_workers: int) -> list[list[dict]]:
-    """Sort by original length desc, then assign round-robin across workers."""
+    """Sort by original length desc, then assign round-robin across workers (fallback)."""
     sorted_strings = sorted(strings, key=lambda s: len(s.get("original") or ""), reverse=True)
     buckets: list[list[dict]] = [[] for _ in range(n_workers)]
     for i, s in enumerate(sorted_strings):
         buckets[i % n_workers].append(s)
+    return buckets
+
+
+# Record types / lengths that warrant the big model (prose, dialogue, books, quests).
+_LONG_REC_TYPES = {"BOOK", "DIAL", "INFO", "QUST"}
+_LONG_CHARS = 120
+
+
+def _is_long(s: dict) -> bool:
+    if (s.get("rec_type") or "") in _LONG_REC_TYPES:
+        return True
+    return len(s.get("original") or "") > _LONG_CHARS
+
+
+def _agent_meta(machines, registry) -> list[dict]:
+    """Per-agent weight (throughput) + capability (VRAM/RAM ≈ model size it can run),
+    derived from the registry heartbeat data."""
+    out = []
+    for label, _backend in machines:
+        w     = registry.get(label) if registry else None
+        stats = (w.stats or {}) if w else {}
+        hw    = (w.hardware or {}) if w else {}
+        weight = float(stats.get("tps_avg") or stats.get("tps_last") or 0) or 1.0
+        cap    = float(hw.get("vram_total_mb") or hw.get("ram_total_mb") or 0)
+        out.append({"label": label, "weight": weight, "capability": cap})
+    return out
+
+
+def smart_partition(strings: list[dict], agents: list[dict]) -> dict:
+    """Assign strings to agents so that (G7) faster agents get proportionally more work,
+    and (G5) long/prose strings land on the highest-capability (big-model) agents while
+    short UI strings go to the fast ones. Returns {label: [strings]}."""
+    if not agents:
+        return {}
+    buckets = {a["label"]: [] for a in agents}
+    if not strings:
+        return buckets
+
+    total_w = sum(max(a.get("weight") or 0, 0.1) for a in agents)
+    rem = {a["label"]: len(strings) * max(a.get("weight") or 0, 0.1) / total_w for a in agents}
+
+    long_s  = sorted((s for s in strings if _is_long(s)),
+                     key=lambda s: len(s.get("original") or ""), reverse=True)
+    short_s = [s for s in strings if not _is_long(s)]
+
+    by_cap    = sorted(agents, key=lambda a: (a.get("capability") or 0, a.get("weight") or 0), reverse=True)
+    by_weight = sorted(agents, key=lambda a: (a.get("weight") or 0), reverse=True)
+
+    def place(s, order):
+        chosen = next((a for a in order if rem[a["label"]] >= 1), None)
+        if chosen is None:                       # all at/over target → least-loaded
+            chosen = max(order, key=lambda a: rem[a["label"]])
+        buckets[chosen["label"]].append(s)
+        rem[chosen["label"]] -= 1
+
+    for s in long_s:                             # strongest agents first → big-model routing
+        place(s, by_cap)
+    for s in short_s:                            # fastest agents first → throughput
+        place(s, by_weight)
     return buckets
 
 
@@ -141,15 +200,14 @@ def dispatch(
 
     params_dict = inf_params.as_dict() if inf_params else {}
 
-    # Split strings across workers
-    n_workers = len(machines)
-    buckets   = _split_round_robin(strings, n_workers)
+    # Split strings across workers — throughput-aware + long-string→big-model routing.
+    partition = smart_partition(strings, _agent_meta(machines, registry))
 
     host_job_id     = job.id
     offline_job_ids = []
 
     for i, (label, _backend) in enumerate(machines):
-        bucket = buckets[i]
+        bucket = partition.get(label, [])
         if not bucket:
             log.info("offline_backend: no strings for worker %s (bucket empty)", label)
             continue
@@ -284,14 +342,13 @@ def dispatch_multi(
     term_str  = _build_terminology(originals)
     params_dict = inf_params.as_dict() if inf_params else {}
 
-    n_workers = len(machines)
-    buckets   = _split_round_robin(all_strings, n_workers)
+    partition = smart_partition(all_strings, _agent_meta(machines, registry))
 
     host_job_id     = job.id
     offline_job_ids = []
 
     for i, (label, _backend) in enumerate(machines):
-        bucket = buckets[i]
+        bucket = partition.get(label, [])
         if not bucket:
             log.info("offline_backend.dispatch_multi: no strings for %s (bucket empty)", label)
             continue

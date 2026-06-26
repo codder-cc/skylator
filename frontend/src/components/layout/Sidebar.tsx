@@ -14,6 +14,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Activity,
+  ClipboardCheck,
 } from 'lucide-react'
 import * as Tooltip from '@radix-ui/react-tooltip'
 import { cn } from '@/lib/utils'
@@ -36,6 +37,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/single',      label: 'Single Mod',  icon: <PackageOpen className="w-4 h-4" /> },
   { to: '/jobs',        label: 'Jobs',        icon: <Briefcase className="w-4 h-4" /> },
   { to: '/operations',  label: 'Operations',  icon: <Activity className="w-4 h-4" /> },
+  { to: '/review',      label: 'Review',      icon: <ClipboardCheck className="w-4 h-4" /> },
   { to: '/servers',     label: 'Servers',     icon: <Server className="w-4 h-4" /> },
   { to: '/config',      label: 'Config',      icon: <Settings className="w-4 h-4" /> },
   { to: '/terminology', label: 'Terminology', icon: <BookOpen className="w-4 h-4" /> },

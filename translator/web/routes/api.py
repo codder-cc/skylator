@@ -1368,6 +1368,63 @@ def models_estimate():
     ))
 
 
+@bp.route("/review/queue", methods=["GET"])
+def review_queue():
+    """G11 — needs_review strings ACROSS THE WHOLE PACK, worst-quality first. Optional
+    ?mod=, ?max_quality=, ?limit=. Powers the QA review page."""
+    repo = current_app.config.get("STRING_REPO")
+    if repo is None:
+        return jsonify({"strings": [], "total": 0})
+    a = request.args
+    limit = min(int(a.get("limit") or 200), 1000)
+    where = ["status='needs_review'"]
+    params: list = []
+    if a.get("mod"):
+        where.append("mod_name=?"); params.append(a["mod"])
+    if a.get("max_quality"):
+        where.append("COALESCE(quality_score,0) <= ?"); params.append(int(a["max_quality"]))
+    wsql = " AND ".join(where)
+    total = repo.db.execute(f"SELECT COUNT(*) FROM strings WHERE {wsql}", params).fetchone()[0]
+    rows = repo.db.execute(
+        f"""SELECT id, mod_name, esp_name, key, original, translation, quality_score, source
+            FROM strings WHERE {wsql}
+            ORDER BY quality_score ASC, mod_name LIMIT ?""",
+        (*params, limit),
+    ).fetchall()
+    return jsonify({"total": total, "strings": [dict(r) for r in rows]})
+
+
+@bp.route("/review/approve", methods=["POST"])
+def review_approve():
+    """G11 — batch-approve needs_review strings by id (cross-mod), flipping them to
+    'translated'. Records history per string."""
+    from translator.data_manager.string_manager import StringManager
+    from pathlib import Path
+    repo = current_app.config.get("STRING_REPO")
+    cfg  = current_app.config.get("TRANSLATOR_CFG")
+    if repo is None:
+        return jsonify({"ok": False, "error": "not initialized"}), 500
+    ids = (request.get_json(silent=True) or {}).get("ids") or []
+    sm = StringManager(repo, Path(cfg.paths.mods_dir) if cfg else Path("."))
+    n = 0
+    mods: set[str] = set()
+    for sid in ids:
+        try:
+            row = repo.db.execute("SELECT mod_name FROM strings WHERE id=?", (int(sid),)).fetchone()
+            sm.approve_string(int(sid))
+            n += 1
+            if row:
+                mods.add(row[0])
+        except Exception:
+            pass
+    stats = current_app.config.get("STATS_MGR")
+    if stats:
+        for m in mods:
+            try: stats.invalidate(m)
+            except Exception: pass
+    return jsonify({"ok": True, "approved": n})
+
+
 @bp.route("/mods/priorities", methods=["GET"])
 def mods_priorities():
     """G9 — {folder_name: priority} for all mods (UI sort/badges)."""

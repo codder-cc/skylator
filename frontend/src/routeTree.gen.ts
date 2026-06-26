@@ -13,6 +13,7 @@ import { Route as ToolsRouteImport } from './routes/tools'
 import { Route as TerminologyRouteImport } from './routes/terminology'
 import { Route as SingleRouteImport } from './routes/single'
 import { Route as ServersRouteImport } from './routes/servers'
+import { Route as ReviewRouteImport } from './routes/review'
 import { Route as OperationsRouteImport } from './routes/operations'
 import { Route as LogsRouteImport } from './routes/logs'
 import { Route as ConfigRouteImport } from './routes/config'
@@ -44,6 +45,11 @@ const SingleRoute = SingleRouteImport.update({
 const ServersRoute = ServersRouteImport.update({
   id: '/servers',
   path: '/servers',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ReviewRoute = ReviewRouteImport.update({
+  id: '/review',
+  path: '/review',
   getParentRoute: () => rootRouteImport,
 } as any)
 const OperationsRoute = OperationsRouteImport.update({
@@ -114,6 +120,7 @@ export interface FileRoutesByFullPath {
   '/config': typeof ConfigRoute
   '/logs': typeof LogsRoute
   '/operations': typeof OperationsRoute
+  '/review': typeof ReviewRoute
   '/servers': typeof ServersRoute
   '/single': typeof SingleRoute
   '/terminology': typeof TerminologyRoute
@@ -132,6 +139,7 @@ export interface FileRoutesByTo {
   '/config': typeof ConfigRoute
   '/logs': typeof LogsRoute
   '/operations': typeof OperationsRoute
+  '/review': typeof ReviewRoute
   '/servers': typeof ServersRoute
   '/single': typeof SingleRoute
   '/terminology': typeof TerminologyRoute
@@ -151,6 +159,7 @@ export interface FileRoutesById {
   '/config': typeof ConfigRoute
   '/logs': typeof LogsRoute
   '/operations': typeof OperationsRoute
+  '/review': typeof ReviewRoute
   '/servers': typeof ServersRoute
   '/single': typeof SingleRoute
   '/terminology': typeof TerminologyRoute
@@ -171,6 +180,7 @@ export interface FileRouteTypes {
     | '/config'
     | '/logs'
     | '/operations'
+    | '/review'
     | '/servers'
     | '/single'
     | '/terminology'
@@ -189,6 +199,7 @@ export interface FileRouteTypes {
     | '/config'
     | '/logs'
     | '/operations'
+    | '/review'
     | '/servers'
     | '/single'
     | '/terminology'
@@ -207,6 +218,7 @@ export interface FileRouteTypes {
     | '/config'
     | '/logs'
     | '/operations'
+    | '/review'
     | '/servers'
     | '/single'
     | '/terminology'
@@ -226,6 +238,7 @@ export interface RootRouteChildren {
   ConfigRoute: typeof ConfigRoute
   LogsRoute: typeof LogsRoute
   OperationsRoute: typeof OperationsRoute
+  ReviewRoute: typeof ReviewRoute
   ServersRoute: typeof ServersRoute
   SingleRoute: typeof SingleRoute
   TerminologyRoute: typeof TerminologyRoute
@@ -266,6 +279,13 @@ declare module '@tanstack/react-router' {
       path: '/servers'
       fullPath: '/servers'
       preLoaderRoute: typeof ServersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/review': {
+      id: '/review'
+      path: '/review'
+      fullPath: '/review'
+      preLoaderRoute: typeof ReviewRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/operations': {
@@ -362,6 +382,7 @@ const rootRouteChildren: RootRouteChildren = {
   ConfigRoute: ConfigRoute,
   LogsRoute: LogsRoute,
   OperationsRoute: OperationsRoute,
+  ReviewRoute: ReviewRoute,
   ServersRoute: ServersRoute,
   SingleRoute: SingleRoute,
   TerminologyRoute: TerminologyRoute,

@@ -216,6 +216,34 @@ function OperationsPage() {
                 </span>
               </div>
 
+              {/* RT4 — live memory usage + context window */}
+              {(() => {
+                const hw = w.hardware
+                if (!hw) return null
+                const total = hw.unified_memory ? hw.ram_total_mb : hw.vram_total_mb
+                const free  = hw.unified_memory ? hw.ram_free_mb : hw.vram_free_mb
+                const used  = total > 0 ? total - free : 0
+                const usedPct = total > 0 ? Math.round((used / total) * 100) : 0
+                const nctx = w.stats?.n_ctx ?? 0
+                if (total <= 0 && !nctx) return null
+                return (
+                  <div className="flex items-center gap-3 mb-2 text-[10px] text-text-muted">
+                    {total > 0 && (
+                      <div className="flex items-center gap-1 flex-1 max-w-[16rem]">
+                        <span>{hw.unified_memory ? 'Mem' : 'VRAM'}</span>
+                        <div className="flex-1 h-1.5 rounded bg-bg-base overflow-hidden">
+                          <div className={cn('h-full transition-all',
+                                 usedPct > 92 ? 'bg-danger' : usedPct > 80 ? 'bg-warning' : 'bg-accent')}
+                               style={{ width: `${usedPct}%` }} />
+                        </div>
+                        <span className="font-mono">{(used / 1024).toFixed(1)}/{(total / 1024).toFixed(1)}G</span>
+                      </div>
+                    )}
+                    {nctx > 0 && <span className="font-mono">ctx {Math.round(nctx / 1024)}k</span>}
+                  </div>
+                )
+              })()}
+
               {/* Current string being translated */}
               {w.current_task && (
                 <div className="text-xs text-text-muted mb-2 truncate" title={w.current_task}>

@@ -149,7 +149,7 @@ export interface WorkerInfo {
   last_seen: number
   current_task: string | null
   models: CachedModel[]
-  stats: { tps_avg: number; tps_last: number; queue_depth: number; jobs_completed: number } | null
+  stats: { tps_avg: number; tps_last: number; queue_depth: number; jobs_completed: number; n_ctx?: number } | null
   hardware?: WorkerHardware
   alive: boolean
   commit?: string

@@ -976,6 +976,9 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
                         "tps_last":       state.tps_last,
                         "queue_depth":    state.queue_depth,
                         "jobs_completed": len(state.completed_order),
+                        # RT4: loaded model's context window (0 if no model) for the UI's
+                        # context-capacity indicator.
+                        "n_ctx": int(getattr(getattr(state.backend, "_mcfg", None), "n_ctx", 0) or 0),
                         # Live estimate: tokens inferred so far based on elapsed × tps_avg.
                         # Only set while _run_infer is active (infer_started_at > 0).
                         "tokens_inferred_est": (

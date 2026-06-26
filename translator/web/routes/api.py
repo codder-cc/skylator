@@ -1784,6 +1784,24 @@ def workers_offline_results(label: str):
     # Update progress tracking
     registry.update_offline_progress(offline_job_id, done_delta=len(results))
 
+    # RT1: surface the latest delivered string as the agent's current task (~2s fresh,
+    # faster than the 15s heartbeat) so the Operations UI shows live activity.
+    if results:
+        last = results[-1]
+        try:
+            registry.update_task(label, last.get("original") or last.get("translation") or "")
+        except Exception:
+            pass
+
+    # RT3: invalidate stats for touched mods on EVERY batch (not just on done) so the
+    # translated/pending counts move live during the run, not after a 120s TTL.
+    if stats_mgr and mods_touched:
+        for _m in mods_touched:
+            try:
+                stats_mgr.invalidate(_m)
+            except Exception:
+                pass
+
     if done:
         all_done = registry.finish_offline_job(offline_job_id)
         log.info("offline-results: %s done (saved=%d, all_workers_done=%s)",

@@ -155,6 +155,11 @@ class WorkerRegistry:
                         self._offline_jobs[ojid]["done"] = oj.get("done", 0)
                         self._offline_jobs[ojid]["tps"]  = oj.get("tps", 0.0)
                         self._offline_jobs[ojid]["current_text"] = oj.get("current_text", "")
+                # RT1: surface the string an offline agent is currently translating so the
+                # Operations UI shows live activity (the offline path doesn't call update_task).
+                cur = next((oj.get("current_text") for oj in offline_jobs if oj.get("current_text")), "")
+                if cur:
+                    w.current_task = cur
             return True
 
     def remove(self, label: str) -> None:

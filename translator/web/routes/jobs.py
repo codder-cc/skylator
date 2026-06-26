@@ -524,6 +524,30 @@ def collect_job(job_id: str):
     return jsonify({"ok": True, "applied_jobs": created})
 
 
+@bp.route("/<job_id>/export", methods=["GET"])
+def export_job(job_id: str):
+    """B2 — pull the DONE translations of this job as JSON (without deploying to ESP), so
+    you can grab partial results mid-run. Returns every translated string the job touched."""
+    jm   = current_app.config["JOB_MANAGER"]
+    repo = current_app.config.get("STRING_REPO")
+    job  = jm.get_job(job_id)
+    if job is None:
+        return jsonify({"error": "job not found"}), 404
+    rows = []
+    if repo is not None:
+        try:
+            cur = repo.db.execute(
+                "SELECT s.mod_name, s.esp_name, s.key, s.original, s.translation, "
+                "s.quality_score FROM job_strings js JOIN strings s ON s.id = js.string_id "
+                "WHERE js.job_id=? AND s.status='translated'",
+                (job_id,),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+        except Exception as exc:
+            log.warning("export_job %s failed: %s", job_id[:8], exc)
+    return jsonify({"job_id": job_id, "count": len(rows), "strings": rows})
+
+
 @bp.route("/clear", methods=["POST"])
 def clear_finished():
     jm = current_app.config["JOB_MANAGER"]

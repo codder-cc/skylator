@@ -1,9 +1,92 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
-import { Activity, Cpu, Zap, AlertTriangle } from 'lucide-react'
+import { createFileRoute, Link } from '@tanstack/react-router'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Activity, Cpu, Zap, AlertTriangle, ArrowDownToLine, Download, RotateCcw } from 'lucide-react'
 import { QK } from '@/lib/queryKeys'
 import { workersApi } from '@/api/workers'
+import { jobsApi } from '@/api/jobs'
 import { cn } from '@/lib/utils'
+
+// ── Active translate jobs: pull-done-now (collect) + export + resume (B2/B3) ──
+function ActiveJobCard({ jobId, name, status }: { jobId: string; name: string; status: string }) {
+  const qc = useQueryClient()
+  const { data: t } = useQuery({
+    queryKey: QK.jobTally(jobId), queryFn: () => jobsApi.tally(jobId), refetchInterval: 5000,
+  })
+  const collectMut = useMutation({
+    mutationFn: () => jobsApi.collect(jobId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: QK.jobs() }),
+  })
+  const resumeMut = useMutation({
+    mutationFn: () => jobsApi.resume(jobId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: QK.jobs() }),
+  })
+  const dispatchBackMut = useMutation({
+    mutationFn: () => jobsApi.dispatchBack(jobId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: QK.jobs() }),
+  })
+
+  const handleExport = async () => {
+    const data = await jobsApi.export(jobId)
+    const blob = new Blob([JSON.stringify(data.strings, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `job-${jobId.slice(0, 8)}-translations.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  return (
+    <div className="card p-4">
+      <div className="flex items-center gap-2 mb-2">
+        <Link to="/jobs/$jobId" params={{ jobId }} className="text-sm font-medium text-text-main hover:text-accent truncate">
+          {name}
+        </Link>
+        <span className="text-[10px] px-1.5 rounded bg-bg-card2 text-text-muted">{status}</span>
+        {t && (
+          <span className="ml-auto text-xs text-text-muted font-mono">
+            {t.delivered}/{t.assigned || t.translated + t.pending} · {t.translated} done · {t.pending} pending
+          </span>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={() => collectMut.mutate()}
+          disabled={collectMut.isPending}
+          title="Deploy every translated string to the game files now — don't wait for the run to finish"
+          className="flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium bg-success/20 text-success border border-success/30 hover:bg-success/30 disabled:opacity-50"
+        >
+          <ArrowDownToLine className="w-3 h-3" />Pull done now
+        </button>
+        <button
+          onClick={handleExport}
+          title="Download the done translations as JSON (no deploy)"
+          className="flex items-center gap-1 px-2.5 py-1 rounded text-xs bg-bg-card2 text-text-muted border border-border-subtle hover:text-text-main"
+        >
+          <Download className="w-3 h-3" />Export JSON
+        </button>
+        {status === 'paused' && (
+          <button
+            onClick={() => resumeMut.mutate()}
+            disabled={resumeMut.isPending}
+            className="flex items-center gap-1 px-2.5 py-1 rounded text-xs bg-accent/20 text-accent border border-accent/30 hover:bg-accent/30 disabled:opacity-50"
+          >
+            <RotateCcw className="w-3 h-3" />Resume
+          </button>
+        )}
+        {status === 'offline_dispatched' && (
+          <button
+            onClick={() => dispatchBackMut.mutate()}
+            disabled={dispatchBackMut.isPending}
+            className="flex items-center gap-1 px-2.5 py-1 rounded text-xs bg-violet-500/20 text-violet-400 border border-violet-500/30 hover:bg-violet-500/30 disabled:opacity-50"
+          >
+            <ArrowDownToLine className="w-3 h-3" />Dispatch back
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
 
 // ── Live operations dashboard (B1) ───────────────────────────────────────────
 // Everything here derives from DURABLE state (assignments + heartbeat health), so it stays
@@ -21,6 +104,13 @@ function OperationsPage() {
   const { data: assign } = useQuery({
     queryKey: QK.assignments(), queryFn: workersApi.assignments, refetchInterval: 8000,
   })
+  const { data: jobs = [] } = useQuery({
+    queryKey: QK.jobs(), queryFn: jobsApi.list, refetchInterval: 4000,
+  })
+  const activeJobs = jobs.filter(
+    (j) => ['running', 'offline_dispatched', 'paused'].includes(j.status) &&
+           (j.job_type || '').includes('translate'),
+  )
 
   // Per-agent assignment progress (sum across that agent's assignments).
   const byAgent: Record<string, { total: number; delivered: number }> = {}
@@ -61,6 +151,18 @@ function OperationsPage() {
               <div className={cn('text-2xl font-bold font-mono', color)}>{val}</div>
               <div className="text-xs text-text-muted">{label}</div>
             </div>
+          ))}
+        </div>
+      )}
+
+      {/* Active translate jobs — pull partial results / resume without waiting */}
+      {activeJobs.length > 0 && (
+        <div className="space-y-2">
+          <h2 className="text-sm font-semibold text-text-muted uppercase tracking-wide">
+            Active translation jobs
+          </h2>
+          {activeJobs.map((j) => (
+            <ActiveJobCard key={j.id} jobId={j.id} name={j.name} status={j.status} />
           ))}
         </div>
       )}

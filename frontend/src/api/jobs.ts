@@ -52,6 +52,12 @@ export const jobsApi = {
     apiPost<{ ok: boolean; applied_jobs: { mod: string; job_id: string }[] }>(
       `/jobs/${id}/collect`,
     ),
+
+  // B2 — pull the done translations as JSON (partial export, no deploy).
+  export: (id: string) =>
+    apiFetch<{ job_id: string; count: number; strings: Record<string, unknown>[] }>(
+      `/jobs/${id}/export`,
+    ),
 }
 
 export interface JobTally {

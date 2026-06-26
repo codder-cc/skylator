@@ -161,4 +161,13 @@ export const modsApi = {
     `/mods/${encodeURIComponent(name)}/strings/sync-duplicates`,
     body,
   ),
+
+  // G9 — translation scheduling priority (higher = translated first by translate_all).
+  getPriorities: () =>
+    apiFetch<Record<string, number>>('/api/mods/priorities'),
+
+  setPriority: (name: string, priority: number) =>
+    apiPost<{ ok: boolean; priority: number }>(
+      `/api/mods/${encodeURIComponent(name)}/priority`, { priority },
+    ),
 }

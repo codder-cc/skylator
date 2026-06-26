@@ -1368,6 +1368,33 @@ def models_estimate():
     ))
 
 
+@bp.route("/mods/priorities", methods=["GET"])
+def mods_priorities():
+    """G9 — {folder_name: priority} for all mods (UI sort/badges)."""
+    repo = current_app.config.get("STRING_REPO")
+    if repo is None:
+        return jsonify({})
+    try:
+        return jsonify(repo.db.get_mod_priorities())
+    except Exception:
+        return jsonify({})
+
+
+@bp.route("/mods/<path:name>/priority", methods=["POST"])
+def set_mod_priority(name: str):
+    """G9 — set a mod's translation priority (higher = translated first by translate_all)."""
+    repo = current_app.config.get("STRING_REPO")
+    if repo is None:
+        return jsonify({"ok": False, "error": "not initialized"}), 500
+    data = request.get_json(silent=True) or {}
+    try:
+        priority = int(data.get("priority", 0))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "priority must be an integer"}), 400
+    repo.db.set_mod_priority(name, priority)
+    return jsonify({"ok": True, "mod": name, "priority": priority})
+
+
 @bp.route("/campaign/estimate", methods=["GET"])
 def campaign_estimate():
     """G8 — estimate time to finish the pending backlog across the live fleet's combined TPS.

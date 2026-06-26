@@ -114,6 +114,12 @@ def translate_all_worker(job, cfg, dry_run: bool = False, resume: bool = True,
             if d.is_dir() and d.name not in seen_names:
                 mod_folders.append(d)
                 seen_names.add(d.name)
+    # Order by priority (higher first), then name — so "translate these first" is honored.
+    try:
+        _prios = repo.db.get_mod_priorities() if repo is not None else {}
+    except Exception:
+        _prios = {}
+    mod_folders.sort(key=lambda d: (-int(_prios.get(d.name, 0)), d.name.lower()))
     total = len(mod_folders)
     job.add_log(f"Found {total} mod folders")
 

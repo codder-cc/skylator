@@ -148,6 +148,13 @@ MIGRATION_STEPS: list[tuple[int, str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_strings_norm_hash ON strings(norm_hash) WHERE norm_hash IS NOT NULL",
         ],
     ),
+    (
+        10,
+        "Add mods.priority for translation scheduling (higher = translated first)",
+        [
+            "ALTER TABLE mods ADD COLUMN priority INTEGER DEFAULT 0",
+        ],
+    ),
 ]
 
 

@@ -84,6 +84,21 @@ class TranslationDB:
         ).fetchone()
         return row[0] if row else None
 
+    def set_mod_priority(self, folder_name: str, priority: int) -> None:
+        """Set a mod's translation priority (higher = translated first by translate_all)."""
+        conn = self._connect()
+        conn.execute(
+            "INSERT INTO mods(folder_name, priority) VALUES(?,?) "
+            "ON CONFLICT(folder_name) DO UPDATE SET priority=excluded.priority",
+            (folder_name, int(priority)),
+        )
+        conn.commit()
+
+    def get_mod_priorities(self) -> dict:
+        """{folder_name: priority} for all mods with a row (default 0 elsewhere)."""
+        return {r[0]: (r[1] or 0)
+                for r in self.execute("SELECT folder_name, priority FROM mods").fetchall()}
+
     def mod_row_count(self, mod_name: str) -> int:
         row = self.execute(
             "SELECT COUNT(*) FROM strings WHERE mod_name=?", (mod_name,)

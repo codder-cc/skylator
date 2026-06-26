@@ -114,7 +114,8 @@ CREATE INDEX IF NOT EXISTS idx_job_strings_job ON job_strings(job_id);
 
 CREATE TABLE IF NOT EXISTS mods (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    folder_name TEXT    NOT NULL UNIQUE
+    folder_name TEXT    NOT NULL UNIQUE,
+    priority    INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS mod_stats_cache (
@@ -214,6 +215,19 @@ class _FakeDB:
 
     def commit(self):
         self._connect().commit()
+
+    def set_mod_priority(self, folder_name, priority):
+        conn = self._connect()
+        conn.execute(
+            "INSERT INTO mods(folder_name, priority) VALUES(?,?) "
+            "ON CONFLICT(folder_name) DO UPDATE SET priority=excluded.priority",
+            (folder_name, int(priority)),
+        )
+        conn.commit()
+
+    def get_mod_priorities(self):
+        return {r[0]: (r[1] or 0)
+                for r in self.execute("SELECT folder_name, priority FROM mods").fetchall()}
 
     def insert_string(self, mod_name, esp_name, key, original, translation="",
                       status="pending"):

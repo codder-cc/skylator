@@ -133,6 +133,7 @@ class TranslatorConfig:
     translation: TranslationConfig
     logging:     LoggingConfig
     remote:      RemoteConfig = field(default_factory=RemoteConfig)
+    hf_token:    str = ""   # HuggingFace token for gated/private model downloads (never logged)
 
 
 # ── Loader ────────────────────────────────────────────────────────────────────
@@ -276,6 +277,7 @@ def load_config(config_file: Path = _CONFIG_FILE) -> TranslatorConfig:
         translation = translation,
         logging     = logging_cfg,
         remote      = remote_cfg,
+        hf_token    = (raw.get("models", {}) or {}).get("hf_token", "") or raw.get("hf_token", ""),
     )
     return _config
 

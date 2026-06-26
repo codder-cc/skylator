@@ -4,6 +4,12 @@
 # config.yaml is in .gitignore so secrets never end up in git.
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ── Models ────────────────────────────────────────────────────────────────────
+models:
+  # HuggingFace access token for gated/private model downloads. Used as the default;
+  # can be overridden per-download in the UI. Never logged. (config.yaml is gitignored.)
+  hf_token: ""
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 paths:
   model_cache_dir:  "models"          # relative to project root; models/ is gitignored

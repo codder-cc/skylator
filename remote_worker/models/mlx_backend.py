@@ -103,7 +103,8 @@ class MlxBackend(BaseBackend):
             else:
                 log.info("MlxBackend: not cached — downloading from Hub...")
                 from huggingface_hub import snapshot_download
-                load_path = snapshot_download(repo, cache_dir=str(cache_dir))
+                load_path = snapshot_download(repo, cache_dir=str(cache_dir),
+                                              token=getattr(self._mcfg, "hf_token", "") or None)
                 log.info("MlxBackend: downloaded to %s", load_path)
 
         self._model, self._tokenizer = mlx_lm.load(load_path)
@@ -123,7 +124,8 @@ class MlxBackend(BaseBackend):
                     else:
                         from huggingface_hub import snapshot_download
                         draft_load_path = snapshot_download(
-                            self._draft_repo_id, cache_dir=str(cache_dir))
+                            self._draft_repo_id, cache_dir=str(cache_dir),
+                            token=getattr(self._mcfg, "hf_token", "") or None)
                 draft_model, _ = mlx_lm.load(draft_load_path)
                 self._draft_model = draft_model
                 log.info("MlxBackend: speculative decoding active (num_draft_tokens=%d)",

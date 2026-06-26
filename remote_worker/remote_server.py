@@ -132,6 +132,8 @@ class ModelLoadRequest(BaseModel):
     target_lang:        str        = "Russian"
     draft_repo_id:      str        = ""
     num_draft_tokens:   int        = 3
+    hf_token:           str        = ""   # for gated/private HF repos (never logged)
+    load:               bool       = True # False = download/stage only, don't load into VRAM (A4)
 
 
 class TranslateRequest(BaseModel):
@@ -559,6 +561,7 @@ def _build_backend(req: ModelLoadRequest):
         flash_attn         = req.flash_attn,
         source_lang        = req.source_lang,
         target_lang        = req.target_lang,
+        hf_token           = req.hf_token,
     )
 
     if req.backend_type == "mlx":

@@ -38,6 +38,7 @@ def create_app(config_path: Path | None = None) -> Flask:
         log.warning(f"Could not load config: {exc}")
 
     app.config["TRANSLATOR_CFG"] = cfg
+    app.config["HF_TOKEN"] = getattr(cfg, "hf_token", "") if cfg else ""
 
     # Apply embedded-string output encoding (default utf-8; 'cp1251' for RU installs).
     if cfg is not None:

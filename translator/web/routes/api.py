@@ -1810,11 +1810,11 @@ def _find_in_worker_cache(models: list, repo_id: str, gguf_filename: str,
     return None
 
 
-def _stage_mlx(repo_id: str, staging_path) -> dict:
+def _stage_mlx(repo_id: str, staging_path, token: str = "") -> dict:
     from huggingface_hub import snapshot_download
     from pathlib import Path as _Path
     log.info("Host: downloading MLX snapshot %s...", repo_id)
-    snap = _Path(snapshot_download(repo_id, cache_dir=str(staging_path)))
+    snap = _Path(snapshot_download(repo_id, cache_dir=str(staging_path), token=token or None))
     dest_subdir = repo_id.split("/")[-1]
     files = [
         {"path": str(f.relative_to(snap)).replace("\\", "/"), "size": f.stat().st_size}
@@ -1824,7 +1824,7 @@ def _stage_mlx(repo_id: str, staging_path) -> dict:
     return {"dest_subdir": dest_subdir, "files": files, "serve_root": snap}
 
 
-def _stage_gguf(repo_id: str, gguf_filename: str, staging_path) -> dict:
+def _stage_gguf(repo_id: str, gguf_filename: str, staging_path, token: str = "") -> dict:
     import re
     from huggingface_hub import hf_hub_download
     dest_subdir = repo_id.split("/")[-1]
@@ -1837,7 +1837,8 @@ def _stage_gguf(repo_id: str, gguf_filename: str, staging_path) -> dict:
     for fname in filenames:
         dest = local_dir / fname
         if not dest.exists():
-            hf_hub_download(repo_id=repo_id, filename=fname, local_dir=str(local_dir))
+            hf_hub_download(repo_id=repo_id, filename=fname, local_dir=str(local_dir),
+                            token=token or None)
         files.append({"path": fname, "size": dest.stat().st_size})
     log.info("Host: GGUF staged — %d shards in %s", len(files), local_dir)
     return {"dest_subdir": dest_subdir, "files": files, "serve_root": local_dir}
@@ -1883,6 +1884,11 @@ def workers_model_load(label: str):
     gguf_filename = payload.get("gguf_filename", "")
     model_path    = payload.get("model_path", "")
     chunk_id      = str(uuid.uuid4())
+
+    # HF token: per-request override falls back to the master's configured token. Passed to
+    # the agent only for the download; never logged.
+    if not payload.get("hf_token"):
+        payload["hf_token"] = current_app.config.get("HF_TOKEN", "") or ""
 
     # ── Explicit local path (user clicked cached badge) — forward directly ────
     if model_path:
@@ -1942,11 +1948,12 @@ def workers_model_load(label: str):
     log.info("Host-proxy: staging %s for worker %s in %s",
              repo_id or payload.get("model_path", "?"), label, staging_path)
 
+    _tok = payload.get("hf_token") or current_app.config.get("HF_TOKEN", "") or ""
     try:
         if backend_type == "mlx":
-            tinfo = _stage_mlx(repo_id, staging_path)
+            tinfo = _stage_mlx(repo_id, staging_path, token=_tok)
         else:
-            tinfo = _stage_gguf(repo_id, gguf_filename, staging_path)
+            tinfo = _stage_gguf(repo_id, gguf_filename, staging_path, token=_tok)
         # Register the actual directory that contains the staged files so the
         # file-serving endpoint can locate them (HuggingFace downloads nest
         # files in cache subdirs, not directly under staging_path).

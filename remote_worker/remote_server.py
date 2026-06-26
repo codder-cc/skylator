@@ -576,6 +576,21 @@ def _build_backend(req: ModelLoadRequest):
     return LlamaCppBackend(model_cfg), "llamacpp"
 
 
+def _download_only(req: "ModelLoadRequest") -> str:
+    """A4 — fetch model files WITHOUT loading into VRAM (pre-provision a fleet). Returns the
+    resolved local path. Transfer-mode files are already on disk (model_path set)."""
+    from pathlib import Path
+    if req.model_path and Path(req.model_path).exists():
+        return req.model_path
+    if req.backend_type == "mlx":
+        from huggingface_hub import snapshot_download
+        return snapshot_download(req.repo_id, token=req.hf_token or None)
+    from models.loader import resolve_gguf
+    local_dir = req.repo_id.split("/")[-1] if req.repo_id else ""
+    return resolve_gguf(req.repo_id, local_dir, req.gguf_filename,
+                        token=req.hf_token or None)
+
+
 # ── Background job worker ──────────────────────────────────────────────────────
 
 async def _worker(state: ServerState) -> None:
@@ -1211,17 +1226,27 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                         )
                         payload = {**payload, **extra}
 
-                    from remote_server import _build_backend, ModelLoadRequest
+                    from remote_server import _build_backend, ModelLoadRequest, _download_only
                     req     = ModelLoadRequest(**{k: v for k, v in payload.items()
                                                   if k in ModelLoadRequest.model_fields})
-                    backend, bt = await loop.run_in_executor(None, lambda: _build_backend(req))
-                    await loop.run_in_executor(None, backend.load)
-                    state.backend      = backend
-                    state.backend_type = bt
-                    state.model_label  = req.gguf_filename or req.repo_id or req.model_path or "unknown"
-                    state.refresh_free_memory()
-                    log.info("Pull worker: model loaded — %s via %s", state.model_label, bt)
-                    result_data = {"ok": True, "model": state.model_label}
+                    if not req.load:
+                        # A4 download/stage only — fetch files, do NOT load into VRAM
+                        # (keeps any currently-loaded model running).
+                        path = await loop.run_in_executor(None, lambda: _download_only(req))
+                        state.refresh_free_memory()
+                        log.info("Pull worker: model downloaded (not loaded) — %s", path)
+                        result_data = {"ok": True, "downloaded": True, "loaded": False,
+                                       "model": req.gguf_filename or req.repo_id or path,
+                                       "path": path}
+                    else:
+                        backend, bt = await loop.run_in_executor(None, lambda: _build_backend(req))
+                        await loop.run_in_executor(None, backend.load)
+                        state.backend      = backend
+                        state.backend_type = bt
+                        state.model_label  = req.gguf_filename or req.repo_id or req.model_path or "unknown"
+                        state.refresh_free_memory()
+                        log.info("Pull worker: model loaded — %s via %s", state.model_label, bt)
+                        result_data = {"ok": True, "model": state.model_label}
                 except Exception as exc:
                     log.error("Pull worker: load_model failed: %s", exc)
                     result_data = {"ok": False, "error": str(exc)}

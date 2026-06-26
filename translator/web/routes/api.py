@@ -1366,6 +1366,41 @@ def models_estimate():
     ))
 
 
+@bp.route("/models/dispatch", methods=["POST"])
+def models_dispatch():
+    """A4 — fan out a model download/load to several agents at once (non-blocking).
+    Body: {model: {backend_type, repo_id, gguf_filename, n_ctx, ...}, targets: [labels]|"all",
+    load: bool}. Returns a per-target chunk id; progress shows on /api/workers."""
+    import uuid
+    registry = current_app.config.get("WORKER_REGISTRY")
+    if registry is None:
+        return jsonify({"ok": False, "error": "registry not initialized"}), 500
+    data    = request.get_json() or {}
+    model   = dict(data.get("model") or {})
+    targets = data.get("targets")
+    if targets in (None, "all", "*"):
+        targets = [w.label for w in registry.get_active()]
+    if not targets:
+        return jsonify({"ok": False, "error": "no targets"}), 400
+
+    if not model.get("hf_token"):
+        model["hf_token"] = current_app.config.get("HF_TOKEN", "") or ""
+    model["load"] = bool(data.get("load", True))
+
+    out = []
+    for label in targets:
+        if registry.get(label) is None:
+            out.append({"label": label, "ok": False, "error": "worker not found"})
+            continue
+        cid = str(uuid.uuid4())
+        registry.enqueue_chunk(label, {"type": "load_model", "chunk_id": cid,
+                                       "payload": dict(model)})
+        out.append({"label": label, "ok": True, "chunk_id": cid})
+    log.info("models/dispatch: %s → %d target(s) (load=%s)",
+             model.get("gguf_filename") or model.get("repo_id"), len(out), model["load"])
+    return jsonify({"ok": True, "dispatched": out})
+
+
 @bp.route("/auto-feed", methods=["GET"])
 def auto_feed_status():
     """Autonomous backlog draining status + how many strings remain unassigned."""
@@ -1900,28 +1935,39 @@ def _finalize_load(registry, label: str, result_str) -> "Response":
 
 @bp.route("/workers/<label>/model/load", methods=["POST"])
 def workers_model_load(label: str):
+    """Download + load a model on a worker (see _do_model_load)."""
+    return _do_model_load(label, request.get_json() or {})
+
+
+@bp.route("/workers/<label>/model/download", methods=["POST"])
+def workers_model_download(label: str):
+    """A4 — download/stage a model on a worker WITHOUT loading it into VRAM (pre-provision)."""
+    payload = request.get_json() or {}
+    payload["load"] = False
+    return _do_model_load(label, payload)
+
+
+def _do_model_load(label: str, payload: dict):
     """Send a load_model command to the remote worker via the pull queue.
 
-    Priority order:
-      1. Model already in worker.models cache  → send model_path directly (fast)
-      2. Let remote download from HuggingFace  → works when no VPN restriction
-      3. If remote download fails              → host downloads + transfers to remote
-         (fallback for Cisco AnyConnect / SSL-intercepting proxies)
-
+    delivery (payload['delivery'], default 'auto'):
+      'auto'  — cached → agent downloads from HF → host-stage+transfer (fallback)
+      'agent' — force agent-side HF download; no transfer fallback
+      'push'  — force host-stage+transfer (for air-gapped agents)
+    payload['load']=False downloads/stages only (no VRAM load).
     All connections remain outbound from remote → host.
     """
     import uuid
-    from pathlib import Path as _Path
     registry = current_app.config.get("WORKER_REGISTRY")
     worker   = registry.get(label) if registry else None
     if not worker:
         return jsonify({"error": f"Worker '{label}' not found"}), 404
 
-    payload       = request.get_json() or {}
     backend_type  = payload.get("backend_type", "llamacpp")
     repo_id       = payload.get("repo_id", "")
     gguf_filename = payload.get("gguf_filename", "")
     model_path    = payload.get("model_path", "")
+    delivery      = payload.get("delivery", "auto")
     chunk_id      = str(uuid.uuid4())
 
     # HF token: per-request override falls back to the master's configured token. Passed to
@@ -1938,6 +1984,10 @@ def workers_model_load(label: str):
         result_str = registry.collect_result(chunk_id, timeout=120.0)
         return _finalize_load(registry, label, result_str)
 
+    # ── delivery='push' → go straight to master-push, skip agent download ─────
+    if delivery == "push":
+        return _host_proxy_load(label, payload, registry, worker)
+
     # ── Already cached on remote? ─────────────────────────────────────────────
     cached = _find_in_worker_cache(worker.models, repo_id, gguf_filename, backend_type)
     if cached:
@@ -1949,9 +1999,6 @@ def workers_model_load(label: str):
         return _finalize_load(registry, label, result_str)
 
     # ── Try remote download first ─────────────────────────────────────────────
-    # Give the remote a chance to download from HuggingFace directly (works when
-    # there is no VPN/firewall restriction). Timeout is generous but bounded so we
-    # can detect a network failure quickly enough to retry via host-proxy.
     log.info("Trying direct HF download on worker %s for %s", label, repo_id)
     direct_chunk_id = str(uuid.uuid4())
     registry.enqueue_chunk(label, {"type": "load_model", "chunk_id": direct_chunk_id,
@@ -1978,7 +2025,23 @@ def workers_model_load(label: str):
     else:
         log.warning("Worker %s direct download timed out — falling back to host-proxy", label)
 
-    # ── Fallback: host downloads model, transfers to remote ──────────────────
+    # delivery='agent' forbids the transfer fallback — surface the failure instead.
+    if delivery == "agent":
+        return jsonify({"ok": False,
+                        "error": "agent-side HuggingFace download failed (delivery='agent')"}), 502
+
+    # ── Fallback (auto): host downloads model, transfers to remote ───────────
+    return _host_proxy_load(label, payload, registry, worker)
+
+
+def _host_proxy_load(label: str, payload: dict, registry, worker):
+    """Stage a model on the master and stream it to the agent (master-push / delivery=push,
+    or the auto-fallback when the agent can't reach HuggingFace)."""
+    import uuid
+    from pathlib import Path as _Path
+    backend_type  = payload.get("backend_type", "llamacpp")
+    repo_id       = payload.get("repo_id", "")
+    gguf_filename = payload.get("gguf_filename", "")
     cfg       = current_app.config.get("TRANSLATOR_CFG")
     cache_dir = _Path(cfg.paths.translation_cache).parent if cfg else _Path("cache")
 
@@ -1993,16 +2056,12 @@ def workers_model_load(label: str):
             tinfo = _stage_mlx(repo_id, staging_path, token=_tok)
         else:
             tinfo = _stage_gguf(repo_id, gguf_filename, staging_path, token=_tok)
-        # Register the actual directory that contains the staged files so the
-        # file-serving endpoint can locate them (HuggingFace downloads nest
-        # files in cache subdirs, not directly under staging_path).
         model_staging.set_session_root(sid, tinfo["serve_root"])
     except Exception as exc:
         model_staging.delete_session(sid)
         log.error("Host download failed for %s: %s", repo_id, exc)
         return jsonify({"error": f"Host download failed: {exc}"}), 502
 
-    # Use the URL the worker used to reach us — avoids 127.0.0.1 when browser is on localhost
     host_url = worker.host_reachable_url or request.host_url.rstrip("/")
     xfer_chunk_id = str(uuid.uuid4())
     xfer_payload = dict(payload)

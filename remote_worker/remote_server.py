@@ -300,6 +300,7 @@ class ServerState:
         # Durable result store (fault-tolerance core) — opened in lifespan
         self.result_store = None         # ResultStore | None
         self.stalled: bool = False       # watchdog: offline production appears stuck
+        self.download_progress: dict = {}  # {model, stage, downloaded_mb, total_mb, pct} during a download
 
     @property
     def tps_avg(self) -> float:
@@ -574,6 +575,41 @@ def _build_backend(req: ModelLoadRequest):
 
     from models.llamacpp_backend import LlamaCppBackend
     return LlamaCppBackend(model_cfg), "llamacpp"
+
+
+async def _watch_download(state, model_dir, total_mb: float, model_label: str) -> None:
+    """A5 — poll a model dir's on-disk bytes and publish download progress to state (surfaced
+    via heartbeat → /api/workers → UI). pct is None when the total size is unknown."""
+    from pathlib import Path
+    md = Path(model_dir)
+    while True:
+        await asyncio.sleep(2.0)
+        try:
+            dl_mb = (sum(f.stat().st_size for f in md.rglob("*") if f.is_file()) / (1024 * 1024)
+                     if md.exists() else 0.0)
+        except Exception:
+            dl_mb = 0.0
+        pct = round(min(100.0, dl_mb / total_mb * 100), 1) if total_mb else None
+        state.download_progress = {
+            "model": model_label, "stage": "downloading",
+            "downloaded_mb": round(dl_mb), "total_mb": round(total_mb or 0), "pct": pct,
+        }
+
+
+def _model_download_dir(payload: dict):
+    """The local dir a load/download will write into (for the progress watcher). None if
+    nothing will be downloaded (explicit local path) or we can't tell (MLX snapshot cache)."""
+    from pathlib import Path
+    from models.loader import MODELS_CACHE
+    if payload.get("model_path"):
+        return None
+    transfer = payload.get("transfer")
+    if transfer and transfer.get("dest_subdir"):
+        return MODELS_CACHE / transfer["dest_subdir"]
+    repo = payload.get("repo_id") or ""
+    if repo and payload.get("backend_type", "llamacpp") != "mlx":
+        return MODELS_CACHE / repo.split("/")[-1]
+    return None
 
 
 def _download_only(req: "ModelLoadRequest") -> str:
@@ -934,6 +970,7 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
                     "commit":       _get_git_commit(),
                     "offline_jobs": offline_jobs_payload,
                     "health":       health_payload,
+                    "download_progress": state.download_progress or {},
                     "stats": {
                         "tps_avg":        state.tps_avg,
                         "tps_last":       state.tps_last,
@@ -1217,6 +1254,13 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                 log.info("Pull worker: loading model — %s",
                          payload.get("gguf_filename") or payload.get("model_path") or
                          payload.get("repo_id") or "?")
+                # A5: start a download-progress watcher (cancelled in finally).
+                from remote_server import _watch_download, _model_download_dir
+                _dl_dir = _model_download_dir(payload)
+                _dl_total = float(payload.get("file_size_mb") or 0)
+                _dl_label = payload.get("gguf_filename") or payload.get("repo_id") or "model"
+                _watcher = (asyncio.create_task(_watch_download(state, _dl_dir, _dl_total, _dl_label))
+                            if _dl_dir else None)
                 try:
                     transfer = payload.get("transfer")
                     if transfer:
@@ -1250,6 +1294,10 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                 except Exception as exc:
                     log.error("Pull worker: load_model failed: %s", exc)
                     result_data = {"ok": False, "error": str(exc)}
+                finally:
+                    if _watcher:
+                        _watcher.cancel()
+                    state.download_progress = {}   # clear progress (done/failed)
                 await _post_result(state.http_client, base, label, chunk_id,
                                    json.dumps(result_data))
                 continue

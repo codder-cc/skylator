@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Search, RefreshCw, Play, FileText, Archive,
   ArrowUpDown, CheckSquare, Square, X, ChevronDown,
-  AlertTriangle, Clock, Radio, ArrowDownToLine,
+  AlertTriangle, Clock, Radio, ArrowDownToLine, Flag,
 } from 'lucide-react'
 import { modsApi } from '@/api/mods'
 import { jobsApi } from '@/api/jobs'
@@ -98,9 +98,42 @@ interface ModCardProps {
   selected: boolean
   onToggleSelect: (name: string) => void
   activeJob?: Job
+  priority: number
 }
 
-function ModCard({ mod, selected, onToggleSelect, activeJob }: ModCardProps) {
+// UID1 — translation scheduling priority. Higher = picked first by translate_all/campaign.
+function PriorityControl({ modName, value }: { modName: string; value: number }) {
+  const queryClient = useQueryClient()
+  const mut = useMutation({
+    mutationFn: (p: number) => modsApi.setPriority(modName, p),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: QK.priorities() }),
+  })
+  const v = mut.isPending ? (mut.variables as number) : value
+  return (
+    <div
+      className={cn('flex items-center rounded border text-[10px]',
+        v > 0 ? 'border-accent/40 bg-accent/10' : 'border-border-subtle')}
+      title="Translation priority — higher is translated first"
+    >
+      <button
+        onClick={() => mut.mutate(Math.max(0, v - 1))}
+        disabled={mut.isPending || v <= 0}
+        className="px-1 text-text-muted hover:text-text-main disabled:opacity-30"
+      >−</button>
+      <span className={cn('flex items-center gap-0.5 px-0.5 font-mono tabular-nums',
+        v > 0 ? 'text-accent' : 'text-text-muted')}>
+        <Flag size={9} />{v}
+      </span>
+      <button
+        onClick={() => mut.mutate(v + 1)}
+        disabled={mut.isPending}
+        className="px-1 text-text-muted hover:text-text-main disabled:opacity-30"
+      >+</button>
+    </div>
+  )
+}
+
+function ModCard({ mod, selected, onToggleSelect, activeJob, priority }: ModCardProps) {
   const navigate = useNavigate()
   const machines = useMachines()
   const queryClient = useQueryClient()
@@ -157,6 +190,7 @@ function ModCard({ mod, selected, onToggleSelect, activeJob }: ModCardProps) {
           {mod.folder_name}
         </Link>
         <div className="flex items-center gap-1 shrink-0">
+          <PriorityControl modName={mod.folder_name} value={priority} />
           {mod.needs_review_strings > 0 && (
             <span
               className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-warning/20 text-warning"
@@ -371,6 +405,11 @@ function ModsPage() {
     queryKey: QK.jobs(),
     queryFn: jobsApi.list,
     staleTime: 5_000,
+  })
+  const { data: priorities = {} } = useQuery({
+    queryKey: QK.priorities(),
+    queryFn: modsApi.getPriorities,
+    staleTime: 30_000,
   })
   const activeJobByMod = useMemo(() => {
     const map = new Map<string, Job>()
@@ -657,6 +696,7 @@ function ModsPage() {
                 selected={selected.has(mod.folder_name)}
                 onToggleSelect={toggleSelect}
                 activeJob={activeJobByMod.get(mod.folder_name)}
+                priority={priorities[mod.folder_name] ?? 0}
               />
             ))}
           </div>

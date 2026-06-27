@@ -624,6 +624,46 @@ function TallyCard({ jobId, live }: { jobId: string; live: boolean }) {
           </div>
         ))}
       </div>
+      <TallySourceBreakdown counts={t.source_counts} total={t.translated} />
+    </div>
+  )
+}
+
+// UID2/UID4 — where the delivered translations came from. Makes "chained" reuse visible:
+// fresh AI inference vs cache / cross-mod dispatch reuse / consensus / dictionary.
+const TALLY_SOURCE_META: Record<string, { label: string; color: string }> = {
+  ai:              { label: 'AI inference', color: 'bg-accent' },
+  cache:           { label: 'Cache reuse',  color: 'bg-violet-500' },
+  dispatch_cache:  { label: 'Dispatch cache', color: 'bg-violet-400' },
+  dispatch_shared: { label: 'Cross-mod reuse', color: 'bg-sky-500' },
+  consensus:       { label: 'Consensus',    color: 'bg-emerald-500' },
+  dict:            { label: 'Dictionary',   color: 'bg-amber-500' },
+  manual:          { label: 'Manual',       color: 'bg-pink-500' },
+}
+function TallySourceBreakdown({ counts, total }: { counts?: Record<string, number>; total: number }) {
+  if (!counts) return null
+  const entries = Object.entries(counts).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1])
+  if (entries.length === 0) return null
+  const sum = entries.reduce((s, [, n]) => s + n, 0) || 1
+  return (
+    <div className="mt-4 pt-3 border-t border-border-subtle">
+      <div className="text-[11px] font-semibold text-text-muted uppercase tracking-wide mb-2">
+        Translation source {total > 0 && <span className="font-normal normal-case">· reuse {Math.round((sum - (counts.ai ?? 0)) / sum * 100)}%</span>}
+      </div>
+      <div className="flex h-2 rounded overflow-hidden bg-bg-base mb-2">
+        {entries.map(([k, n]) => (
+          <div key={k} className={cn('h-full', TALLY_SOURCE_META[k]?.color ?? 'bg-text-muted')}
+               style={{ width: `${(n / sum) * 100}%` }} title={`${TALLY_SOURCE_META[k]?.label ?? k}: ${n}`} />
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
+        {entries.map(([k, n]) => (
+          <span key={k} className="flex items-center gap-1.5 text-text-muted">
+            <span className={cn('w-2 h-2 rounded-sm', TALLY_SOURCE_META[k]?.color ?? 'bg-text-muted')} />
+            {TALLY_SOURCE_META[k]?.label ?? k} <span className="font-mono text-text-main">{n}</span>
+          </span>
+        ))}
+      </div>
     </div>
   )
 }

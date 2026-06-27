@@ -69,4 +69,6 @@ export interface JobTally {
   pending: number
   needs_review: number
   mods: string[]
+  // UID2 — where the delivered translations came from (ai/cache/dispatch/consensus/dict…)
+  source_counts?: Record<string, number>
 }

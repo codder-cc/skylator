@@ -51,3 +51,29 @@ export const modelsApi = {
   dispatch: (body: { model: Record<string, unknown>; targets: string[] | 'all'; load?: boolean }) =>
     apiPost<DispatchResult>('/api/models/dispatch', body),
 }
+
+// VM1/VM4 — auto/variable-model plan preview for a mod under a quality profile.
+export interface TranslatePlanPhase {
+  tier: 'small' | 'medium' | 'large'
+  count: number
+  model: string
+  catalog_id: string
+  n_ctx: number
+  temperature: number
+}
+export interface TranslatePlan {
+  profile: string
+  total: number
+  phases: TranslatePlanPhase[]
+  model_loads: number
+  model_switches: number
+}
+export const PROFILES = ['fast', 'balanced', 'quality', 'auto'] as const
+export type QualityProfile = (typeof PROFILES)[number]
+
+export const planApi = {
+  preview: (mod: string, profile: QualityProfile) =>
+    apiFetch<TranslatePlan>(
+      `/api/translate/plan?mod=${encodeURIComponent(mod)}&profile=${profile}`,
+    ),
+}

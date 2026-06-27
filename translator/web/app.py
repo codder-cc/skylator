@@ -269,7 +269,9 @@ def create_app(config_path: Path | None = None) -> Flask:
         while True:
             _time.sleep(6 * 3600)  # every 6h
             try:
-                _db.backup_to(_backup_dir / "translations.backup.db")
+                # Rotating, integrity-verified snapshots: a corrupt snapshot is rejected and
+                # can never clobber the last good one (timestamped, newest 8 kept ≈ 2 days).
+                _db.rotating_backup(_backup_dir, keep=8)
             except Exception as exc:
                 log.warning("DB backup failed: %s", exc)
 

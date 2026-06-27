@@ -1452,6 +1452,26 @@ def set_mod_priority(name: str):
     return jsonify({"ok": True, "mod": name, "priority": priority})
 
 
+@bp.route("/translate/plan", methods=["GET"])
+def translate_plan():
+    """VM1 — preview the auto/variable-model plan for a mod's pending strings under a quality
+    profile: how many strings per difficulty tier, which model each uses, in execution order
+    (small → large), and how many model switches it implies. ?mod=&profile=."""
+    from translator.web.quality_profiles import summarize_plan, PROFILES, DEFAULT_PROFILE
+    repo    = current_app.config.get("STRING_REPO")
+    mod     = request.args.get("mod")
+    profile = request.args.get("profile", DEFAULT_PROFILE)
+    if profile not in PROFILES:
+        return jsonify({"error": f"unknown profile (use {list(PROFILES)})"}), 400
+    strings = []
+    if repo is not None and mod:
+        rows = repo.db.execute(
+            "SELECT original FROM strings WHERE mod_name=? AND status='pending' "
+            "AND COALESCE(source,'') != 'untranslatable'", (mod,)).fetchall()
+        strings = [{"original": r[0]} for r in rows]
+    return jsonify(summarize_plan(strings, profile))
+
+
 @bp.route("/campaign/estimate", methods=["GET"])
 def campaign_estimate():
     """G8 — estimate time to finish the pending backlog across the live fleet's combined TPS.

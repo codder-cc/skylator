@@ -477,6 +477,7 @@ def job_tally(job_id: str):
             pass
 
     translated = pending = needs_review = 0
+    source_counts: dict = {}
     if repo is not None:
         try:
             rows = repo.db.execute(
@@ -488,6 +489,16 @@ def job_tally(job_id: str):
             translated   = counts.get("translated", 0)
             pending      = counts.get("pending", 0)
             needs_review = counts.get("needs_review", 0)
+            # UID2 — how the translations were produced (reuse vs AI vs improved) so the
+            # "chained translation" is visible: ai / cache / dispatch_cache / dispatch_shared
+            # / consensus / dict / untranslatable.
+            srows = repo.db.execute(
+                "SELECT COALESCE(s.source,'?'), COUNT(*) FROM job_strings js "
+                "JOIN strings s ON s.id = js.string_id "
+                "WHERE js.job_id=? AND s.status='translated' GROUP BY s.source",
+                (job_id,),
+            ).fetchall()
+            source_counts = {r[0]: r[1] for r in srows}
         except Exception:
             pass
 
@@ -495,6 +506,7 @@ def job_tally(job_id: str):
         "job_id": job_id, "status": str(getattr(job, "status", "")),
         "assigned": assigned, "delivered": delivered,
         "translated": translated, "pending": pending, "needs_review": needs_review,
+        "source_counts": source_counts,
         "mods": _job_mods(repo, job),
     })
 

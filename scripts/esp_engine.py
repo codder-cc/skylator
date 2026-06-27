@@ -312,7 +312,7 @@ def rewrite_vmad_strings(data: bytes, translations: dict) -> tuple:
 
 # ── String extraction ─────────────────────────────────────────────────────────
 
-def extract_strings_from_record(rec: Record, localized: bool) -> list:
+def extract_strings_from_record(rec: Record, localized: bool, lstrings=None) -> list:
     if rec.rtype == b'TES4':
         return []
     try:
@@ -352,12 +352,21 @@ def extract_strings_from_record(rec: Record, localized: bool) -> list:
             if is_translatable(ftype, rec.rtype) and len(fdata) == 4:
                 sid = u32(fdata, 0)
                 if sid > 0:
+                    # Resolve the real source text from the sibling .STRINGS files when we
+                    # have them; fall back to the [LOC:sid] placeholder only if absent so the
+                    # row still appears (it just can't be translated without the files).
+                    real = lstrings.text(sid) if lstrings is not None else None
+                    if lstrings is not None and (real is None or not real.strip()
+                                                 or not any(c.isalpha() for c in real)):
+                        field_index += 1
+                        continue
                     results.append({
                         'form_id':    f'{rec.form_id:08X}',
                         'rec_type':   rec.rtype.decode('ascii', errors='?'),
                         'field_type': ftype.decode('ascii', errors='?'),
                         'string_id':  sid,
-                        'text':       f'[LOC:{sid}]',
+                        'text':       real if real is not None else f'[LOC:{sid}]',
+                        'translation': '',
                         'field_index': field_index,
                     })
         else:
@@ -401,10 +410,25 @@ def extract_all_strings(esp_path: Path) -> tuple:
     localized = bool(flags & 0x80)
     all_strings = []
 
+    # For a localized plugin the translatable text lives in sibling .STRINGS/.ILSTRINGS/
+    # .DLSTRINGS files, not inline. Load them so we surface the real source text instead of
+    # a [LOC:sid] placeholder (and so apply can write translations back).
+    lstrings = None
+    if localized:
+        try:
+            try:
+                from scripts.strings_codec import LocalizedStrings   # imported as a package
+            except ImportError:
+                from strings_codec import LocalizedStrings           # run standalone
+            ls = LocalizedStrings.load(esp_path)
+            lstrings = ls if ls.available else None
+        except Exception as exc:
+            log.warning("Could not load string files for %s: %s", esp_path.name, exc)
+
     def walk(buf, off, end):
         for kind, pos, obj in iter_esp(buf, off, end):
             if kind == 'rec':
-                all_strings.extend(extract_strings_from_record(obj, localized))
+                all_strings.extend(extract_strings_from_record(obj, localized, lstrings))
             elif kind == 'grup':
                 walk(buf, pos+24, pos+len(obj))
 
@@ -1001,6 +1025,78 @@ def cmd_apply_from_trans(esp_path: Path, out_path: Path = None, mod_folder: Path
     return done
 
 
+def _is_localized(esp_path: Path) -> bool:
+    try:
+        return bool(u32(esp_path.read_bytes(), 8) & 0x80)
+    except Exception:
+        return False
+
+
+def apply_localized_strings(esp_path: Path, strings: list,
+                            out_strings_dir: Path = None) -> int:
+    """Apply translations for a *localized* plugin by rewriting its sibling .STRINGS/
+    .ILSTRINGS/.DLSTRINGS files. The ESP itself is unchanged (records keep their numeric
+    string ids). Each translation is matched to its id and written into the file it came
+    from; untouched strings are preserved. Returns the count written.
+
+    `out_strings_dir` lets the caller redirect output (default: overwrite in place). The
+    output encoding follows the same _OUTPUT_ENCODING used for embedded strings.
+    """
+    try:
+        from scripts.strings_codec import LocalizedStrings
+    except ImportError:
+        from strings_codec import LocalizedStrings
+
+    ls = LocalizedStrings.load(esp_path)
+    if not ls.available:
+        log.warning("apply_localized_strings: no string files found for %s", esp_path.name)
+        return 0
+    ls.encoding = _OUTPUT_ENCODING
+
+    # The DB doesn't persist string_id (the key is (form_id, rec_type, field_type,
+    # field_index)). Re-extract the plugin to get the authoritative key→string_id map so we
+    # can join the DB translations back to their ids without a schema migration.
+    def _key(d):
+        return (str(d.get('form_id', '')).upper(), d.get('rec_type', ''),
+                d.get('field_type', ''), d.get('field_index'))
+    sid_by_key = {}
+    try:
+        extracted, _loc = extract_all_strings(esp_path)
+        for e in extracted:
+            if e.get('string_id'):
+                sid_by_key[_key(e)] = int(e['string_id'])
+    except Exception as exc:
+        log.warning("apply_localized_strings: re-extract failed for %s: %s", esp_path.name, exc)
+
+    applied = 0
+    for s in strings:
+        tr  = s.get('translation')
+        if not (tr and tr.strip()):
+            continue
+        sid = s.get('string_id') or sid_by_key.get(_key(s))
+        if sid and ls.set(int(sid), tr):
+            applied += 1
+    if applied == 0:
+        log.warning("apply_localized_strings: no matching translations for %s", esp_path.name)
+        return 0
+
+    out_paths = None
+    if out_strings_dir is not None:
+        try:
+            from scripts.strings_codec import strings_dir_paths, KINDS  # noqa: F401
+        except ImportError:
+            from strings_codec import strings_dir_paths
+        out_paths = {k: out_strings_dir / p.name for k, p in ls.paths.items()}
+        # back up originals once
+        for p in ls.paths.values():
+            if p.exists():
+                _backup_esp(p, p)   # reuse backup helper (no-op unless out==in)
+    written = ls.write(out_paths)
+    log.info("Applied %d localized string(s) to %s → %s", applied, esp_path.name,
+             ", ".join(p.name for p in written))
+    return applied
+
+
 def cmd_apply_from_strings(esp_path: Path, out_path: Path,
                             strings: list, mod_folder: Path = None) -> int:
     """
@@ -1008,9 +1104,19 @@ def cmd_apply_from_strings(esp_path: Path, out_path: Path,
     strings: list of dicts with keys: form_id, rec_type, field_type, field_index,
              vmad_str_idx (optional), translation, text/original.
     Used by apply_mod_worker when SQLite is the source of truth.
+
+    Localized plugins are routed to the .STRINGS writer (ESP unchanged); embedded plugins
+    go through the binary ESP rewriter.
     """
     if out_path is None:
         out_path = esp_path
+
+    if _is_localized(esp_path):
+        _backup_esp(esp_path, out_path)   # preserve the ESP even though we don't rewrite it
+        done = apply_localized_strings(esp_path, strings)
+        _update_caches(esp_path, strings, mod_folder)
+        return done
+
     trans_map = _build_trans_map(strings)
     if not trans_map:
         log.warning("cmd_apply_from_strings: no translations for %s", esp_path.name)

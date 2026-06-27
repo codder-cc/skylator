@@ -1463,6 +1463,26 @@ def set_mod_priority(name: str):
     return jsonify({"ok": True, "mod": name, "priority": priority})
 
 
+@bp.route("/mods/<name>/import-translations", methods=["POST"])
+def import_translations(name: str):
+    """A — seed a mod's strings from an existing community translation (xTranslate/SST XML).
+    Body: {xml: "<...>", overwrite?: bool}. Fills untranslated rows (or all if overwrite),
+    matching by source text (exact + normalized fuzzy). Returns import stats."""
+    from translator.data_manager.translation_import import parse_xtranslate_xml, import_pairs
+    repo = current_app.config.get("STRING_REPO")
+    if repo is None:
+        return jsonify({"error": "DB not initialized"}), 500
+    data = request.get_json() or {}
+    xml  = data.get("xml") or ""
+    if not xml.strip():
+        return jsonify({"error": "xml body is required"}), 400
+    pairs = parse_xtranslate_xml(xml)
+    stats = import_pairs(repo, name, pairs, source_label="imported",
+                         overwrite=bool(data.get("overwrite", False)))
+    log.info("import-translations %s: %s", name, stats)
+    return jsonify({"ok": True, **stats})
+
+
 @bp.route("/translate/plan", methods=["GET"])
 def translate_plan():
     """VM1 — preview the auto/variable-model plan for a mod's pending strings under a quality

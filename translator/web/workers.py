@@ -305,3 +305,82 @@ def translate_strings_worker(job, cfg, mod_name: str,
     )
     pipeline.run(job, mod_name, scope=scope, mode=mode,
                  backends=backends, params=params, keys=keys)
+
+
+def auto_translate_worker(job, cfg, mod_name: str, profile: str = "balanced",
+                          machines: list | None = None, registry=None,
+                          backends=None, repo=None, stats_mgr=None,
+                          reservation_mgr=None, translation_cache=None,
+                          dispatch_pool=None, hf_token: str = ""):
+    """VM2/VM3 — auto/variable-model phased translation.
+
+    Plans the mod's pending strings into difficulty tiers (small→large), then for each
+    phase: loads that tier's model (with the tier's context window) on every assigned
+    agent, waits for it, and translates only that tier's strings with the tier's sampling.
+    Easy/short strings finish first on a fast model; the model is switched up once per
+    phase for the harder/longer text. Runs synchronously in the job thread.
+    """
+    import uuid
+    from translator.web.quality_profiles import plan_phases
+    from translator.models.inference_params import InferenceParams
+
+    if repo is None:
+        raise RuntimeError("auto_translate_worker: repo is required")
+    labels = [m[0] if isinstance(m, (list, tuple)) else m for m in (machines or [])]
+
+    # Gather pending, translatable strings and plan the phases.
+    rows = repo.get_all_strings(mod_name) if repo.mod_has_data(mod_name) else []
+    pending = [r for r in rows
+               if (r.get("status") == "pending")
+               and (r.get("source") or "") != "untranslatable"]
+    phases = plan_phases(pending, profile)
+    if not phases:
+        job.add_log("Auto-translate: nothing pending to translate")
+        return
+
+    total = sum(p["count"] for p in phases)
+    job.add_log(f"Auto-translate [{profile}]: {total} strings across {len(phases)} "
+                f"phase(s) → {' → '.join(p['model'].get('name') or p['model']['catalog_id'] for p in phases)}")
+
+    prev_model = None
+    for pi, phase in enumerate(phases, 1):
+        if getattr(job, "status", None) and getattr(job.status, "value", "") in ("cancelled", "paused"):
+            job.add_log("Auto-translate: stopped (job cancelled/paused)")
+            return
+        spec  = phase["model"]
+        n_ctx = phase["n_ctx"]
+        cid_model = spec.get("catalog_id")
+        job.add_log(f"── Phase {pi}/{len(phases)}: {phase['count']} {phase['tier']} "
+                    f"string(s) · model {spec.get('name') or cid_model} · n_ctx {n_ctx} "
+                    f"· temp {phase['temperature']}")
+
+        # 1. Load this phase's model on every agent — but only when it actually changes.
+        if registry is not None and labels and cid_model != prev_model:
+            payload = {"backend_type": spec.get("backend_type", "llamacpp"),
+                       "repo_id": spec.get("repo_id", ""),
+                       "gguf_filename": spec.get("gguf_filename", ""),
+                       "n_ctx": n_ctx, "hf_token": hf_token, "load": True}
+            for label in labels:
+                if registry.get(label) is None:
+                    job.add_log(f"   {label}: not registered, skipping load")
+                    continue
+                cid = str(uuid.uuid4())
+                registry.enqueue_chunk(label, {"type": "load_model",
+                                               "chunk_id": cid, "payload": dict(payload)})
+                # Generous timeout — the agent may have to download the model from HF.
+                res = registry.collect_result(cid, timeout=3600)
+                job.add_log(f"   {label}: {'model loaded' if res is not None else 'load timed out'}")
+            prev_model = cid_model
+        elif cid_model == prev_model:
+            job.add_log(f"   model {cid_model} already loaded — no switch")
+
+        # 2. Translate just this tier's strings with the tier's sampling.
+        keys   = [r["key"] for r in phase["strings"] if r.get("key")]
+        params = InferenceParams(temperature=phase["temperature"], thinking=False)
+        translate_strings_worker(job, cfg, mod_name, keys=keys, scope="all",
+                                 params=params, backends=backends, repo=repo,
+                                 stats_mgr=stats_mgr, reservation_mgr=reservation_mgr,
+                                 translation_cache=translation_cache,
+                                 dispatch_pool=dispatch_pool)
+
+    job.add_log(f"Auto-translate complete: {total} string(s), {len(phases)} phase(s)")

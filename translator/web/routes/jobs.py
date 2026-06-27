@@ -163,6 +163,11 @@ def create_job():
         else:
             job = _create_translate_strings_job(jm, cfg, mod_names[0], keys, scope,
                                                 inf_params, force=force, machines=machines)
+    elif job_type == "auto_translate" and mod_names:
+        profile  = options.get("profile", "balanced")
+        machines = options.get("machines")
+        job      = _create_auto_translate_job(jm, cfg, mod_names[0],
+                                              profile=profile, machines=machines)
     elif job_type == "recompute_scores":
         mod_name = mod_names[0] if mod_names else None
         repo     = current_app.config.get("STRING_REPO")
@@ -832,6 +837,46 @@ def _create_translate_strings_job(jm, cfg, mod_name: str,
         name     = label,
         job_type = "translate_strings",
         params   = {"mod_name": mod_name, "keys": keys, "scope": scope,
+                    "assigned_machines": list(machines) if machines else []},
+        fn       = run,
+    )
+
+
+def _create_auto_translate_job(jm, cfg, mod_name: str,
+                               profile: str = "balanced",
+                               machines: list | None = None):
+    """VM2/VM3 — phased auto/variable-model translation for one mod."""
+    backends, skipped = _resolve_backends(cfg, machines)
+    repo              = current_app.config.get("STRING_REPO")
+    stats_mgr         = current_app.config.get("STATS_MGR")
+    scanner           = current_app.config.get("SCANNER")
+    reservation_mgr   = current_app.config.get("RESERVATION_MGR")
+    translation_cache = current_app.config.get("TRANSLATION_CACHE")
+    dispatch_pool     = current_app.config.get("DISPATCH_POOL")
+    registry          = current_app.config.get("WORKER_REGISTRY")
+    hf_token          = current_app.config.get("HF_TOKEN", "") or ""
+
+    def run(job):
+        if skipped:
+            job.add_log(f"WARNING: machines not found in registry (skipped): {', '.join(skipped)}")
+        if repo is not None:
+            try:
+                cp_id = repo.create_checkpoint(mod_name)
+                job.add_log(f"Checkpoint {cp_id[:8]}… created before auto-translation")
+            except Exception as e:
+                log.warning("Auto-checkpoint failed: %s", e)
+        from translator.web.workers import auto_translate_worker
+        auto_translate_worker(job, cfg, mod_name, profile=profile, machines=machines,
+                              registry=registry, backends=backends, repo=repo,
+                              stats_mgr=stats_mgr, reservation_mgr=reservation_mgr,
+                              translation_cache=translation_cache,
+                              dispatch_pool=dispatch_pool, hf_token=hf_token)
+        post_job_hook(scanner, stats_mgr, mod_name)
+
+    return jm.create(
+        name     = f"Auto-translate [{profile}]: {mod_name}",
+        job_type = "auto_translate",
+        params   = {"mod_name": mod_name, "profile": profile,
                     "assigned_machines": list(machines) if machines else []},
         fn       = run,
     )

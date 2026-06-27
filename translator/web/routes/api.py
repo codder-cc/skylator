@@ -1237,6 +1237,17 @@ def workers_heartbeat():
             AssignmentStore(repo.db).touch_lease(label)
         except Exception:
             pass
+    # Declarative model reconciliation: compare the agent's reported model to the model it
+    # *should* be running for its active job and re-issue the load if they diverged. This
+    # self-heals model switching across agent reboots / missed commands / lost acks — the
+    # master never calls the agent, it just enqueues a load the agent pulls on its own.
+    model_state = current_app.config.get("MODEL_STATE")
+    if model_state is not None:
+        try:
+            model_state.reconcile(label)
+        except Exception:
+            pass
+
     # Master-pull-over-poll (Gap 2): if the master asked this (possibly NAT) agent to
     # resend results, deliver the request now over its outbound heartbeat channel.
     resend_since = registry.take_resend(label)

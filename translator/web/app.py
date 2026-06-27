@@ -208,6 +208,10 @@ def create_app(config_path: Path | None = None) -> Flask:
     app.config["WORKER_REGISTRY"] = _registry
     app.config["SETUP_REPORTS"]   = []   # in-memory list of remote setup reports
 
+    # Declarative desired-model state + heartbeat reconciliation (self-healing model loads)
+    from translator.web.model_state import ModelStateManager
+    app.config["MODEL_STATE"] = ModelStateManager(_registry)
+
     # ── Assignment state machine + boot recovery ─────────────────────────────
     from translator.jobs.assignment_store import AssignmentStore
     from translator.jobs.assignment_manager import AssignmentManager

@@ -311,7 +311,7 @@ def auto_translate_worker(job, cfg, mod_name: str, profile: str = "balanced",
                           machines: list | None = None, registry=None,
                           backends=None, repo=None, stats_mgr=None,
                           reservation_mgr=None, translation_cache=None,
-                          dispatch_pool=None, hf_token: str = ""):
+                          dispatch_pool=None, hf_token: str = "", model_state=None):
     """VM2/VM3 — auto/variable-model phased translation.
 
     Plans the mod's pending strings into difficulty tiers (small→large), then for each
@@ -320,13 +320,14 @@ def auto_translate_worker(job, cfg, mod_name: str, profile: str = "balanced",
     Easy/short strings finish first on a fast model; the model is switched up once per
     phase for the harder/longer text. Runs synchronously in the job thread.
     """
-    import uuid
+    import time
     from translator.web.quality_profiles import plan_phases
     from translator.models.inference_params import InferenceParams
 
     if repo is None:
         raise RuntimeError("auto_translate_worker: repo is required")
     labels = [m[0] if isinstance(m, (list, tuple)) else m for m in (machines or [])]
+    job_id = getattr(job, "id", "") or ""
 
     # Gather pending, translatable strings and plan the phases.
     rows = repo.get_all_strings(mod_name) if repo.mod_has_data(mod_name) else []
@@ -345,6 +346,8 @@ def auto_translate_worker(job, cfg, mod_name: str, profile: str = "balanced",
     prev_model = None
     for pi, phase in enumerate(phases, 1):
         if getattr(job, "status", None) and getattr(job.status, "value", "") in ("cancelled", "paused"):
+            if model_state is not None:
+                model_state.clear(job_id=job_id)
             job.add_log("Auto-translate: stopped (job cancelled/paused)")
             return
         spec  = phase["model"]
@@ -354,22 +357,43 @@ def auto_translate_worker(job, cfg, mod_name: str, profile: str = "balanced",
                     f"string(s) · model {spec.get('name') or cid_model} · n_ctx {n_ctx} "
                     f"· temp {phase['temperature']}")
 
-        # 1. Load this phase's model on every agent — but only when it actually changes.
-        if registry is not None and labels and cid_model != prev_model:
-            payload = {"backend_type": spec.get("backend_type", "llamacpp"),
-                       "repo_id": spec.get("repo_id", ""),
-                       "gguf_filename": spec.get("gguf_filename", ""),
-                       "n_ctx": n_ctx, "hf_token": hf_token, "load": True}
+        # 1. Bring every agent to this phase's model — declaratively. We record the desired
+        #    model, fan the loads out in parallel (non-blocking), then wait for the fleet to
+        #    converge. Heartbeat reconciliation re-issues loads for any agent that rebooted or
+        #    missed the command, so a single dropped chunk never strands the phase.
+        if model_state is not None and labels and cid_model != prev_model:
+            phase_spec = {"backend_type": spec.get("backend_type", "llamacpp"),
+                          "repo_id": spec.get("repo_id", ""),
+                          "gguf_filename": spec.get("gguf_filename", ""), "n_ctx": n_ctx}
             for label in labels:
-                if registry.get(label) is None:
-                    job.add_log(f"   {label}: not registered, skipping load")
-                    continue
-                cid = str(uuid.uuid4())
-                registry.enqueue_chunk(label, {"type": "load_model",
-                                               "chunk_id": cid, "payload": dict(payload)})
-                # Generous timeout — the agent may have to download the model from HF.
-                res = registry.collect_result(cid, timeout=3600)
-                job.add_log(f"   {label}: {'model loaded' if res is not None else 'load timed out'}")
+                model_state.set_desired(label, phase_spec, job_id=job_id, hf_token=hf_token)
+            issued = model_state.dispatch_all(labels)
+            job.add_log(f"   dispatched {issued} load(s); waiting for {len(labels)} agent(s) "
+                        f"to reach {cid_model}…")
+
+            deadline = time.time() + 3600          # agents may download from HF
+            last_log = 0.0
+            while not model_state.all_satisfied(labels):
+                if getattr(job.status, "value", "") in ("cancelled", "paused"):
+                    model_state.clear(job_id=job_id)
+                    job.add_log("Auto-translate: stopped during model load")
+                    return
+                now = time.time()
+                if now > deadline:
+                    waiting = model_state.pending(labels)
+                    job.add_log(f"   WARNING: {len(waiting)} agent(s) never reached {cid_model} "
+                                f"({', '.join(waiting)}) — proceeding with whatever they loaded")
+                    break
+                if now - last_log > 15:            # periodic progress (download %) without spam
+                    for label in model_state.pending(labels):
+                        w = registry.get(label) if registry else None
+                        dp = getattr(w, "download_progress", {}) if w else {}
+                        if dp.get("stage") == "downloading":
+                            job.add_log(f"   {label}: downloading {dp.get('pct', '?')}% {dp.get('model', '')}")
+                    last_log = now
+                time.sleep(3)
+            else:
+                job.add_log(f"   all agents on {cid_model}")
             prev_model = cid_model
         elif cid_model == prev_model:
             job.add_log(f"   model {cid_model} already loaded — no switch")
@@ -383,4 +407,8 @@ def auto_translate_worker(job, cfg, mod_name: str, profile: str = "balanced",
                                  translation_cache=translation_cache,
                                  dispatch_pool=dispatch_pool)
 
+    # Drop the desired-model state so heartbeat reconciliation stops pinning agents to
+    # this job's last phase once the job is done.
+    if model_state is not None:
+        model_state.clear(job_id=job_id)
     job.add_log(f"Auto-translate complete: {total} string(s), {len(phases)} phase(s)")

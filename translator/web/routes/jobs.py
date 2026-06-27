@@ -854,6 +854,7 @@ def _create_auto_translate_job(jm, cfg, mod_name: str,
     translation_cache = current_app.config.get("TRANSLATION_CACHE")
     dispatch_pool     = current_app.config.get("DISPATCH_POOL")
     registry          = current_app.config.get("WORKER_REGISTRY")
+    model_state       = current_app.config.get("MODEL_STATE")
     hf_token          = current_app.config.get("HF_TOKEN", "") or ""
 
     def run(job):
@@ -870,7 +871,8 @@ def _create_auto_translate_job(jm, cfg, mod_name: str,
                               registry=registry, backends=backends, repo=repo,
                               stats_mgr=stats_mgr, reservation_mgr=reservation_mgr,
                               translation_cache=translation_cache,
-                              dispatch_pool=dispatch_pool, hf_token=hf_token)
+                              dispatch_pool=dispatch_pool, hf_token=hf_token,
+                              model_state=model_state)
         post_job_hook(scanner, stats_mgr, mod_name)
 
     return jm.create(

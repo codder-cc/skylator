@@ -7,6 +7,7 @@ with the tier's sampling — in order.
 """
 import types
 import translator.web.workers as W
+from translator.web.model_state import ModelStateManager
 
 
 class _Status:
@@ -14,7 +15,8 @@ class _Status:
 
 
 class _Job:
-    def __init__(self):
+    def __init__(self, job_id="job-x"):
+        self.id = job_id
         self.status = _Status()
         self.logs = []
 
@@ -22,20 +24,28 @@ class _Job:
         self.logs.append(m)
 
 
+class _W:
+    def __init__(self, model=""):
+        self.model = model
+        self.download_progress = {}
+
+
 class _Registry:
+    """Stand-in that auto-converges: as soon as a load is enqueued, the agent 'reports'
+    that model on the next get() — so the orchestrator's wait loop completes instantly."""
     def __init__(self, labels):
-        self._labels = set(labels)
+        self.agents = {lbl: _W() for lbl in labels}
         self.loads = []          # (label, payload) in order
 
     def get(self, label):
-        return object() if label in self._labels else None
+        return self.agents.get(label)
 
     def enqueue_chunk(self, label, chunk):
         if chunk.get("type") == "load_model":
             self.loads.append((label, chunk["payload"]))
-
-    def collect_result(self, cid, timeout=0):
-        return "ok"
+            # simulate the agent loading it (converge so all_satisfied() returns True)
+            if label in self.agents:
+                self.agents[label].model = chunk["payload"]["gguf_filename"]
 
 
 class _Repo:
@@ -76,7 +86,7 @@ def test_phased_auto_loads_and_translates_in_order(monkeypatch):
     W.auto_translate_worker(job, cfg=types.SimpleNamespace(), mod_name="Mod",
                             profile="auto", machines=["GPU-A", "GPU-B"],
                             registry=reg, backends=[("GPU-A", object())],
-                            repo=_Repo(_rows()))
+                            repo=_Repo(_rows()), model_state=ModelStateManager(reg))
 
     # three translate phases, small → medium → large
     assert len(calls) == 3
@@ -98,7 +108,8 @@ def test_quality_profile_no_switch_single_load(monkeypatch):
     # mixed sizes but 'quality' uses the 27B for every tier → load once, no switch
     W.auto_translate_worker(_Job(), cfg=types.SimpleNamespace(), mod_name="Mod",
                             profile="quality", machines=["GPU-A"], registry=reg,
-                            backends=[("GPU-A", object())], repo=_Repo(_rows()))
+                            backends=[("GPU-A", object())], repo=_Repo(_rows()),
+                            model_state=ModelStateManager(reg))
     assert len(reg.loads) == 1          # one model, loaded once on the one agent
 
 
@@ -109,6 +120,6 @@ def test_nothing_pending(monkeypatch):
     rows = [{"key": "a", "original": "x", "status": "translated"}]
     W.auto_translate_worker(job, cfg=types.SimpleNamespace(), mod_name="Mod",
                             profile="balanced", machines=["GPU-A"], registry=reg,
-                            backends=[], repo=_Repo(rows))
+                            backends=[], repo=_Repo(rows), model_state=ModelStateManager(reg))
     assert reg.loads == []
     assert any("nothing pending" in m.lower() for m in job.logs)

@@ -122,6 +122,7 @@ class RemoteConfig:
     scan_on_startup: bool  = False
     mdns_enabled:    bool  = True
     port:            int   = 8765     # default port for server + TCP fallback scan
+    agent_hub_port:  int | None = None  # if set, master listens for agent-dialed socket links
 
 
 @dataclass
@@ -267,6 +268,7 @@ def load_config(config_file: Path = _CONFIG_FILE) -> TranslatorConfig:
         scan_on_startup = rm.get("scan_on_startup", False),
         mdns_enabled    = rm.get("mdns_enabled", True),
         port            = rm.get("port", 8765),
+        agent_hub_port  = rm.get("agent_hub_port"),
     )
 
     _config = TranslatorConfig(

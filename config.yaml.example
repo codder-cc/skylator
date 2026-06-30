@@ -128,3 +128,7 @@ remote:
   scan_on_startup: false      # run LAN scan automatically when web UI starts
   mdns_enabled:    true       # announce/discover via mDNS (requires zeroconf)
   port:            8765       # default port for the translation server
+  # agent_hub_port: 8770      # if set, master listens for persistent agent-dialed socket
+                              # links — instant master→agent push + event-driven telemetry
+                              # without agents being inbound-reachable (agent dials out).
+                              # Leave unset to use the durable HTTP pull/heartbeat path only.

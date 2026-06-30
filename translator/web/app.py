@@ -210,7 +210,46 @@ def create_app(config_path: Path | None = None) -> Flask:
 
     # Declarative desired-model state + heartbeat reconciliation (self-healing model loads)
     from translator.web.model_state import ModelStateManager
-    app.config["MODEL_STATE"] = ModelStateManager(_registry)
+    _model_state = ModelStateManager(_registry)
+    app.config["MODEL_STATE"] = _model_state
+
+    # ── Persistent agent socket channel (opt-in fast path over the durable pull substrate) ──
+    # When configured, the master listens for agent-dialed connections so it can push commands
+    # instantly (model switch, cancel) and receive event-driven telemetry — without the agent
+    # being inbound-reachable (the agent dials out; the master never dials in). If the socket
+    # is down the system falls back to the durable pull/heartbeat path. Off unless a port is set.
+    _hub_port = getattr(getattr(cfg, "remote", None), "agent_hub_port", None) if cfg else None
+    app.config["AGENT_HUB"] = None
+    if _hub_port:
+        from translator.web.agent_hub import AgentHub, MSG_TELEMETRY
+
+        def _on_agent_msg(label, msg):
+            # Socket telemetry updates the SAME registry the UI reads — no heartbeat-stuffing.
+            if msg.get("type") == MSG_TELEMETRY:
+                p = msg.get("payload") or {}
+                try:
+                    _registry.heartbeat(label, stats=p.get("stats"),
+                                        model=p.get("model"), health=p.get("health"),
+                                        download_progress=p.get("download_progress"))
+                except Exception:
+                    log.debug("socket telemetry → registry failed", exc_info=True)
+
+        def _on_agent_connect(label):
+            log.info("Agent socket connected: %s", label)
+            try:
+                _model_state.reconcile(label)   # push any pending desired-model immediately
+            except Exception:
+                pass
+
+        _hub = AgentHub(host="0.0.0.0", port=int(_hub_port), on_message=_on_agent_msg,
+                        on_connect=_on_agent_connect,
+                        on_disconnect=lambda l: log.info("Agent socket disconnected: %s", l))
+        try:
+            _hub.start()
+            app.config["AGENT_HUB"] = _hub
+            log.info("Agent socket hub started on port %s", _hub_port)
+        except Exception as exc:
+            log.warning("Could not start agent socket hub: %s", exc)
 
     # ── Assignment state machine + boot recovery ─────────────────────────────
     from translator.jobs.assignment_store import AssignmentStore

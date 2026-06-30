@@ -1,7 +1,9 @@
 """JSON API endpoints for AJAX calls."""
 from __future__ import annotations
+import json
 import logging
-from flask import Blueprint, current_app, jsonify, request
+import queue
+from flask import Blueprint, Response, current_app, jsonify, request, stream_with_context
 from translator.web.routes.utils import get_mod_path
 
 log = logging.getLogger(__name__)
@@ -1149,6 +1151,42 @@ def workers_list():
     if registry is None:
         return jsonify([])
     return jsonify([w.to_dict() for w in registry.get_all()])
+
+
+@bp.route("/workers/stream", methods=["GET"])
+def workers_stream():
+    """SSE stream of worker/agent state — pushed on every change (registry pub/sub), so the
+    browser sees agent activity instantly instead of polling. Socket telemetry → heartbeat →
+    registry._publish() → this stream → UI, all event-driven. A dataless ping keeps it warm."""
+    registry = current_app.config.get("WORKER_REGISTRY")
+    if registry is None:
+        return jsonify([]), 200
+
+    def _snapshot() -> str:
+        return json.dumps({"workers": [w.to_dict() for w in registry.get_all()]})
+
+    @stream_with_context
+    def gen():
+        q = registry.subscribe()
+        try:
+            yield f"data: {_snapshot()}\n\n"          # initial state
+            while True:
+                try:
+                    q.get(timeout=15)
+                    # coalesce a burst of ticks into one fresh snapshot
+                    try:
+                        while True:
+                            q.get_nowait()
+                    except queue.Empty:
+                        pass
+                    yield f"data: {_snapshot()}\n\n"
+                except queue.Empty:
+                    yield ": ping\n\n"                 # keepalive
+        finally:
+            registry.unsubscribe(q)
+
+    return Response(gen(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @bp.route("/workers/register", methods=["POST"])

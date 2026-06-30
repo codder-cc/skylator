@@ -1219,7 +1219,7 @@ function FleetOverview() {
   const { data } = useQuery({
     queryKey: QK.assignments(),
     queryFn: workersApi.assignments,
-    refetchInterval: 10_000,
+    refetchInterval: 30_000,   // invalidated in real time by the workers stream
   })
   if (!data || data.assignments.length === 0) return null
   const agg = data.aggregate
@@ -1281,7 +1281,8 @@ function ServersPage() {
   const workersQ = useQuery({
     queryKey: QK.workers(),
     queryFn: workersApi.list,
-    refetchInterval: otaActive ? 2_000 : 10_000,
+    // real-time via /api/workers/stream (root); fast poll only during OTA, else slow backstop
+    refetchInterval: otaActive ? 2_000 : 30_000,
   })
 
   const serversQ = useQuery({

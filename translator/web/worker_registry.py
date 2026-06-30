@@ -90,6 +90,32 @@ class WorkerRegistry:
         # Master-pull-over-poll (NAT): label → seq the master wants the agent to resend from.
         # Delivered on the agent's next heartbeat reply; the agent re-arms those results.
         self._resend: dict[str, int] = {}
+        # Real-time pub/sub: subscribers (SSE streams) get a tick on every worker change, so
+        # the browser is *pushed* updates instead of polling. Separate lock so _publish can be
+        # called while self._lock is held (non-reentrant) without deadlocking.
+        self._sub_lock = threading.Lock()
+        self._subscribers: set[queue.Queue] = set()
+
+    def subscribe(self) -> "queue.Queue":
+        """Register an SSE subscriber. Returns a queue that gets a token on every change."""
+        q: queue.Queue = queue.Queue(maxsize=8)
+        with self._sub_lock:
+            self._subscribers.add(q)
+        return q
+
+    def unsubscribe(self, q: "queue.Queue") -> None:
+        with self._sub_lock:
+            self._subscribers.discard(q)
+
+    def _publish(self) -> None:
+        """Signal all subscribers that worker state changed (coalesced — just a token)."""
+        with self._sub_lock:
+            subs = list(self._subscribers)
+        for q in subs:
+            try:
+                q.put_nowait(1)
+            except queue.Full:
+                pass   # subscriber already has a pending tick; it'll rebuild a fresh snapshot
 
     def request_resend(self, label: str, since: int = 0) -> None:
         """Ask an agent (incl. NAT/pull-mode) to re-deliver results with seq > `since`.
@@ -123,6 +149,7 @@ class WorkerRegistry:
             # Ensure work queue exists
             if info.label not in self._work_queues:
                 self._work_queues[info.label] = queue.Queue()
+        self._publish()
 
     def heartbeat(self, label: str, models: list | None = None,
                   model: str | None = None, backend_type: str | None = None,
@@ -160,17 +187,20 @@ class WorkerRegistry:
                 cur = next((oj.get("current_text") for oj in offline_jobs if oj.get("current_text")), "")
                 if cur:
                     w.current_task = cur
-            return True
+        self._publish()
+        return True
 
     def remove(self, label: str) -> None:
         with self._lock:
             self._workers.pop(label, None)
+        self._publish()
 
     def update_task(self, label: str, task: str) -> None:
         with self._lock:
             w = self._workers.get(label)
             if w:
                 w.current_task = task
+        self._publish()
 
     # ── Query ─────────────────────────────────────────────────────────────────
 
@@ -302,6 +332,7 @@ class WorkerRegistry:
                 oj["tps"] = tps
             if current_text:
                 oj["current_text"] = current_text
+        self._publish()
 
     def get_offline_jobs_for_host_job(self, host_job_id: str) -> list[dict]:
         with self._lock:

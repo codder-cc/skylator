@@ -7,7 +7,7 @@ import { useSSE } from '@/hooks/useSSE'
 import { useQueryClient } from '@tanstack/react-query'
 import { QK } from '@/lib/queryKeys'
 import { JOB_TERMINAL_STATUSES } from '@/lib/constants'
-import type { Job, StringUpdate } from '@/types'
+import type { Job, StringUpdate, WorkerInfo } from '@/types'
 import { Toaster } from 'sonner'
 
 interface RouterContext {
@@ -56,6 +56,23 @@ function AppShell() {
         void queryClient.invalidateQueries({ queryKey: ['mods', modName, 'strings'] })
         void queryClient.invalidateQueries({ queryKey: QK.modReservations(modName) })
       }
+    }
+  })
+
+  // Real-time worker/agent state — pushed from the registry pub/sub (which socket telemetry
+  // feeds). Writes the workers cache instantly and refreshes assignments/stats on each change,
+  // so the whole UI reflects agent activity without any fixed-interval polling.
+  useSSE('/api/workers/stream', (data) => {
+    let msg: { workers?: WorkerInfo[] }
+    try {
+      msg = JSON.parse(data) as { workers?: WorkerInfo[] }
+    } catch {
+      return
+    }
+    if (msg.workers) {
+      queryClient.setQueryData(QK.workers(), msg.workers)
+      void queryClient.invalidateQueries({ queryKey: QK.assignments() })
+      void queryClient.invalidateQueries({ queryKey: QK.stats() })
     }
   })
 

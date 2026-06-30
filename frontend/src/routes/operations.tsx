@@ -108,14 +108,17 @@ function pct(n: number, d: number) {
 }
 
 function OperationsPage() {
+  // workers/assignments/jobs are pushed in real time (workers via /api/workers/stream in
+  // __root, jobs via /jobs/stream-all). The intervals below are just slow backstops in case
+  // a stream is mid-reconnect — not the primary update path.
   const { data: workers = [] } = useQuery({
-    queryKey: QK.workers(), queryFn: workersApi.list, refetchInterval: 4000,
+    queryKey: QK.workers(), queryFn: workersApi.list, refetchInterval: 30000,
   })
   const { data: assign } = useQuery({
-    queryKey: QK.assignments(), queryFn: workersApi.assignments, refetchInterval: 8000,
+    queryKey: QK.assignments(), queryFn: workersApi.assignments, refetchInterval: 30000,
   })
   const { data: jobs = [] } = useQuery({
-    queryKey: QK.jobs(), queryFn: jobsApi.list, refetchInterval: 4000,
+    queryKey: QK.jobs(), queryFn: jobsApi.list, refetchInterval: 30000,
   })
   const { data: campaign } = useQuery({
     queryKey: ['campaign'],

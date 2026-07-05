@@ -33,6 +33,7 @@ class ModelConfig:
     local_cache_dir:    str   = str(MODELS_CACHE)
     draft_repo_id:      str   = ""    # MLX speculative decoding: smaller draft model HF repo
     num_draft_tokens:   int   = 3     # tokens speculated per step
+    hf_token:           str   = ""    # HuggingFace token for gated/private repos (never logged)
 
 
 class _Cfg:

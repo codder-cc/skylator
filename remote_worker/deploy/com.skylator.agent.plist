@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent for the Skylator remote worker (macOS / Apple Silicon).
+
+  Install:
+    cp com.skylator.agent.plist ~/Library/LaunchAgents/
+    # edit the ProgramArguments paths + --host-url below
+    launchctl load -w ~/Library/LaunchAgents/com.skylator.agent.plist
+
+  KeepAlive=true makes launchd relaunch the worker after a crash, logout, or reboot, so
+  a months-long run survives unattended. The durable ResultStore resumes in-flight work.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.skylator.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/skylator/remote_worker/venv/bin/python</string>
+        <string>server.py</string>
+        <string>--host-url</string>
+        <string>http://192.168.1.100:5000</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/opt/skylator/remote_worker</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>StandardOutPath</key>
+    <string>/tmp/skylator-agent.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/skylator-agent.err.log</string>
+</dict>
+</plist>

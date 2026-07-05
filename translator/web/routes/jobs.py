@@ -163,6 +163,11 @@ def create_job():
         else:
             job = _create_translate_strings_job(jm, cfg, mod_names[0], keys, scope,
                                                 inf_params, force=force, machines=machines)
+    elif job_type == "auto_translate" and mod_names:
+        profile  = options.get("profile", "balanced")
+        machines = options.get("machines")
+        job      = _create_auto_translate_job(jm, cfg, mod_names[0],
+                                              profile=profile, machines=machines)
     elif job_type == "recompute_scores":
         mod_name = mod_names[0] if mod_names else None
         repo     = current_app.config.get("STRING_REPO")
@@ -506,6 +511,128 @@ def _resume_job_with_machines(jm, cfg, job):
     )
 
 
+def _job_mods(repo, job) -> list[str]:
+    """Distinct mods this job actually touched (via job_strings), falling back to params."""
+    mods: list[str] = []
+    if repo is not None:
+        try:
+            rows = repo.db.execute(
+                "SELECT DISTINCT s.mod_name FROM job_strings js "
+                "JOIN strings s ON s.id = js.string_id WHERE js.job_id=?",
+                (job.id,),
+            ).fetchall()
+            mods = [r[0] for r in rows if r[0]]
+        except Exception:
+            mods = []
+    if not mods:
+        single = (job.params or {}).get("mod_name")
+        if single:
+            mods = [single]
+    return mods
+
+
+@bp.route("/<job_id>/tally", methods=["GET"])
+def job_tally(job_id: str):
+    """Live funnel for a job: how much was assigned, delivered, translated, pending.
+    Survives master restart because it is derived from durable assignments + the DB."""
+    jm   = current_app.config["JOB_MANAGER"]
+    repo = current_app.config.get("STRING_REPO")
+    amgr = current_app.config.get("ASSIGNMENT_MGR")
+    job  = jm.get_job(job_id)
+    if job is None:
+        return jsonify({"error": "job not found"}), 404
+
+    assigned = delivered = 0
+    if amgr is not None:
+        try:
+            assigned, delivered = amgr.job_progress(job_id)
+        except Exception:
+            pass
+
+    translated = pending = needs_review = 0
+    source_counts: dict = {}
+    if repo is not None:
+        try:
+            rows = repo.db.execute(
+                "SELECT s.status, COUNT(*) FROM job_strings js "
+                "JOIN strings s ON s.id = js.string_id WHERE js.job_id=? GROUP BY s.status",
+                (job_id,),
+            ).fetchall()
+            counts = {r[0]: r[1] for r in rows}
+            translated   = counts.get("translated", 0)
+            pending      = counts.get("pending", 0)
+            needs_review = counts.get("needs_review", 0)
+            # UID2 — how the translations were produced (reuse vs AI vs improved) so the
+            # "chained translation" is visible: ai / cache / dispatch_cache / dispatch_shared
+            # / consensus / dict / untranslatable.
+            srows = repo.db.execute(
+                "SELECT COALESCE(s.source,'?'), COUNT(*) FROM job_strings js "
+                "JOIN strings s ON s.id = js.string_id "
+                "WHERE js.job_id=? AND s.status='translated' GROUP BY s.source",
+                (job_id,),
+            ).fetchall()
+            source_counts = {r[0]: r[1] for r in srows}
+        except Exception:
+            pass
+
+    return jsonify({
+        "job_id": job_id, "status": str(getattr(job, "status", "")),
+        "assigned": assigned, "delivered": delivered,
+        "translated": translated, "pending": pending, "needs_review": needs_review,
+        "source_counts": source_counts,
+        "mods": _job_mods(repo, job),
+    })
+
+
+@bp.route("/<job_id>/collect", methods=["POST"])
+def collect_job(job_id: str):
+    """Deploy whatever is done — apply all translated strings for this job's mods to
+    ESP/BSA/SWF, even if some strings are still pending or an agent failed. Partial
+    results are first-class: a job never has to be 100% complete to be useful."""
+    jm   = current_app.config["JOB_MANAGER"]
+    cfg  = current_app.config.get("TRANSLATOR_CFG")
+    repo = current_app.config.get("STRING_REPO")
+    job  = jm.get_job(job_id)
+    if job is None:
+        return jsonify({"error": "job not found"}), 404
+
+    mods = _job_mods(repo, job)
+    if not mods:
+        return jsonify({"error": "no mods to collect for this job"}), 400
+
+    created = []
+    for mod in mods:
+        apply_job = _create_apply_mod_job(jm, cfg, mod, {})
+        created.append({"mod": mod, "job_id": apply_job.id})
+    job.add_log(f"Collect: deploying partial results for {len(mods)} mod(s)")
+    log.info("collect: job %s → %d apply job(s)", job_id[:8], len(created))
+    return jsonify({"ok": True, "applied_jobs": created})
+
+
+@bp.route("/<job_id>/export", methods=["GET"])
+def export_job(job_id: str):
+    """B2 — pull the DONE translations of this job as JSON (without deploying to ESP), so
+    you can grab partial results mid-run. Returns every translated string the job touched."""
+    jm   = current_app.config["JOB_MANAGER"]
+    repo = current_app.config.get("STRING_REPO")
+    job  = jm.get_job(job_id)
+    if job is None:
+        return jsonify({"error": "job not found"}), 404
+    rows = []
+    if repo is not None:
+        try:
+            cur = repo.db.execute(
+                "SELECT s.mod_name, s.esp_name, s.key, s.original, s.translation, "
+                "s.quality_score FROM job_strings js JOIN strings s ON s.id = js.string_id "
+                "WHERE js.job_id=? AND s.status='translated'",
+                (job_id,),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+        except Exception as exc:
+            log.warning("export_job %s failed: %s", job_id[:8], exc)
+    return jsonify({"job_id": job_id, "count": len(rows), "strings": rows})
+
+
 @bp.route("/clear", methods=["POST"])
 def clear_finished():
     jm = current_app.config["JOB_MANAGER"]
@@ -822,6 +949,48 @@ def _create_translate_strings_job(jm, cfg, mod_name: str,
         name     = label,
         job_type = "translate_strings",
         params   = {"mod_name": mod_name, "keys": keys, "scope": scope,
+                    "assigned_machines": list(machines) if machines else []},
+        fn       = run,
+    )
+
+
+def _create_auto_translate_job(jm, cfg, mod_name: str,
+                               profile: str = "balanced",
+                               machines: list | None = None):
+    """VM2/VM3 — phased auto/variable-model translation for one mod."""
+    backends, skipped = _resolve_backends(cfg, machines)
+    repo              = current_app.config.get("STRING_REPO")
+    stats_mgr         = current_app.config.get("STATS_MGR")
+    scanner           = current_app.config.get("SCANNER")
+    reservation_mgr   = current_app.config.get("RESERVATION_MGR")
+    translation_cache = current_app.config.get("TRANSLATION_CACHE")
+    dispatch_pool     = current_app.config.get("DISPATCH_POOL")
+    registry          = current_app.config.get("WORKER_REGISTRY")
+    model_state       = current_app.config.get("MODEL_STATE")
+    hf_token          = current_app.config.get("HF_TOKEN", "") or ""
+
+    def run(job):
+        if skipped:
+            job.add_log(f"WARNING: machines not found in registry (skipped): {', '.join(skipped)}")
+        if repo is not None:
+            try:
+                cp_id = repo.create_checkpoint(mod_name)
+                job.add_log(f"Checkpoint {cp_id[:8]}… created before auto-translation")
+            except Exception as e:
+                log.warning("Auto-checkpoint failed: %s", e)
+        from translator.web.workers import auto_translate_worker
+        auto_translate_worker(job, cfg, mod_name, profile=profile, machines=machines,
+                              registry=registry, backends=backends, repo=repo,
+                              stats_mgr=stats_mgr, reservation_mgr=reservation_mgr,
+                              translation_cache=translation_cache,
+                              dispatch_pool=dispatch_pool, hf_token=hf_token,
+                              model_state=model_state)
+        post_job_hook(scanner, stats_mgr, mod_name)
+
+    return jm.create(
+        name     = f"Auto-translate [{profile}]: {mod_name}",
+        job_type = "auto_translate",
+        params   = {"mod_name": mod_name, "profile": profile,
                     "assigned_machines": list(machines) if machines else []},
         fn       = run,
     )

@@ -85,14 +85,23 @@ def quality_score(original: str, translation: str) -> int:
     orig_plain  = _plain(original)
     trans_plain = _plain(translation)
     ratio = len(trans_plain) / max(len(orig_plain), 1)
-    if ratio > 5.0 or ratio < 0.15:
-        score -= 40
-    elif ratio > 3.0 or ratio < 0.25:
-        score -= 30
-    elif ratio > 2.0 or ratio < 0.4:
-        score -= 20
-    elif ratio > 1.8 or ratio < 0.5:
-        score -= 10
+    # Length-ratio penalty. Russian routinely runs 15–30% longer than English, and short
+    # UI strings legitimately blow past 2× per-char ("Use" → "Использовать"). Relax bands
+    # for short strings (fewer false needs_review) and widen the long bands a touch.
+    if len(orig_plain) <= 15:
+        if ratio > 8.0 or ratio < 0.1:
+            score -= 40            # extreme blow-up/shrink is still garbage even when short
+        elif ratio > 5.0:
+            score -= 10
+    else:
+        if ratio > 5.0 or ratio < 0.15:
+            score -= 40
+        elif ratio > 3.0 or ratio < 0.25:
+            score -= 30
+        elif ratio > 2.2 or ratio < 0.4:
+            score -= 20
+        elif ratio > 1.9 or ratio < 0.5:
+            score -= 10
 
     orig_tokens  = _INLINE_TOKEN_RE.findall(original)
     trans_tokens = _INLINE_TOKEN_RE.findall(translation)
@@ -127,3 +136,25 @@ def compute_string_status(original: str, translation: str) -> tuple[int, bool, l
     qs = quality_score(original, translation)
     status = "translated" if (tok_ok and qs > 70) else "needs_review"
     return qs, tok_ok, tok_issues, status
+
+
+def _candidate_score(original: str, t: str) -> float:
+    """Comparable score for picking between two candidate translations: quality_score plus a
+    bonus for preserving all game tokens. Empty/missing → -1 (never chosen over real text)."""
+    if not t or not t.strip():
+        return -1.0
+    qs, tok_ok, _, _ = compute_string_status(original, t)
+    return qs + (5.0 if tok_ok else 0.0)
+
+
+def pick_better(original: str, a: str | None, b: str | None) -> dict:
+    """Choose the better of two candidate translations (G6 — multi-agent quality). Lets a
+    re-translation (e.g. on a bigger-model agent) only WIN if it actually scores higher, so
+    quality is monotonic across passes. Returns {translation, quality_score, status, chose}."""
+    sa, sb = _candidate_score(original, a), _candidate_score(original, b)
+    winner = b if sb > sa else a
+    chose  = "b" if sb > sa else "a"
+    if not winner:
+        return {"translation": "", "quality_score": 0, "status": "pending", "chose": chose}
+    qs, _, _, st = compute_string_status(original, winner)
+    return {"translation": winner, "quality_score": qs, "status": st, "chose": chose}

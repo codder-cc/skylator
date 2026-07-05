@@ -38,6 +38,15 @@ def create_app(config_path: Path | None = None) -> Flask:
         log.warning(f"Could not load config: {exc}")
 
     app.config["TRANSLATOR_CFG"] = cfg
+    app.config["HF_TOKEN"] = getattr(cfg, "hf_token", "") if cfg else ""
+
+    # Apply embedded-string output encoding (default utf-8; 'cp1251' for RU installs).
+    if cfg is not None:
+        try:
+            from scripts.esp_engine import set_string_encoding
+            set_string_encoding(getattr(cfg.translation, "string_encoding", "utf-8"))
+        except Exception as exc:
+            log.warning("could not set string encoding: %s", exc)
 
     # ── Init SQLite translation DB ─────────────────────────────────────────
     from translator.db.database import TranslationDB
@@ -49,7 +58,12 @@ def create_app(config_path: Path | None = None) -> Flask:
     app.config["TRANSLATION_DB"] = _db
     app.config["STRING_REPO"] = _repo
 
-    # ── Init ReservationManager (legacy — kept for backward compat) ─────────
+    # ── Init ReservationManager (LEGACY/ZOMBIE — slated for removal) ─────────
+    # Superseded by HashDispatchPool (live dedup) + the assignments layer (durability).
+    # Its translate-path branch is dead (DISPATCH_POOL is always present), and the
+    # 'reserved' stat now derives from string_dispatch, not string_reservations.
+    # TODO(consolidate): remove this manager, its expiry thread, and the
+    # string_reservations table in a dedicated migration once no code references it.
     from translator.reservation.reservation_manager import ReservationManager
     _reservation_mgr = ReservationManager(_db, ttl_seconds=300)
     _reservation_mgr.release_all_active()
@@ -191,8 +205,161 @@ def create_app(config_path: Path | None = None) -> Flask:
     # ── Init worker registry (reverse-connected remote workers) ─────────────
     from translator.web.worker_registry import WorkerRegistry
     _offline_pkg_dir = (cfg.paths.translation_cache.parent if cfg else ROOT / "cache") / "offline_packages"
-    app.config["WORKER_REGISTRY"] = WorkerRegistry(persist_dir=_offline_pkg_dir)
+    _registry = WorkerRegistry(persist_dir=_offline_pkg_dir)
+    app.config["WORKER_REGISTRY"] = _registry
     app.config["SETUP_REPORTS"]   = []   # in-memory list of remote setup reports
+
+    # Declarative desired-model state + heartbeat reconciliation (self-healing model loads)
+    from translator.web.model_state import ModelStateManager
+    _model_state = ModelStateManager(_registry)
+    app.config["MODEL_STATE"] = _model_state
+
+    # ── Persistent agent socket channel (opt-in fast path over the durable pull substrate) ──
+    # When configured, the master listens for agent-dialed connections so it can push commands
+    # instantly (model switch, cancel) and receive event-driven telemetry — without the agent
+    # being inbound-reachable (the agent dials out; the master never dials in). If the socket
+    # is down the system falls back to the durable pull/heartbeat path. Off unless a port is set.
+    _hub_port = getattr(getattr(cfg, "remote", None), "agent_hub_port", None) if cfg else None
+    app.config["AGENT_HUB"] = None
+    if _hub_port:
+        from translator.web.agent_hub import AgentHub, MSG_TELEMETRY
+
+        def _on_agent_msg(label, msg):
+            # Socket telemetry updates the SAME registry the UI reads — no heartbeat-stuffing.
+            if msg.get("type") == MSG_TELEMETRY:
+                p = msg.get("payload") or {}
+                try:
+                    _registry.heartbeat(label, stats=p.get("stats"),
+                                        model=p.get("model"), health=p.get("health"),
+                                        download_progress=p.get("download_progress"))
+                except Exception:
+                    log.debug("socket telemetry → registry failed", exc_info=True)
+
+        def _on_agent_connect(label):
+            log.info("Agent socket connected: %s", label)
+            try:
+                _model_state.reconcile(label)   # push any pending desired-model immediately
+            except Exception:
+                pass
+
+        _hub = AgentHub(host="0.0.0.0", port=int(_hub_port), on_message=_on_agent_msg,
+                        on_connect=_on_agent_connect,
+                        on_disconnect=lambda l: log.info("Agent socket disconnected: %s", l))
+        try:
+            _hub.start()
+            app.config["AGENT_HUB"] = _hub
+            log.info("Agent socket hub started on port %s", _hub_port)
+        except Exception as exc:
+            log.warning("Could not start agent socket hub: %s", exc)
+
+    # ── Assignment state machine + boot recovery ─────────────────────────────
+    from translator.jobs.assignment_store import AssignmentStore
+    from translator.jobs.assignment_manager import AssignmentManager
+    _assignment_mgr = AssignmentManager(AssignmentStore(_repo.db))
+    app.config["ASSIGNMENT_MGR"] = _assignment_mgr
+    try:
+        _recovery = _assignment_mgr.recover_on_boot()
+        if _recovery["active"]:
+            log.info("Boot recovery preserved %d active assignment(s), %d strings pending",
+                     _recovery["active"], _recovery["undelivered_strings"])
+    except Exception as exc:
+        log.warning("assignment boot recovery error: %s", exc)
+
+    # Gap 3 — re-derive offline job progress from durable assignments on boot, so a
+    # restored OFFLINE_DISPATCHED job shows the right totals immediately (and completes
+    # if all its assignments already finished) instead of waiting for new results.
+    try:
+        for _jid, _j in list(jm._jobs.items()):
+            if _j.status != JobStatus.OFFLINE_DISPATCHED:
+                continue
+            _total, _delivered = _assignment_mgr.job_progress(_jid)
+            if _total > 0:
+                _j.progress.total   = _total
+                _j.progress.current = _delivered
+                if _assignment_mgr.is_job_done(_jid):
+                    _j.status = JobStatus.DONE
+                    _j.progress.message = "Done — recovered from assignments on boot"
+                else:
+                    _j.progress.message = (f"Recovered: {_delivered}/{_total} delivered "
+                                           f"— resuming")
+        jm._persist()
+    except Exception as exc:
+        log.warning("job status re-derivation error: %s", exc)
+
+    # Rebuild in-memory offline-job tracking from durable assignments so the
+    # /offline-results push path keeps working across a master restart — essential for
+    # NAT agents the host cannot pull from directly.
+    try:
+        for _a in _assignment_mgr.store.list_active():
+            _registry.register_offline_job(_a["assignment_id"], _a["job_id"],
+                                           _a["agent_id"], _a["total"])
+    except Exception as exc:
+        log.warning("offline-job tracking rebuild error: %s", exc)
+
+    # ── Master-pull reconciliation (authoritative) ──────────────────────────
+    from translator.web.pull_reconcile import pull_loop
+    _threading.Thread(
+        target=pull_loop, args=(app, _registry), daemon=True, name="pull-reconcile",
+    ).start()
+
+    # ── Periodic DB backup (months-long run safety net) ──────────────────────
+    _backup_dir = (cfg.paths.translation_cache.parent if cfg else ROOT / "cache") / "db_backups"
+
+    def _bg_backup_db():
+        while True:
+            _time.sleep(6 * 3600)  # every 6h
+            try:
+                # Rotating, integrity-verified snapshots: a corrupt snapshot is rejected and
+                # can never clobber the last good one (timestamped, newest 8 kept ≈ 2 days).
+                _db.rotating_backup(_backup_dir, keep=8)
+            except Exception as exc:
+                log.warning("DB backup failed: %s", exc)
+
+    _threading.Thread(target=_bg_backup_db, daemon=True, name="db-backup").start()
+
+    # ── Conservative reassignment reaper (Phase 7) ───────────────────────────
+    def _bg_reap_assignments():
+        from translator.web.redispatch import auto_redispatch
+        while True:
+            _time.sleep(3600)  # hourly; the horizon itself is multi-day
+            try:
+                orphaned = _assignment_mgr.reap()
+                if orphaned:
+                    n = len(_assignment_mgr.reassignable_string_ids())
+                    log.warning("Reaper orphaned %d presumed-dead assignment(s); "
+                                "%d strings now reassignable", len(orphaned), n)
+                # Automatically re-dispatch the dead agents' pending work to live workers.
+                new_job = auto_redispatch(app)
+                if new_job:
+                    log.warning("Reaper auto-redispatched orphaned work → job %s", new_job[:8])
+            except Exception as exc:
+                log.warning("assignment reaper error: %s", exc)
+
+    _threading.Thread(target=_bg_reap_assignments, daemon=True, name="assignment-reaper").start()
+
+    # ── Autonomous work top-up feeder (Gap 1) ────────────────────────────────
+    app.config["AUTO_FEED"] = {"enabled": False, "batch_size": 50}
+    from translator.web.auto_feed import feed_loop
+    _threading.Thread(target=feed_loop, args=(app,), daemon=True, name="auto-feed").start()
+
+    # ── Optional shared-token auth for machine-to-machine endpoints ──────────
+    # Opt-in: set SKYLATOR_TOKEN on the master + every agent to require a matching
+    # X-Skylator-Token header on agent/admin/OTA endpoints. Off by default (trusted LAN),
+    # but closes the result-injection / cursor-reset / OTA-RCE surface when enabled.
+    import os as _os
+    app.config["API_TOKEN"] = _os.environ.get("SKYLATOR_TOKEN", "")
+    _PROTECTED = ("/api/workers", "/api/admin", "/api/ota", "/ota", "/setup-report")
+
+    @app.before_request
+    def _require_token():
+        token = app.config.get("API_TOKEN")
+        if not token:
+            return  # not configured → no enforcement
+        from flask import request as _rq
+        if any(_rq.path.startswith(p) for p in _PROTECTED):
+            if _rq.headers.get("X-Skylator-Token") != token:
+                from flask import jsonify as _jsonify
+                return _jsonify({"error": "unauthorized"}), 401
 
     # ── Register blueprints ─────────────────────────────────────────────────
     from translator.web.routes import register_routes

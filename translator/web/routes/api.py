@@ -1,12 +1,38 @@
 """JSON API endpoints for AJAX calls."""
 from __future__ import annotations
+import json
 import logging
-from flask import Blueprint, current_app, jsonify, request
+import queue
+from flask import Blueprint, Response, current_app, jsonify, request, stream_with_context
 from translator.web.routes.utils import get_mod_path
 
 log = logging.getLogger(__name__)
 
 bp = Blueprint("api", __name__, url_prefix="/api")
+
+
+def _is_lan_url(url: str) -> bool:
+    """True only if `url`'s host resolves to a private/LAN/loopback address. Used to block
+    SSRF on the server-test fallback (no public IPs, no cloud-metadata 169.254.x)."""
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+    try:
+        host = urlparse(url if "://" in url else f"http://{url}").hostname
+        if not host:
+            return False
+        infos = socket.getaddrinfo(host, None)
+        addrs = {info[4][0] for info in infos}
+        if not addrs:
+            return False
+        for a in addrs:
+            ip = ipaddress.ip_address(a)
+            # link-local (incl. 169.254 metadata) is explicitly disallowed
+            if ip.is_link_local or not ip.is_private:
+                return False
+        return True
+    except Exception:
+        return False
 
 
 @bp.route("/setup-reports")
@@ -567,7 +593,11 @@ def servers_test():
                     "source":      "registry",
                 })
 
-    # Fallback: direct HTTP (works for same-subnet LAN-scanned servers or legacy mode)
+    # Fallback: direct HTTP — only to PRIVATE/LAN addresses. Blocks SSRF (loopback,
+    # link-local, cloud-metadata 169.254.x, public IPs) so this can't be used to probe
+    # internal services or the metadata endpoint.
+    if not _is_lan_url(url):
+        return jsonify({"ok": False, "error": "url must be a private/LAN address"}), 400
     try:
         import requests as _requests
         r = _requests.get(f"{url}/health", timeout=5.0)
@@ -1167,6 +1197,42 @@ def workers_list():
     return jsonify(result)
 
 
+@bp.route("/workers/stream", methods=["GET"])
+def workers_stream():
+    """SSE stream of worker/agent state — pushed on every change (registry pub/sub), so the
+    browser sees agent activity instantly instead of polling. Socket telemetry → heartbeat →
+    registry._publish() → this stream → UI, all event-driven. A dataless ping keeps it warm."""
+    registry = current_app.config.get("WORKER_REGISTRY")
+    if registry is None:
+        return jsonify([]), 200
+
+    def _snapshot() -> str:
+        return json.dumps({"workers": [w.to_dict() for w in registry.get_all()]})
+
+    @stream_with_context
+    def gen():
+        q = registry.subscribe()
+        try:
+            yield f"data: {_snapshot()}\n\n"          # initial state
+            while True:
+                try:
+                    q.get(timeout=15)
+                    # coalesce a burst of ticks into one fresh snapshot
+                    try:
+                        while True:
+                            q.get_nowait()
+                    except queue.Empty:
+                        pass
+                    yield f"data: {_snapshot()}\n\n"
+                except queue.Empty:
+                    yield ": ping\n\n"                 # keepalive
+        finally:
+            registry.unsubscribe(q)
+
+    return Response(gen(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @bp.route("/workers/register", methods=["POST"])
 def workers_register():
     """Remote server calls this on startup to announce itself."""
@@ -1191,7 +1257,31 @@ def workers_register():
     )
     registry.register(info)
     log.info("Worker registered: %s @ %s  model=%s", label, url, info.model)
-    return jsonify({"ok": True, "label": label})
+
+    # Protocol negotiation (Phase 10d): warn on a version skew rather than failing, so an
+    # agent mid-OTA keeps producing locally and just defers anything it can't speak.
+    agent_proto = data.get("protocol")
+    if agent_proto is not None:
+        from translator.jobs.assignment_store import PROTOCOL_VERSION as _HOST_PROTO
+        if agent_proto != _HOST_PROTO:
+            log.warning("Worker %s protocol v%s != host v%s — proceeding in compat mode",
+                        label, agent_proto, _HOST_PROTO)
+
+    # Reconnect handshake (Phase 5): if the agent reported a digest of its open
+    # assignments, tell it which to resume / stop / abandon. This auto-recovers an
+    # agent that died and relaunched, with no operator action.
+    reconcile = {}
+    digest = data.get("digest")
+    repo   = current_app.config.get("STRING_REPO")
+    if digest and repo is not None:
+        try:
+            from translator.jobs.assignment_store import AssignmentStore
+            reconcile = AssignmentStore(repo.db).diff_handshake(label, digest)
+        except Exception as exc:
+            log.warning("register: handshake diff failed for %s: %s", label, exc)
+    from translator.jobs.assignment_store import PROTOCOL_VERSION as _HOST_PROTO
+    return jsonify({"ok": True, "label": label, "reconcile": reconcile,
+                    "protocol": _HOST_PROTO})
 
 
 @bp.route("/workers/heartbeat", methods=["POST"])
@@ -1211,9 +1301,12 @@ def workers_heartbeat():
     hardware      = data.get("hardware")      # {ram_total_mb, vram_total_mb, cpu_name, …}
     commit        = data.get("commit")        # short git commit hash
     offline_jobs  = data.get("offline_jobs")  # [{offline_job_id, total, done, tps, current_text}]
+    health        = data.get("health")        # {disk_full, idle_starved, stalled, undelivered}
+    dl_progress   = data.get("download_progress")  # {model, stage, pct, ...}
     found, lost_job_ids = registry.heartbeat(
         label, models=models, model=model, backend_type=backend_type,
         stats=stats, hardware=hardware, commit=commit, offline_jobs=offline_jobs,
+        health=health, download_progress=dl_progress,
     )
     if not found:
         return jsonify({"ok": False, "reregister": True}), 404
@@ -1284,7 +1377,33 @@ def workers_heartbeat():
                             except Exception:
                                 pass
 
-    return jsonify({"ok": True})
+    # A live heartbeat refreshes the lease on this agent's active assignments, so the
+    # Phase 7 reaper only reassigns work from agents that have genuinely gone silent.
+    repo = current_app.config.get("STRING_REPO")
+    if repo is not None:
+        try:
+            from translator.jobs.assignment_store import AssignmentStore
+            AssignmentStore(repo.db).touch_lease(label)
+        except Exception:
+            pass
+    # Declarative model reconciliation: compare the agent's reported model to the model it
+    # *should* be running for its active job and re-issue the load if they diverged. This
+    # self-heals model switching across agent reboots / missed commands / lost acks — the
+    # master never calls the agent, it just enqueues a load the agent pulls on its own.
+    model_state = current_app.config.get("MODEL_STATE")
+    if model_state is not None:
+        try:
+            model_state.reconcile(label)
+        except Exception:
+            pass
+
+    # Master-pull-over-poll (Gap 2): if the master asked this (possibly NAT) agent to
+    # resend results, deliver the request now over its outbound heartbeat channel.
+    resend_since = registry.take_resend(label)
+    resp = {"ok": True}
+    if resend_since is not None:
+        resp["resend_since"] = resend_since
+    return jsonify(resp)
 
 
 @bp.route("/workers/<label>", methods=["DELETE"])
@@ -1331,6 +1450,367 @@ def workers_post_result(label: str):
     return jsonify({"ok": True, "matched": found})
 
 
+@bp.route("/assignments", methods=["GET"])
+def assignments_overview():
+    """Observability ledger (Phase 9): per-assignment funnel + agent liveness tier, plus
+    aggregate totals. This is what an operator checks after days away to see how a
+    months-long run is progressing and whether anything is stuck."""
+    import time as _time
+    repo = current_app.config.get("STRING_REPO")
+    amgr = current_app.config.get("ASSIGNMENT_MGR")
+    if repo is None:
+        return jsonify({"assignments": [], "aggregate": {}})
+
+    from translator.jobs.assignment_store import AssignmentStore
+    from translator.jobs.assignment_manager import PRESUMED_DEAD_HORIZON
+    astore = amgr.store if amgr is not None else AssignmentStore(repo.db)
+    now = _time.time()
+
+    rows = [dict(r) for r in repo.db.execute(
+        "SELECT * FROM assignments ORDER BY created_at DESC LIMIT 500").fetchall()]
+    out = []
+    agg = {"total": 0, "delivered": 0, "active": 0, "presumed_dead": 0, "disconnected": 0}
+    for a in rows:
+        tier = (amgr.liveness_tier(a, now, PRESUMED_DEAD_HORIZON)
+                if amgr is not None else "unknown")
+        agg["total"]     += a["total"]
+        agg["delivered"] += a["delivered"]
+        from translator.jobs.assignment_store import ACTIVE_STATES
+        if a["state"] in ACTIVE_STATES:
+            agg["active"] += 1
+            if tier in ("presumed_dead", "disconnected"):
+                agg[tier] += 1
+        out.append({
+            "assignment_id": a["assignment_id"], "job_id": a["job_id"],
+            "agent_id": a["agent_id"], "mod_name": a["mod_name"], "state": a["state"],
+            "total": a["total"], "delivered": a["delivered"],
+            "undelivered": max(0, a["total"] - a["delivered"]), "tier": tier,
+        })
+    return jsonify({"assignments": out, "aggregate": agg})
+
+
+@bp.route("/models/catalog", methods=["GET"])
+def models_catalog():
+    """Curated model catalog + per-default-ctx memory estimates (A3). Pass ?vram_mb= to get
+    a fit verdict per model for a specific agent's VRAM/unified memory."""
+    from translator.web.model_catalog import catalog
+    vram_mb = float(request.args.get("vram_mb") or 0)
+    return jsonify({"models": catalog(vram_mb=vram_mb)})
+
+
+@bp.route("/models/estimate", methods=["GET"])
+def models_estimate():
+    """VRAM/KV estimate + fit + max_n_ctx (A2). Either pass ?catalog_id=&n_ctx=&vram_mb=
+    or raw ?file_size_mb=&n_layers=&n_kv_heads=&head_dim=&n_ctx=&vram_mb=."""
+    from translator.web.model_estimator import estimate
+    from translator.web.model_catalog import get_entry
+
+    a = request.args
+    n_ctx   = int(a.get("n_ctx") or 8192)
+    vram_mb = float(a.get("vram_mb") or 0)
+
+    cat_id = a.get("catalog_id")
+    if cat_id:
+        e = get_entry(cat_id)
+        if not e:
+            return jsonify({"error": f"unknown catalog_id '{cat_id}'"}), 404
+        return jsonify(estimate(
+            weights_mb=e["file_size_mb"], n_ctx=n_ctx, n_layers=e["n_layers"],
+            n_kv_heads=e["n_kv_heads"], head_dim=e["head_dim"], vram_mb=vram_mb))
+
+    return jsonify(estimate(
+        weights_mb=float(a.get("file_size_mb") or 0),
+        n_ctx=n_ctx,
+        n_layers=int(a.get("n_layers") or 0),
+        n_kv_heads=int(a.get("n_kv_heads") or 0),
+        head_dim=int(a.get("head_dim") or 0),
+        vram_mb=vram_mb,
+    ))
+
+
+@bp.route("/review/queue", methods=["GET"])
+def review_queue():
+    """G11 — needs_review strings ACROSS THE WHOLE PACK, worst-quality first. Optional
+    ?mod=, ?max_quality=, ?limit=. Powers the QA review page."""
+    repo = current_app.config.get("STRING_REPO")
+    if repo is None:
+        return jsonify({"strings": [], "total": 0})
+    a = request.args
+    limit = min(int(a.get("limit") or 200), 1000)
+    where = ["status='needs_review'"]
+    params: list = []
+    if a.get("mod"):
+        where.append("mod_name=?"); params.append(a["mod"])
+    if a.get("max_quality"):
+        where.append("COALESCE(quality_score,0) <= ?"); params.append(int(a["max_quality"]))
+    wsql = " AND ".join(where)
+    total = repo.db.execute(f"SELECT COUNT(*) FROM strings WHERE {wsql}", params).fetchone()[0]
+    rows = repo.db.execute(
+        f"""SELECT id, mod_name, esp_name, key, original, translation, quality_score, source
+            FROM strings WHERE {wsql}
+            ORDER BY quality_score ASC, mod_name LIMIT ?""",
+        (*params, limit),
+    ).fetchall()
+    return jsonify({"total": total, "strings": [dict(r) for r in rows]})
+
+
+@bp.route("/review/approve", methods=["POST"])
+def review_approve():
+    """G11 — batch-approve needs_review strings by id (cross-mod), flipping them to
+    'translated'. Records history per string."""
+    from translator.data_manager.string_manager import StringManager
+    from pathlib import Path
+    repo = current_app.config.get("STRING_REPO")
+    cfg  = current_app.config.get("TRANSLATOR_CFG")
+    if repo is None:
+        return jsonify({"ok": False, "error": "not initialized"}), 500
+    ids = (request.get_json(silent=True) or {}).get("ids") or []
+    sm = StringManager(repo, Path(cfg.paths.mods_dir) if cfg else Path("."))
+    n = 0
+    mods: set[str] = set()
+    for sid in ids:
+        try:
+            row = repo.db.execute("SELECT mod_name FROM strings WHERE id=?", (int(sid),)).fetchone()
+            sm.approve_string(int(sid))
+            n += 1
+            if row:
+                mods.add(row[0])
+        except Exception:
+            pass
+    stats = current_app.config.get("STATS_MGR")
+    if stats:
+        for m in mods:
+            try: stats.invalidate(m)
+            except Exception: pass
+    return jsonify({"ok": True, "approved": n})
+
+
+@bp.route("/mods/priorities", methods=["GET"])
+def mods_priorities():
+    """G9 — {folder_name: priority} for all mods (UI sort/badges)."""
+    repo = current_app.config.get("STRING_REPO")
+    if repo is None:
+        return jsonify({})
+    try:
+        return jsonify(repo.db.get_mod_priorities())
+    except Exception:
+        return jsonify({})
+
+
+@bp.route("/mods/<path:name>/priority", methods=["POST"])
+def set_mod_priority(name: str):
+    """G9 — set a mod's translation priority (higher = translated first by translate_all)."""
+    repo = current_app.config.get("STRING_REPO")
+    if repo is None:
+        return jsonify({"ok": False, "error": "not initialized"}), 500
+    data = request.get_json(silent=True) or {}
+    try:
+        priority = int(data.get("priority", 0))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "priority must be an integer"}), 400
+    repo.db.set_mod_priority(name, priority)
+    return jsonify({"ok": True, "mod": name, "priority": priority})
+
+
+@bp.route("/mods/<name>/import-translations", methods=["POST"])
+def import_translations(name: str):
+    """A — seed a mod's strings from an existing community translation (xTranslate/SST XML).
+    Body: {xml: "<...>", overwrite?: bool}. Fills untranslated rows (or all if overwrite),
+    matching by source text (exact + normalized fuzzy). Returns import stats."""
+    from translator.data_manager.translation_import import parse_xtranslate_xml, import_pairs
+    repo = current_app.config.get("STRING_REPO")
+    if repo is None:
+        return jsonify({"error": "DB not initialized"}), 500
+    data = request.get_json() or {}
+    xml  = data.get("xml") or ""
+    if not xml.strip():
+        return jsonify({"error": "xml body is required"}), 400
+    pairs = parse_xtranslate_xml(xml)
+    stats = import_pairs(repo, name, pairs, source_label="imported",
+                         overwrite=bool(data.get("overwrite", False)))
+    log.info("import-translations %s: %s", name, stats)
+    return jsonify({"ok": True, **stats})
+
+
+@bp.route("/translate/plan", methods=["GET"])
+def translate_plan():
+    """VM1 — preview the auto/variable-model plan for a mod's pending strings under a quality
+    profile: how many strings per difficulty tier, which model each uses, in execution order
+    (small → large), and how many model switches it implies. ?mod=&profile=."""
+    from translator.web.quality_profiles import summarize_plan, PROFILES, DEFAULT_PROFILE
+    repo    = current_app.config.get("STRING_REPO")
+    mod     = request.args.get("mod")
+    profile = request.args.get("profile", DEFAULT_PROFILE)
+    if profile not in PROFILES:
+        return jsonify({"error": f"unknown profile (use {list(PROFILES)})"}), 400
+    strings = []
+    if repo is not None and mod:
+        rows = repo.db.execute(
+            "SELECT original FROM strings WHERE mod_name=? AND status='pending' "
+            "AND COALESCE(source,'') != 'untranslatable'", (mod,)).fetchall()
+        strings = [{"original": r[0]} for r in rows]
+    return jsonify(summarize_plan(strings, profile))
+
+
+@bp.route("/campaign/estimate", methods=["GET"])
+def campaign_estimate():
+    """G8 — estimate time to finish the pending backlog across the live fleet's combined TPS.
+    Optional ?mod= to scope to one mod."""
+    from translator.web.campaign import estimate_campaign
+    repo     = current_app.config.get("STRING_REPO")
+    registry = current_app.config.get("WORKER_REGISTRY")
+    mod      = request.args.get("mod")
+
+    pending, avg_chars = 0, 0.0
+    if repo is not None:
+        sql = ("SELECT COUNT(*), COALESCE(AVG(LENGTH(original)),0) FROM strings "
+               "WHERE status='pending' AND COALESCE(source,'') != 'untranslatable'")
+        params: tuple = ()
+        if mod:
+            sql += " AND mod_name=?"; params = (mod,)
+        row = repo.db.execute(sql, params).fetchone()
+        if row:
+            pending, avg_chars = int(row[0]), float(row[1] or 0)
+
+    fleet_tps = 0.0
+    agents = 0
+    if registry is not None:
+        for w in registry.get_active():
+            fleet_tps += float((w.stats or {}).get("tps_avg") or 0)
+            agents += 1
+
+    est = estimate_campaign(pending, avg_chars, fleet_tps)
+    est["agents"] = agents
+    return jsonify(est)
+
+
+@bp.route("/models/dispatch", methods=["POST"])
+def models_dispatch():
+    """A4 — fan out a model download/load to several agents at once (non-blocking).
+    Body: {model: {backend_type, repo_id, gguf_filename, n_ctx, ...}, targets: [labels]|"all",
+    load: bool}. Returns a per-target chunk id; progress shows on /api/workers."""
+    import uuid
+    registry = current_app.config.get("WORKER_REGISTRY")
+    if registry is None:
+        return jsonify({"ok": False, "error": "registry not initialized"}), 500
+    data    = request.get_json() or {}
+    model   = dict(data.get("model") or {})
+    targets = data.get("targets")
+    if targets in (None, "all", "*"):
+        targets = [w.label for w in registry.get_active()]
+    if not targets:
+        return jsonify({"ok": False, "error": "no targets"}), 400
+
+    if not model.get("hf_token"):
+        model["hf_token"] = current_app.config.get("HF_TOKEN", "") or ""
+    model["load"] = bool(data.get("load", True))
+
+    out = []
+    for label in targets:
+        if registry.get(label) is None:
+            out.append({"label": label, "ok": False, "error": "worker not found"})
+            continue
+        cid = str(uuid.uuid4())
+        registry.enqueue_chunk(label, {"type": "load_model", "chunk_id": cid,
+                                       "payload": dict(model)})
+        out.append({"label": label, "ok": True, "chunk_id": cid})
+    log.info("models/dispatch: %s → %d target(s) (load=%s)",
+             model.get("gguf_filename") or model.get("repo_id"), len(out), model["load"])
+    return jsonify({"ok": True, "dispatched": out})
+
+
+@bp.route("/auto-feed", methods=["GET"])
+def auto_feed_status():
+    """Autonomous backlog draining status + how many strings remain unassigned."""
+    from translator.web.auto_feed import next_unassigned_batch
+    state = current_app.config.get("AUTO_FEED") or {}
+    repo  = current_app.config.get("STRING_REPO")
+    backlog = None
+    if repo is not None:
+        try:
+            backlog = repo.db.execute(
+                """SELECT COUNT(*) FROM strings s
+                   WHERE s.status='pending' AND COALESCE(s.source,'') != 'untranslatable'
+                     AND s.id NOT IN (
+                       SELECT astr.string_id FROM assignment_strings astr
+                       JOIN assignments a ON a.assignment_id=astr.assignment_id
+                       WHERE a.state IN ('queued','leased','in_progress','partially_delivered')
+                         AND astr.delivered=0)""").fetchone()[0]
+        except Exception:
+            backlog = None
+    return jsonify({"enabled": bool(state.get("enabled")),
+                    "batch_size": state.get("batch_size", 50),
+                    "unassigned_pending": backlog})
+
+
+@bp.route("/auto-feed/start", methods=["POST"])
+def auto_feed_start():
+    """Turn on autonomous top-up: idle workers are continuously fed the next batch from
+    the global pending backlog until it is drained."""
+    data  = request.get_json(silent=True) or {}
+    state = current_app.config.setdefault("AUTO_FEED", {"enabled": False, "batch_size": 50})
+    state["enabled"] = True
+    if data.get("batch_size"):
+        state["batch_size"] = int(data["batch_size"])
+    log.info("Auto-feed ENABLED (batch_size=%d)", state["batch_size"])
+    return jsonify({"ok": True, "enabled": True, "batch_size": state["batch_size"]})
+
+
+@bp.route("/auto-feed/stop", methods=["POST"])
+def auto_feed_stop():
+    state = current_app.config.setdefault("AUTO_FEED", {"enabled": False, "batch_size": 50})
+    state["enabled"] = False
+    log.info("Auto-feed DISABLED")
+    return jsonify({"ok": True, "enabled": False})
+
+
+@bp.route("/admin/rebuild-from-agents", methods=["POST"])
+def rebuild_from_agents():
+    """Recovery (Gap 5): after restoring an older master DB backup, reset all agent pull
+    cursors to 0 and immediately re-pull from every reachable agent that still holds its
+    durable results. Idempotent (re-applying results is a no-op)."""
+    repo = current_app.config.get("STRING_REPO")
+    if repo is None:
+        return jsonify({"ok": False, "error": "not initialized"}), 500
+    from translator.jobs.assignment_store import AssignmentStore
+    n = AssignmentStore(repo.db).reset_agent_cursors()
+
+    registry = current_app.config.get("WORKER_REGISTRY")
+    pulled = 0
+    requested = 0
+    if registry is not None:
+        from translator.web.pull_reconcile import reconcile_agent
+        app_obj = current_app._get_current_object()
+        for w in registry.get_all():
+            # Reachable agents: pull directly now. All agents (incl. NAT): also queue a
+            # resend request, delivered on their next heartbeat, so unreachable ones recover too.
+            try:
+                pulled += reconcile_agent(app_obj, w)
+            except Exception as exc:
+                log.warning("rebuild-from-agents: pull from %s failed: %s",
+                            getattr(w, "label", "?"), exc)
+            try:
+                registry.request_resend(w.label, 0)
+                requested += 1
+            except Exception:
+                pass
+    return jsonify({"ok": True, "cursors_reset": n, "pulled": pulled,
+                    "resend_requested": requested})
+
+
+@bp.route("/workers/<label>/abandon", methods=["POST"])
+def worker_abandon(label: str):
+    """Operator action (Phase 7): immediately orphan an agent's active assignments
+    instead of waiting out the multi-day presumed-dead horizon. Its undelivered strings
+    become reassignable; dedup makes a later revival safe."""
+    amgr = current_app.config.get("ASSIGNMENT_MGR")
+    if amgr is None:
+        return jsonify({"ok": False, "error": "not initialized"}), 500
+    orphaned = amgr.abandon_agent(label)
+    return jsonify({"ok": True, "orphaned": orphaned,
+                    "reassignable": len(amgr.reassignable_string_ids())})
+
+
 @bp.route("/workers/<label>/offline-results", methods=["POST"])
 def workers_offline_results(label: str):
     """Remote posts incremental/final results from an offline translate job.
@@ -1344,6 +1824,7 @@ def workers_offline_results(label: str):
     """
     from translator.web.job_manager import JobStatus
     from translator.data_manager.string_manager import StringManager
+    from translator.jobs.assignment_store import AssignmentStore, verify_result_hash
     from pathlib import Path
 
     registry      = current_app.config.get("WORKER_REGISTRY")
@@ -1360,14 +1841,31 @@ def workers_offline_results(label: str):
     offline_job_id = data.get("offline_job_id", "")
     results        = data.get("results") or []
     done           = bool(data.get("done", False))
+    batch_max_seq  = int(data.get("batch_max_seq") or 0)  # agent's durable seq high-water for this batch
+    had_error      = False
+    failed_seqs: list[int] = []
 
     if not offline_job_id:
         return jsonify({"ok": False, "error": "offline_job_id required"}), 400
 
     oj = registry.get_offline_job(offline_job_id)
     if oj is None:
-        log.warning("offline-results: unknown offline_job_id %s from %s", offline_job_id[:8], label)
-        return jsonify({"ok": False, "error": "unknown offline_job_id"}), 404
+        # The master may have restarted (in-memory offline-job tracking is lost). Recover
+        # host_job_id from the DURABLE assignment and re-register, so push delivery keeps
+        # working across a master restart — critical for NAT agents the host can't pull from.
+        if repo is not None:
+            try:
+                from translator.jobs.assignment_store import AssignmentStore
+                a = AssignmentStore(repo.db).get_assignment(offline_job_id)
+                if a is not None:
+                    registry.register_offline_job(offline_job_id, a["job_id"], label, a["total"])
+                    oj = registry.get_offline_job(offline_job_id)
+            except Exception as exc:
+                log.warning("offline-results: assignment recovery failed for %s: %s",
+                            offline_job_id[:8], exc)
+        if oj is None:
+            log.warning("offline-results: unknown offline_job_id %s from %s", offline_job_id[:8], label)
+            return jsonify({"ok": False, "error": "unknown offline_job_id"}), 404
 
     host_job_id = oj["host_job_id"]
     job = jm.get_job(host_job_id)
@@ -1377,7 +1875,9 @@ def workers_offline_results(label: str):
         string_mgr = StringManager(repo, Path(mods_dir))
 
     saved_count = 0
+    rejected    = 0
     mods_touched: set[str] = set()
+    astore = AssignmentStore(repo.db) if repo is not None else None
 
     for r in results:
         key         = r.get("key") or ""
@@ -1391,6 +1891,15 @@ def workers_offline_results(label: str):
         if not translation or not key or not mod_name:
             continue
 
+        # Integrity gate: reject (do not apply) results whose claimed hash does not
+        # match the original the agent delivered. Rejected results are dropped, not
+        # retried forever — the string stays pending and can be re-dispatched later.
+        if not verify_result_hash(original, r.get("string_hash")):
+            rejected += 1
+            log.warning("offline-results: hash mismatch from %s for %s/%s — rejected",
+                        label, mod_name, key)
+            continue
+
         try:
             if repo is not None and cfg is not None:
                 string_mgr.save_string(
@@ -1401,7 +1910,18 @@ def workers_offline_results(label: str):
                 )
                 mods_touched.add(mod_name)
                 saved_count += 1
+                # Durable per-string delivery tracking (host manifest, Phase 3).
+                sid = r.get("string_id")
+                if astore is not None and sid is not None:
+                    try:
+                        astore.mark_string_delivered(offline_job_id, sid)
+                    except Exception:
+                        pass
         except Exception as exc:
+            had_error = True
+            _s = r.get("seq")
+            if _s:
+                failed_seqs.append(int(_s))
             log.warning("offline-results: save_string failed for %s/%s: %s", mod_name, key, exc)
 
         if job is not None:
@@ -1464,11 +1984,44 @@ def workers_offline_results(label: str):
     # Update progress tracking
     registry.update_offline_progress(offline_job_id, done_delta=len(results))
 
+    # RT1: surface the latest delivered string as the agent's current task (~2s fresh,
+    # faster than the 15s heartbeat) so the Operations UI shows live activity.
+    if results:
+        last = results[-1]
+        try:
+            registry.update_task(label, last.get("original") or last.get("translation") or "")
+        except Exception:
+            pass
+
+    # RT3: invalidate stats for touched mods on EVERY batch (not just on done) so the
+    # translated/pending counts move live during the run, not after a 120s TTL.
+    if stats_mgr and mods_touched:
+        for _m in mods_touched:
+            try:
+                stats_mgr.invalidate(_m)
+            except Exception:
+                pass
+
     if done:
         all_done = registry.finish_offline_job(offline_job_id)
         registry.delete_offline_package(offline_job_id)
         log.info("offline-results: %s done (saved=%d, all_workers_done=%s)",
                  offline_job_id[:8], saved_count, all_done)
+
+        # Settle the durable assignment's terminal state (Phase 3; refined in Phase 6).
+        if astore is not None:
+            try:
+                total, delivered = astore.counts(offline_job_id)
+                # Settle to a TERMINAL state on done. Using 'failed' (not the active
+                # 'partially_delivered') for partials RELEASES the undelivered strings:
+                # they stay 'pending' and become re-dispatchable immediately (auto-feed /
+                # next translate), instead of being locked until the multi-day reaper.
+                astore.set_state(
+                    offline_job_id,
+                    "complete" if (total > 0 and delivered >= total) else "failed",
+                )
+            except Exception:
+                pass
 
         if all_done and job is not None:
             job.status      = JobStatus.DONE
@@ -1494,7 +2047,20 @@ def workers_offline_results(label: str):
         job.progress.message = f"Receiving offline results ({job.progress.current}/{job.progress.total})"
         jm._notify(job)
 
-    return jsonify({"ok": True, "saved": saved_count})
+    # Advance this agent's durable pull cursor (monotonic high-water). Survives master
+    # restarts; used by recovery to know what has already been reconciled from each agent.
+    if astore is not None and batch_max_seq and not had_error:
+        try:
+            astore.advance_agent_cursor(label, batch_max_seq)
+        except Exception as exc:
+            log.warning("offline-results: cursor advance failed for %s: %s", label, exc)
+
+    # confirmed_seq = highest CONTIGUOUS successfully-saved seq (safe pruning high-water).
+    # failed_seqs lets the agent mark every other row delivered and re-deliver ONLY the
+    # poison rows, instead of re-sending the whole batch forever on one bad string.
+    confirmed_seq = (min(failed_seqs) - 1) if failed_seqs else batch_max_seq
+    return jsonify({"ok": True, "saved": saved_count, "rejected": rejected,
+                    "confirmed_seq": max(0, confirmed_seq), "failed_seqs": failed_seqs})
 
 
 @bp.route("/workers/<label>/benchmark", methods=["POST"])
@@ -1655,11 +2221,11 @@ def _find_in_worker_cache(models: list, repo_id: str, gguf_filename: str,
     return None
 
 
-def _stage_mlx(repo_id: str, staging_path) -> dict:
+def _stage_mlx(repo_id: str, staging_path, token: str = "") -> dict:
     from huggingface_hub import snapshot_download
     from pathlib import Path as _Path
     log.info("Host: downloading MLX snapshot %s...", repo_id)
-    snap = _Path(snapshot_download(repo_id, cache_dir=str(staging_path)))
+    snap = _Path(snapshot_download(repo_id, cache_dir=str(staging_path), token=token or None))
     dest_subdir = repo_id.split("/")[-1]
     files = [
         {"path": str(f.relative_to(snap)).replace("\\", "/"), "size": f.stat().st_size}
@@ -1669,7 +2235,7 @@ def _stage_mlx(repo_id: str, staging_path) -> dict:
     return {"dest_subdir": dest_subdir, "files": files, "serve_root": snap}
 
 
-def _stage_gguf(repo_id: str, gguf_filename: str, staging_path) -> dict:
+def _stage_gguf(repo_id: str, gguf_filename: str, staging_path, token: str = "") -> dict:
     import re
     from huggingface_hub import hf_hub_download
     dest_subdir = repo_id.split("/")[-1]
@@ -1682,7 +2248,8 @@ def _stage_gguf(repo_id: str, gguf_filename: str, staging_path) -> dict:
     for fname in filenames:
         dest = local_dir / fname
         if not dest.exists():
-            hf_hub_download(repo_id=repo_id, filename=fname, local_dir=str(local_dir))
+            hf_hub_download(repo_id=repo_id, filename=fname, local_dir=str(local_dir),
+                            token=token or None)
         files.append({"path": fname, "size": dest.stat().st_size})
     log.info("Host: GGUF staged — %d shards in %s", len(files), local_dir)
     return {"dest_subdir": dest_subdir, "files": files, "serve_root": local_dir}
@@ -1705,29 +2272,45 @@ def _finalize_load(registry, label: str, result_str) -> "Response":
 
 @bp.route("/workers/<label>/model/load", methods=["POST"])
 def workers_model_load(label: str):
+    """Download + load a model on a worker (see _do_model_load)."""
+    return _do_model_load(label, request.get_json() or {})
+
+
+@bp.route("/workers/<label>/model/download", methods=["POST"])
+def workers_model_download(label: str):
+    """A4 — download/stage a model on a worker WITHOUT loading it into VRAM (pre-provision)."""
+    payload = request.get_json() or {}
+    payload["load"] = False
+    return _do_model_load(label, payload)
+
+
+def _do_model_load(label: str, payload: dict):
     """Send a load_model command to the remote worker via the pull queue.
 
-    Priority order:
-      1. Model already in worker.models cache  → send model_path directly (fast)
-      2. Let remote download from HuggingFace  → works when no VPN restriction
-      3. If remote download fails              → host downloads + transfers to remote
-         (fallback for Cisco AnyConnect / SSL-intercepting proxies)
-
+    delivery (payload['delivery'], default 'auto'):
+      'auto'  — cached → agent downloads from HF → host-stage+transfer (fallback)
+      'agent' — force agent-side HF download; no transfer fallback
+      'push'  — force host-stage+transfer (for air-gapped agents)
+    payload['load']=False downloads/stages only (no VRAM load).
     All connections remain outbound from remote → host.
     """
     import uuid
-    from pathlib import Path as _Path
     registry = current_app.config.get("WORKER_REGISTRY")
     worker   = registry.get(label) if registry else None
     if not worker:
         return jsonify({"error": f"Worker '{label}' not found"}), 404
 
-    payload       = request.get_json() or {}
     backend_type  = payload.get("backend_type", "llamacpp")
     repo_id       = payload.get("repo_id", "")
     gguf_filename = payload.get("gguf_filename", "")
     model_path    = payload.get("model_path", "")
+    delivery      = payload.get("delivery", "auto")
     chunk_id      = str(uuid.uuid4())
+
+    # HF token: per-request override falls back to the master's configured token. Passed to
+    # the agent only for the download; never logged.
+    if not payload.get("hf_token"):
+        payload["hf_token"] = current_app.config.get("HF_TOKEN", "") or ""
 
     # ── Explicit local path (user clicked cached badge) — forward directly ────
     if model_path:
@@ -1737,6 +2320,10 @@ def workers_model_load(label: str):
                                        "payload": payload})
         result_str = registry.collect_result(chunk_id, timeout=120.0)
         return _finalize_load(registry, label, result_str)
+
+    # ── delivery='push' → go straight to master-push, skip agent download ─────
+    if delivery == "push":
+        return _host_proxy_load(label, payload, registry, worker)
 
     # ── Already cached on remote? ─────────────────────────────────────────────
     cached = _find_in_worker_cache(worker.models, repo_id, gguf_filename, backend_type)
@@ -1749,9 +2336,6 @@ def workers_model_load(label: str):
         return _finalize_load(registry, label, result_str)
 
     # ── Try remote download first ─────────────────────────────────────────────
-    # Give the remote a chance to download from HuggingFace directly (works when
-    # there is no VPN/firewall restriction). Timeout is generous but bounded so we
-    # can detect a network failure quickly enough to retry via host-proxy.
     log.info("Trying direct HF download on worker %s for %s", label, repo_id)
     direct_chunk_id = str(uuid.uuid4())
     registry.enqueue_chunk(label, {"type": "load_model", "chunk_id": direct_chunk_id,
@@ -1778,7 +2362,23 @@ def workers_model_load(label: str):
     else:
         log.warning("Worker %s direct download timed out — falling back to host-proxy", label)
 
-    # ── Fallback: host downloads model, transfers to remote ──────────────────
+    # delivery='agent' forbids the transfer fallback — surface the failure instead.
+    if delivery == "agent":
+        return jsonify({"ok": False,
+                        "error": "agent-side HuggingFace download failed (delivery='agent')"}), 502
+
+    # ── Fallback (auto): host downloads model, transfers to remote ───────────
+    return _host_proxy_load(label, payload, registry, worker)
+
+
+def _host_proxy_load(label: str, payload: dict, registry, worker):
+    """Stage a model on the master and stream it to the agent (master-push / delivery=push,
+    or the auto-fallback when the agent can't reach HuggingFace)."""
+    import uuid
+    from pathlib import Path as _Path
+    backend_type  = payload.get("backend_type", "llamacpp")
+    repo_id       = payload.get("repo_id", "")
+    gguf_filename = payload.get("gguf_filename", "")
     cfg       = current_app.config.get("TRANSLATOR_CFG")
     cache_dir = _Path(cfg.paths.translation_cache).parent if cfg else _Path("cache")
 
@@ -1787,21 +2387,18 @@ def workers_model_load(label: str):
     log.info("Host-proxy: staging %s for worker %s in %s",
              repo_id or payload.get("model_path", "?"), label, staging_path)
 
+    _tok = payload.get("hf_token") or current_app.config.get("HF_TOKEN", "") or ""
     try:
         if backend_type == "mlx":
-            tinfo = _stage_mlx(repo_id, staging_path)
+            tinfo = _stage_mlx(repo_id, staging_path, token=_tok)
         else:
-            tinfo = _stage_gguf(repo_id, gguf_filename, staging_path)
-        # Register the actual directory that contains the staged files so the
-        # file-serving endpoint can locate them (HuggingFace downloads nest
-        # files in cache subdirs, not directly under staging_path).
+            tinfo = _stage_gguf(repo_id, gguf_filename, staging_path, token=_tok)
         model_staging.set_session_root(sid, tinfo["serve_root"])
     except Exception as exc:
         model_staging.delete_session(sid)
         log.error("Host download failed for %s: %s", repo_id, exc)
         return jsonify({"error": f"Host download failed: {exc}"}), 502
 
-    # Use the URL the worker used to reach us — avoids 127.0.0.1 when browser is on localhost
     host_url = worker.host_reachable_url or request.host_url.rstrip("/")
     xfer_chunk_id = str(uuid.uuid4())
     xfer_payload = dict(payload)

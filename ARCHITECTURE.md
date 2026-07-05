@@ -1,5 +1,12 @@
 # Nolvus Translator — Architecture & State Reference
 
+> ⚠️ **STALE — pre-refactor.** This document describes the original JSON-cache + Jinja
+> design. The project has since moved to **SQLite as the single source of truth + a React
+> SPA + a fault-tolerant distributed dispatch system**. For current architecture see
+> **`CLAUDE.md`** (authoritative) and **`FAULT_TOLERANCE_PLAN.md`** (distributed dispatch /
+> recovery). Treat anything below about `translation_cache.json`, Jinja `templates/`, or
+> "jobs run one at a time" as historical.
+
 **Last updated:** 2026-03-20
 **Purpose:** Translate Nolvus Awakening modpack (Skyrim SE) from English to Russian using local GGUF models.
 

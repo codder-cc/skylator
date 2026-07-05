@@ -35,6 +35,7 @@ import { StatusBadge } from '@/components/shared/StatusBadge'
 import { ProgressBar } from '@/components/shared/ProgressBar'
 import { TimeAgo } from '@/components/shared/TimeAgo'
 import { useMachines } from '@/hooks/useMachines'
+import { AutoTranslatePanel } from '@/components/mods/AutoTranslatePanel'
 import {
   TRANSLATION_MODES, DEPLOY_MODES,
   type TranslationMode, type DeployMode,
@@ -719,6 +720,9 @@ function ModDetailPage() {
 
       {/* Pipeline — each step is clickable */}
       <PipelineSteps steps={pipelineSteps} />
+
+      {/* VM4 — auto / variable-model translate with phased plan preview */}
+      {mod.total_strings > 0 && <AutoTranslatePanel modName={folderName} machines={machines} />}
 
       {/* Progress */}
       {mod.total_strings > 0 && (

@@ -203,11 +203,14 @@ class StatsManager:
             SUM(CASE WHEN s.status='pending' AND (s.source IS NULL OR s.source != 'untranslatable') THEN 1 ELSE 0 END) AS pending,
             SUM(CASE WHEN s.status='needs_review'   THEN 1 ELSE 0 END)  AS needs_review,
             SUM(CASE WHEN s.source='untranslatable' THEN 1 ELSE 0 END)  AS untranslatable,
-            COUNT(DISTINCT sr.string_id)                                AS reserved,
+            -- 'reserved' = strings currently in-flight in the LIVE dispatch pool. (Was a
+            -- join on the legacy string_reservations table, which the dispatch pool replaced
+            -- and which is never populated now → the count was always 0.)
+            SUM(CASE WHEN sd.string_hash IS NOT NULL THEN 1 ELSE 0 END)  AS reserved,
             unixepoch('now','subsec')
         FROM strings s
-        LEFT JOIN string_reservations sr
-            ON sr.string_id = s.id AND sr.status = 'active'
+        LEFT JOIN string_dispatch sd
+            ON sd.string_hash = s.string_hash AND sd.status = 'translating'
         WHERE s.mod_name = ?
         GROUP BY s.mod_name
         ON CONFLICT(mod_name) DO UPDATE SET

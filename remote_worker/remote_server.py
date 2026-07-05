@@ -33,6 +33,7 @@ import asyncio
 import json
 import logging
 import platform
+import random
 import socket
 import time
 import uuid
@@ -131,6 +132,8 @@ class ModelLoadRequest(BaseModel):
     target_lang:        str        = "Russian"
     draft_repo_id:      str        = ""
     num_draft_tokens:   int        = 3
+    hf_token:           str        = ""   # for gated/private HF repos (never logged)
+    load:               bool       = True # False = download/stage only, don't load into VRAM (A4)
 
 
 class TranslateRequest(BaseModel):
@@ -295,6 +298,10 @@ class ServerState:
         self.offline_queue: list = []    # packages waiting while current offline job runs
         self.offline_pending_results: list = []
         self.offline_pending_done: bool = False
+        # Durable result store (fault-tolerance core) — opened in lifespan
+        self.result_store = None         # ResultStore | None
+        self.stalled: bool = False       # watchdog: offline production appears stuck
+        self.download_progress: dict = {}  # {model, stage, downloaded_mb, total_mb, pct} during a download
 
     @property
     def tps_avg(self) -> float:
@@ -556,6 +563,7 @@ def _build_backend(req: ModelLoadRequest):
         flash_attn         = req.flash_attn,
         source_lang        = req.source_lang,
         target_lang        = req.target_lang,
+        hf_token           = req.hf_token,
     )
 
     if req.backend_type == "mlx":
@@ -568,6 +576,56 @@ def _build_backend(req: ModelLoadRequest):
 
     from models.llamacpp_backend import LlamaCppBackend
     return LlamaCppBackend(model_cfg), "llamacpp"
+
+
+async def _watch_download(state, model_dir, total_mb: float, model_label: str) -> None:
+    """A5 — poll a model dir's on-disk bytes and publish download progress to state (surfaced
+    via heartbeat → /api/workers → UI). pct is None when the total size is unknown."""
+    from pathlib import Path
+    md = Path(model_dir)
+    while True:
+        await asyncio.sleep(2.0)
+        try:
+            dl_mb = (sum(f.stat().st_size for f in md.rglob("*") if f.is_file()) / (1024 * 1024)
+                     if md.exists() else 0.0)
+        except Exception:
+            dl_mb = 0.0
+        pct = round(min(100.0, dl_mb / total_mb * 100), 1) if total_mb else None
+        state.download_progress = {
+            "model": model_label, "stage": "downloading",
+            "downloaded_mb": round(dl_mb), "total_mb": round(total_mb or 0), "pct": pct,
+        }
+
+
+def _model_download_dir(payload: dict):
+    """The local dir a load/download will write into (for the progress watcher). None if
+    nothing will be downloaded (explicit local path) or we can't tell (MLX snapshot cache)."""
+    from pathlib import Path
+    from models.loader import MODELS_CACHE
+    if payload.get("model_path"):
+        return None
+    transfer = payload.get("transfer")
+    if transfer and transfer.get("dest_subdir"):
+        return MODELS_CACHE / transfer["dest_subdir"]
+    repo = payload.get("repo_id") or ""
+    if repo and payload.get("backend_type", "llamacpp") != "mlx":
+        return MODELS_CACHE / repo.split("/")[-1]
+    return None
+
+
+def _download_only(req: "ModelLoadRequest") -> str:
+    """A4 — fetch model files WITHOUT loading into VRAM (pre-provision a fleet). Returns the
+    resolved local path. Transfer-mode files are already on disk (model_path set)."""
+    from pathlib import Path
+    if req.model_path and Path(req.model_path).exists():
+        return req.model_path
+    if req.backend_type == "mlx":
+        from huggingface_hub import snapshot_download
+        return snapshot_download(req.repo_id, token=req.hf_token or None)
+    from models.loader import resolve_gguf
+    local_dir = req.repo_id.split("/")[-1] if req.repo_id else ""
+    return resolve_gguf(req.repo_id, local_dir, req.gguf_filename,
+                        token=req.hf_token or None)
 
 
 # ── Background job worker ──────────────────────────────────────────────────────
@@ -788,6 +846,13 @@ async def _async_register(client, host_url: str, my_url: str,
                            caps: list[str], state: ServerState) -> bool:
     """Register with host. Returns True on success."""
     label = f"{platform.system().lower()}-{socket.gethostname()}"
+    # Reconnect handshake: tell the host what open assignments we hold so it can reply
+    # with which to resume / stop / abandon (Phase 5).
+    digest = state.result_store.digest() if state.result_store is not None else None
+    try:
+        from result_store import PROTOCOL_VERSION as _PROTO
+    except Exception:
+        _PROTO = None
     try:
         r = await client.post(
             f"{host_url.rstrip('/')}/api/workers/register",
@@ -800,16 +865,41 @@ async def _async_register(client, host_url: str, my_url: str,
                 "capabilities": caps,
                 "commit":       _get_git_commit(),
                 "hardware":     state.hardware,
+                "digest":       digest,
+                "protocol":     _PROTO,
             },
             timeout=10.0,
         )
         if r.status_code == 200:
             log.info("Registered with host %s as %s", host_url, label)
+            try:
+                reconcile = (r.json() or {}).get("reconcile") or {}
+                _apply_reconcile(state, reconcile)
+            except Exception as exc:
+                log.debug("register: could not apply reconcile: %s", exc)
             return True
         log.warning("Host registration returned HTTP %s", r.status_code)
     except Exception as exc:
         log.warning("Could not register with host %s: %s", host_url, exc)
     return False
+
+
+def _apply_reconcile(state: ServerState, reconcile: dict) -> None:
+    """Act on the host's handshake verdict. 'resume'/'unknown' → keep working;
+    'reconciled' → host has it all, stop; 'reassigned' → host gave it away, abandon.
+    Safe by construction: marking an assignment complete/abandoned only stops *future*
+    production; nothing already produced is lost (it stays durable until delivered)."""
+    if not reconcile or state.result_store is None:
+        return
+    for aid, action in reconcile.items():
+        if action == "reconciled":
+            state.result_store.set_assignment_state(aid, "complete")
+            log.info("Handshake: assignment %s already reconciled by host — stopping", aid[:8])
+        elif action == "reassigned":
+            state.result_store.set_assignment_state(aid, "abandoned")
+            log.info("Handshake: assignment %s reassigned by host — abandoning", aid[:8])
+            if (state.offline_job or {}).get("offline_job_id") == aid and state.offline_job_runner:
+                state.offline_job_runner.cancel()
 
 
 async def _async_unregister(client, host_url: str) -> None:
@@ -838,7 +928,9 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
 
     needs_register = False
     while True:
-        await asyncio.sleep(15)
+        # ±20% jitter so a fleet started in lockstep (same service/boot) doesn't all
+        # heartbeat at once and spike the master every 15s.
+        await asyncio.sleep(15 + random.uniform(-3, 3))
         try:
             # [FIX #8] Refresh free memory before every heartbeat
             state.refresh_free_memory()
@@ -856,6 +948,18 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
             else:
                 offline_jobs_payload = []
 
+            # Health flags for the observability UI (Gap 4).
+            health_payload = {}
+            if state.result_store is not None:
+                try:
+                    health_payload = state.result_store.health()
+                    health_payload["idle_starved"] = (
+                        health_payload.get("open_assignments", 0) == 0
+                        and state.offline_job is None)
+                    health_payload["stalled"] = state.stalled
+                except Exception:
+                    health_payload = {}
+
             r = await state.http_client.post(
                 f"{host_url.rstrip('/')}/api/workers/heartbeat",
                 json={
@@ -866,11 +970,16 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
                     "hardware":     state.hardware,
                     "commit":       _get_git_commit(),
                     "offline_jobs": offline_jobs_payload,
+                    "health":       health_payload,
+                    "download_progress": state.download_progress or {},
                     "stats": {
                         "tps_avg":        state.tps_avg,
                         "tps_last":       state.tps_last,
                         "queue_depth":    state.queue_depth,
                         "jobs_completed": len(state.completed_order),
+                        # RT4: loaded model's context window (0 if no model) for the UI's
+                        # context-capacity indicator.
+                        "n_ctx": int(getattr(getattr(state.backend, "_mcfg", None), "n_ctx", 0) or 0),
                         # Live estimate: tokens inferred so far based on elapsed × tps_avg.
                         # Only set while _run_infer is active (infer_started_at > 0).
                         "tokens_inferred_est": (
@@ -887,11 +996,19 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
                     _async_register(state.http_client, host_url, my_url, caps, state)
                 )
             needs_register = False
-            # Flush any results buffered while host was unreachable
-            if state.offline_pending_results or state.offline_pending_done:
-                asyncio.create_task(
-                    _flush_pending_results(state, host_url.rstrip("/"), label)
-                )
+            # (Result delivery is handled by the always-on _deliver_loop.)
+            # Master-pull-over-poll (Gap 2): if the host asked us to resend (e.g. it
+            # restored an older backup), re-arm those durable results so the deliver loop
+            # re-pushes them. Works even though the host can't reach us directly (NAT).
+            if r.status_code == 200 and state.result_store is not None:
+                try:
+                    body = r.json()
+                    rs = body.get("resend_since")
+                    if rs is not None:
+                        n = state.result_store.mark_undelivered_since(int(rs))
+                        log.info("Heartbeat: host requested resend since seq %s — re-armed %d results", rs, n)
+                except Exception as exc:
+                    log.debug("heartbeat resend handling skipped: %s", exc)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -899,29 +1016,166 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
             needs_register = True
 
 
-# ── Offline translate helpers ──────────────────────────────────────────────────
+# ── Offline translate: durable production + decoupled delivery ──────────────────
 
-async def _flush_pending_results(state: ServerState, base: str, label: str) -> None:
-    """Deliver buffered offline results that failed while host was unreachable."""
-    if not state.offline_pending_results and not state.offline_pending_done:
-        return
-    results = state.offline_pending_results[:]
-    done    = state.offline_pending_done
-    job_id  = (state.offline_job or {}).get("offline_job_id", "")
-    if not job_id:
-        return
+def _row_to_result(r: dict) -> dict:
+    """Map a ResultStore row to the /offline-results payload shape."""
+    return {
+        "seq":           r["seq"],
+        "assignment_id": r["assignment_id"],
+        "string_id":     r["string_id"],
+        "string_hash":   r["string_hash"],
+        "key":           r.get("str_key") or "",
+        "esp_name":      r.get("esp_name") or "",
+        "mod_name":      r.get("mod_name") or "",
+        "original":      r["original"],
+        "translation":   r["translation"],
+        "status":        r["status"],
+        "quality_score": r["quality_score"],
+    }
+
+
+async def _post_offline_results(state, base, label, aid, results, done, batch_max_seq):
+    """POST a batch of durable results to the host. Returns (ok, confirmed_seq, failed_seqs)."""
     try:
         r = await state.http_client.post(
             f"{base}/api/workers/{label}/offline-results",
-            json={"offline_job_id": job_id, "results": results, "done": done},
-            timeout=20.0,
+            json={
+                "offline_job_id": aid,
+                "results":        results,
+                "done":           done,
+                "batch_max_seq":  batch_max_seq,
+            },
+            timeout=30.0,
         )
         r.raise_for_status()
-        state.offline_pending_results.clear()
-        state.offline_pending_done = False
-        log.info("Flushed %d pending offline results (done=%s)", len(results), done)
+        data = r.json() if r.content else {}
+        return True, int(data.get("confirmed_seq") or 0), (data.get("failed_seqs") or [])
     except Exception as exc:
-        log.warning("Flush pending results failed: %s", exc)
+        log.warning("offline-results delivery failed (aid=%s): %s", aid[:8], exc)
+        return False, 0, []
+
+
+async def _deliver_loop(base: str, label: str, state: ServerState) -> None:
+    """Always-on loop: push undelivered durable results to the host and mark them
+    delivered on ack. Fully decoupled from production — if the host is unreachable,
+    produced work simply waits in the ResultStore and is retried here."""
+    store = state.result_store
+    if store is None:
+        return
+    log.info("Deliver loop started → %s", base)
+    high_confirmed = 0      # highest seq the host has confirmed reconciled
+    cycles = 0
+    while True:
+        try:
+            await asyncio.sleep(2.0)
+            cycles += 1
+            undeliv = store.undelivered(limit=200)
+            if undeliv:
+                by_aid: dict[str, list] = {}
+                for row in undeliv:
+                    by_aid.setdefault(row["assignment_id"], []).append(row)
+                for aid, rows in by_aid.items():
+                    results       = [_row_to_result(r) for r in rows]
+                    batch_max_seq = max(r["seq"] for r in rows)
+                    ok, confirmed, failed = await _post_offline_results(
+                        state, base, label, aid, results, False, batch_max_seq
+                    )
+                    if ok:
+                        # Ack every row the host saved EXCEPT poison rows it reported
+                        # failed — so one bad string can't force endless full-batch resends.
+                        failed_set = {int(s) for s in failed}
+                        ok_seqs = [r["seq"] for r in rows if r["seq"] not in failed_set]
+                        store.mark_delivered_seqs(ok_seqs)
+                        if confirmed:
+                            high_confirmed = max(high_confirmed, confirmed)
+
+            # Periodically prune confirmed results so the local DB stays bounded over
+            # a months-long run. Only ever removes rows the host has confirmed (with a
+            # safety margin inside prune_confirmed).
+            if cycles % 60 == 0 and high_confirmed:
+                store.prune_confirmed(high_confirmed)
+
+            # Signal done=True for assignments that are complete AND fully delivered.
+            for a in store.all_assignments():
+                aid = a["assignment_id"]
+                if (a["state"] == "complete" and not store.is_done_sent(aid)
+                        and store.undelivered_count(aid) == 0):
+                    ok, _, _ = await _post_offline_results(
+                        state, base, label, aid, [], True, store.max_seq()
+                    )
+                    if ok:
+                        store.set_done_sent(aid)
+                        log.info("Deliver loop: signalled done for assignment %s", aid[:8])
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("Deliver loop error: %s", exc)
+            await asyncio.sleep(3.0)
+
+
+async def _watchdog_loop(state: ServerState) -> None:
+    """Detect a hung/degraded model during offline production: if the durable result seq
+    stops advancing while an offline job is active, flag a stall (surfaced via /digest and
+    heartbeat). Auto-recycle of the backend is OPT-IN via SKYLATOR_WATCHDOG_RECYCLE, since
+    a blind model reload is risky; recovery is safe regardless because progress is durable
+    and the runner resumes from the manifest."""
+    import os
+    import time as _t
+    stall_s = int(os.environ.get("SKYLATOR_WATCHDOG_STALL", "600"))
+    recycle = os.environ.get("SKYLATOR_WATCHDOG_RECYCLE", "") not in ("", "0", "false", "False")
+    last_seq = 0
+    last_change = _t.monotonic()
+    while True:
+        try:
+            await asyncio.sleep(30)
+            if state.result_store is None:
+                continue
+            cur = state.result_store.max_seq()
+            now = _t.monotonic()
+            producing = state.offline_job is not None
+            if cur != last_seq:
+                last_seq, last_change, state.stalled = cur, now, False
+            elif producing and (now - last_change) > stall_s:
+                if not state.stalled:
+                    log.warning("Watchdog: offline production stalled %ds (seq stuck at %d)",
+                                int(now - last_change), cur)
+                    state.stalled = True
+                if recycle and state.backend is not None and state._model_lock is not None:
+                    log.warning("Watchdog: recycling backend due to stall (opt-in)")
+                    async with state._model_lock:
+                        loop = asyncio.get_running_loop()
+                        try:
+                            await loop.run_in_executor(None, state.backend.unload)
+                            await loop.run_in_executor(None, state.backend.load)
+                            last_change = _t.monotonic()
+                            state.stalled = False
+                        except Exception as exc:
+                            log.error("Watchdog recycle failed: %s", exc)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("watchdog error: %s", exc)
+
+
+async def _produce_assignment(state, loop, aid: str, meta: dict) -> None:
+    """Run the store-driven runner for one assignment, then mark it complete.
+    Safe to call on a fresh dispatch OR on resume after a crash — the runner reads
+    its work list from the durable manifest either way."""
+    from offline_translate import OfflineTranslateRunner
+    runner = OfflineTranslateRunner(state.result_store, aid, meta)
+    state.offline_job        = {"offline_job_id": aid}
+    state.offline_job_runner = runner
+    try:
+        await runner.run(state, loop)
+        if not runner._stop and state.result_store is not None:
+            state.result_store.set_assignment_state(aid, "complete")
+    except Exception as exc:
+        log.error("Offline produce error (aid=%s): %s", aid[:8], exc)
+    finally:
+        state.offline_job        = None
+        state.offline_job_runner = None
+        log.info("Offline produce task finished for %s", aid[:8])
 
 
 async def _run_offline_job(
@@ -931,49 +1185,22 @@ async def _run_offline_job(
     base: str,
     label: str,
 ) -> None:
-    """Async task: run OfflineTranslateRunner and deliver results to host."""
-    from offline_translate import OfflineTranslateRunner
-    offline_job_id = chunk.get("offline_job_id", "")
-
-    async def deliver(results: list, done: bool) -> None:
-        try:
-            r = await state.http_client.post(
-                f"{base}/api/workers/{label}/offline-results",
-                json={"offline_job_id": offline_job_id, "results": results, "done": done},
-                timeout=20.0,
-            )
-            r.raise_for_status()
-        except Exception as exc:
-            log.warning("Offline result delivery failed: %s — buffering", exc)
-            state.offline_pending_results.extend(results)
-            if done:
-                state.offline_pending_done = True
-
-    runner = OfflineTranslateRunner(chunk)
-    state.offline_job_runner = runner
-    try:
-        await runner.run(state, loop, deliver_cb=deliver)
-    except Exception as exc:
-        log.error("OfflineTranslateRunner error: %s", exc)
-        # Try to deliver partial + done so the host job doesn't hang
-        try:
-            await deliver([], done=True)
-        except Exception:
-            state.offline_pending_done = True
-    finally:
-        state.offline_job        = None
-        state.offline_job_runner = None
-        log.info("Offline job %s complete", offline_job_id[:8])
-        # Start the next queued offline job if any
-        if state.offline_queue:
-            next_chunk = state.offline_queue.pop(0)
-            next_id = next_chunk.get("offline_job_id", "")
-            log.info("Pull worker: starting queued offline job %s (%d strings)",
-                     next_id[:8], len(next_chunk.get("strings") or []))
-            state.offline_job = next_chunk
-            asyncio.create_task(
-                _run_offline_job(next_chunk, state, loop, base, label)
-            )
+    """Persist the assignment + manifest durably, then produce. Delivery is handled
+    by the always-on deliver loop, so this no longer pushes results itself."""
+    import json as _json
+    aid   = chunk.get("offline_job_id", "")
+    meta  = {k: v for k, v in chunk.items() if k != "strings"}
+    items = chunk.get("strings") or []
+    if state.result_store is not None:
+        state.result_store.add_assignment(
+            aid,
+            job_id      = chunk.get("host_job_id", ""),
+            mod_name    = chunk.get("mod_name"),
+            context     = chunk.get("context"),
+            params_json = _json.dumps(meta),
+            items       = items,
+        )
+    await _produce_assignment(state, loop, aid, meta)
 
 
 # ── Pull-mode worker loop ──────────────────────────────────────────────────────
@@ -1000,6 +1227,7 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
     base  = host_url.rstrip("/")
     log.info("Pull worker started — polling %s/api/workers/%s/chunk", base, label)
 
+    empty_polls = 0
     while True:
         try:
             # [FIX #9] Direct async call — no blocking thread consumed during long-poll
@@ -1012,8 +1240,13 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
             data  = r.json()
             chunk = data.get("chunk")
             if not chunk:
-                await asyncio.sleep(0.1)
+                # Adaptive backoff so a host that returns immediately (misconfig/race)
+                # can't turn this into a 10 Hz hot loop. Caps at 3s; the host normally
+                # long-polls ~15s so this rarely trips.
+                empty_polls += 1
+                await asyncio.sleep(min(0.1 * empty_polls, 3.0))
                 continue
+            empty_polls = 0
 
             chunk_id   = chunk["chunk_id"]
             chunk_type = chunk.get("type", "infer")
@@ -1025,6 +1258,13 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                 log.info("Pull worker: loading model — %s",
                          payload.get("gguf_filename") or payload.get("model_path") or
                          payload.get("repo_id") or "?")
+                # A5: start a download-progress watcher (cancelled in finally).
+                from remote_server import _watch_download, _model_download_dir
+                _dl_dir = _model_download_dir(payload)
+                _dl_total = float(payload.get("file_size_mb") or 0)
+                _dl_label = payload.get("gguf_filename") or payload.get("repo_id") or "model"
+                _watcher = (asyncio.create_task(_watch_download(state, _dl_dir, _dl_total, _dl_label))
+                            if _dl_dir else None)
                 try:
                     transfer = payload.get("transfer")
                     if transfer:
@@ -1034,20 +1274,34 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                         )
                         payload = {**payload, **extra}
 
-                    from remote_server import _build_backend, ModelLoadRequest
+                    from remote_server import _build_backend, ModelLoadRequest, _download_only
                     req     = ModelLoadRequest(**{k: v for k, v in payload.items()
                                                   if k in ModelLoadRequest.model_fields})
-                    backend, bt = await loop.run_in_executor(None, lambda: _build_backend(req))
-                    await loop.run_in_executor(None, backend.load)
-                    state.backend      = backend
-                    state.backend_type = bt
-                    state.model_label  = req.gguf_filename or req.repo_id or req.model_path or "unknown"
-                    state.refresh_free_memory()
-                    log.info("Pull worker: model loaded — %s via %s", state.model_label, bt)
-                    result_data = {"ok": True, "model": state.model_label}
+                    if not req.load:
+                        # A4 download/stage only — fetch files, do NOT load into VRAM
+                        # (keeps any currently-loaded model running).
+                        path = await loop.run_in_executor(None, lambda: _download_only(req))
+                        state.refresh_free_memory()
+                        log.info("Pull worker: model downloaded (not loaded) — %s", path)
+                        result_data = {"ok": True, "downloaded": True, "loaded": False,
+                                       "model": req.gguf_filename or req.repo_id or path,
+                                       "path": path}
+                    else:
+                        backend, bt = await loop.run_in_executor(None, lambda: _build_backend(req))
+                        await loop.run_in_executor(None, backend.load)
+                        state.backend      = backend
+                        state.backend_type = bt
+                        state.model_label  = req.gguf_filename or req.repo_id or req.model_path or "unknown"
+                        state.refresh_free_memory()
+                        log.info("Pull worker: model loaded — %s via %s", state.model_label, bt)
+                        result_data = {"ok": True, "model": state.model_label}
                 except Exception as exc:
                     log.error("Pull worker: load_model failed: %s", exc)
                     result_data = {"ok": False, "error": str(exc)}
+                finally:
+                    if _watcher:
+                        _watcher.cancel()
+                    state.download_progress = {}   # clear progress (done/failed)
                 await _post_result(state.http_client, base, label, chunk_id,
                                    json.dumps(result_data))
                 continue
@@ -1317,10 +1571,18 @@ def create_server_app(
         state.hardware     = state.detect_hardware()
         caps               = state.detect_capabilities()
 
-        # [FIX #9, #10] Persistent async HTTP client with keep-alive
+        # [FIX #9, #10] Persistent async HTTP client with keep-alive.
+        # Attach the shared auth token (if configured) as a default header on EVERY
+        # request to the host — register/heartbeat/results/chunk-poll all covered.
+        import os as _os
+        _auth_headers = {}
+        _token = _os.environ.get("SKYLATOR_TOKEN")
+        if _token:
+            _auth_headers["X-Skylator-Token"] = _token
         state.http_client = _httpx.AsyncClient(
             timeout = _httpx.Timeout(connect=10.0, read=25.0, write=15.0, pool=None),
             limits  = _httpx.Limits(max_keepalive_connections=5, max_connections=10),
+            headers = _auth_headers,
         )
 
         if model_cfg is not None:
@@ -1357,10 +1619,25 @@ def create_server_app(
 
         worker_task = asyncio.create_task(_worker(state))
 
+        # ── Durable result store (fault-tolerance core) ──────────────────────
+        import json as _json
+        from pathlib import Path as _Path
+        from result_store import ResultStore as _ResultStore
+        try:
+            store_path = _Path(__file__).parent / "worker_data" / "worker_results.db"
+            state.result_store = _ResultStore(store_path)
+        except Exception as exc:
+            log.error("Failed to open ResultStore (%s) — offline durability disabled", exc)
+            state.result_store = None
+
         if mdns_enabled:
             _register_mdns(mdns_host, mdns_port, state)
 
         bg_tasks: list[asyncio.Task] = []
+        # Inference watchdog runs regardless of host connectivity (acts only during
+        # offline production).
+        if state.result_store is not None:
+            bg_tasks.append(asyncio.create_task(_watchdog_loop(state)))
         if host_url:
             bg_tasks.append(asyncio.create_task(
                 _register_and_heartbeat(host_url, mdns_host, mdns_port, caps, state)
@@ -1368,6 +1645,30 @@ def create_server_app(
             bg_tasks.append(asyncio.create_task(
                 _pull_worker_loop(host_url, mdns_host, mdns_port, state)
             ))
+            # Always-on delivery of durable results to the host.
+            _base  = host_url.rstrip("/")
+            _label = f"{platform.system().lower()}-{socket.gethostname()}"
+            bg_tasks.append(asyncio.create_task(_deliver_loop(_base, _label, state)))
+
+            # Auto-resume any unfinished assignment from a previous run / crash.
+            if state.result_store is not None:
+                _loop = asyncio.get_running_loop()
+                for a in state.result_store.open_assignments():
+                    aid          = a["assignment_id"]
+                    total, done  = state.result_store.assignment_progress(aid)
+                    if done < total:
+                        try:
+                            meta = _json.loads(a.get("params_json") or "{}")
+                        except Exception:
+                            meta = {}
+                        log.info("Resuming offline assignment %s (%d/%d already done)",
+                                 aid[:8], done, total)
+                        bg_tasks.append(asyncio.create_task(
+                            _produce_assignment(state, _loop, aid, meta)
+                        ))
+                        break  # one offline job at a time
+                    else:
+                        state.result_store.set_assignment_state(aid, "complete")
 
         yield
 
@@ -1386,12 +1687,50 @@ def create_server_app(
 
         await state.http_client.aclose()
 
+        if state.result_store is not None:
+            try:
+                state.result_store.checkpoint()
+                state.result_store.close()
+            except Exception:
+                pass
+
     app = FastAPI(
         title       = "Skylator Remote Worker",
         description = "Dumb inference executor — frontend controls everything",
         version     = "2.0.0",
         lifespan    = lifespan,
     )
+
+    # ── Durable results: master-pull + reconnect handshake ────────────────────
+
+    @app.get("/results")
+    async def get_results(since: int = 0, limit: int = 500):
+        """Return durable results with seq > `since` (master-authoritative pull).
+        Read-only and safe to call anytime — the master reconciles from here and
+        can re-pull from any seq if it needs to (e.g. after restoring a backup)."""
+        if state.result_store is None:
+            return {"results": [], "max_seq": 0}
+        rows = state.result_store.results_since(since, limit)
+        return {
+            "results": [_row_to_result(r) for r in rows],
+            "max_seq": state.result_store.max_seq(),
+        }
+
+    @app.get("/digest")
+    async def get_digest():
+        """Compact state summary for the reconnect handshake (Phase 5) + health flags
+        (Phase 10): disk pressure, open work, idle_starved."""
+        if state.result_store is None:
+            return {"open_assignments": [], "per_assignment": {}, "max_seq": 0,
+                    "undelivered": 0, "health": {}}
+        d = state.result_store.digest()
+        health = state.result_store.health()
+        # idle_starved: agent is up but has no open work to do.
+        health["idle_starved"] = (health.get("open_assignments", 0) == 0
+                                  and state.offline_job is None)
+        health["stalled"] = state.stalled
+        d["health"] = health
+        return d
 
     # ── Model management ──────────────────────────────────────────────────────
 

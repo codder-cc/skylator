@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS strings (
     translated_by     TEXT,
     translated_at     REAL,
     source            TEXT     DEFAULT 'pending',
+    norm_hash         TEXT,
     UNIQUE(mod_name, esp_name, key)
 );
 
@@ -113,7 +114,8 @@ CREATE INDEX IF NOT EXISTS idx_job_strings_job ON job_strings(job_id);
 
 CREATE TABLE IF NOT EXISTS mods (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    folder_name TEXT    NOT NULL UNIQUE
+    folder_name TEXT    NOT NULL UNIQUE,
+    priority    INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS mod_stats_cache (
@@ -126,6 +128,53 @@ CREATE TABLE IF NOT EXISTS mod_stats_cache (
     reserved                 INTEGER NOT NULL DEFAULT 0,
     validation_issues_count  INTEGER DEFAULT -1,
     last_computed_at         REAL    DEFAULT (unixepoch('now', 'subsec'))
+);
+
+-- Fault-tolerant dispatch (migration 8) — keep in sync with translator/db/migrations.py
+CREATE TABLE IF NOT EXISTS assignments (
+    assignment_id    TEXT PRIMARY KEY,
+    job_id           TEXT NOT NULL,
+    agent_id         TEXT NOT NULL,
+    mod_name         TEXT NOT NULL DEFAULT '',
+    state            TEXT NOT NULL DEFAULT 'queued',
+    total            INTEGER NOT NULL DEFAULT 0,
+    delivered        INTEGER NOT NULL DEFAULT 0,
+    lease_expires_at REAL,
+    created_at       REAL DEFAULT (unixepoch('now','subsec')),
+    updated_at       REAL DEFAULT (unixepoch('now','subsec'))
+);
+CREATE TABLE IF NOT EXISTS assignment_strings (
+    assignment_id TEXT    NOT NULL,
+    string_id     INTEGER NOT NULL,
+    string_hash   TEXT    NOT NULL,
+    delivered     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (assignment_id, string_id)
+);
+CREATE TABLE IF NOT EXISTS agent_cursors (
+    agent_id   TEXT PRIMARY KEY,
+    last_seq   INTEGER NOT NULL DEFAULT 0,
+    updated_at REAL DEFAULT (unixepoch('now','subsec'))
+);
+
+-- Hash-based dispatch pool (migration 7) — keep in sync with translator/db/migrations.py
+CREATE TABLE IF NOT EXISTS string_dispatch (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    string_hash   TEXT    NOT NULL UNIQUE,
+    status        TEXT    NOT NULL DEFAULT 'queued',
+    owner_job_id  TEXT,
+    owner_machine TEXT,
+    translation   TEXT,
+    quality_score INTEGER,
+    claimed_at    REAL,
+    completed_at  REAL
+);
+CREATE TABLE IF NOT EXISTS dispatch_waiters (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    string_hash    TEXT    NOT NULL,
+    waiter_job_id  TEXT    NOT NULL,
+    waiter_mod     TEXT    NOT NULL,
+    string_id      INTEGER NOT NULL,
+    UNIQUE(string_hash, string_id)
 );
 """
 
@@ -166,6 +215,19 @@ class _FakeDB:
 
     def commit(self):
         self._connect().commit()
+
+    def set_mod_priority(self, folder_name, priority):
+        conn = self._connect()
+        conn.execute(
+            "INSERT INTO mods(folder_name, priority) VALUES(?,?) "
+            "ON CONFLICT(folder_name) DO UPDATE SET priority=excluded.priority",
+            (folder_name, int(priority)),
+        )
+        conn.commit()
+
+    def get_mod_priorities(self):
+        return {r[0]: (r[1] or 0)
+                for r in self.execute("SELECT folder_name, priority FROM mods").fetchall()}
 
     def insert_string(self, mod_name, esp_name, key, original, translation="",
                       status="pending"):

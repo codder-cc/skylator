@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState, useEffect, useRef } from 'react'
 import { workersApi } from '@/api/workers'
 import { jobsApi } from '@/api/jobs'
+import { modelsApi } from '@/api/models'
 import { QK } from '@/lib/queryKeys'
 import { timeAgo, cn } from '@/lib/utils'
 import type { WorkerInfo, SetupReport, CachedModel, BenchmarkResult, Job } from '@/types'
@@ -31,6 +32,7 @@ import {
   MemoryStick,
   Play,
   ArrowDownCircle,
+  Rocket,
   GitCommit,
   GitBranch,
 } from 'lucide-react'
@@ -96,6 +98,8 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
   const [draftRepoId, setDraftRepoId]  = useState(defaultPreset.draftRepoId ?? '')
   const [loadStatus, setLoadStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
   const [errorMsg, setErrorMsg]     = useState('')
+  const [hfToken, setHfToken]       = useState('')
+  const [delivery, setDelivery]     = useState<'auto' | 'agent' | 'push'>('auto')
 
   const handlePresetChange = (id: string) => {
     const p = presets.find((e) => e.id === id)
@@ -136,7 +140,7 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
     ? vramTotalMb - vramAvailMb
     : 0
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (downloadOnly = false) => {
     setLoadStatus('loading')
     setErrorMsg('')
     try {
@@ -147,7 +151,9 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
         n_batch:        nBatch,
         batch_size:     batchSize,
         max_new_tokens: maxNewTokens,
+        delivery,                       // auto | agent | push
       }
+      if (hfToken) body.hf_token = hfToken    // override master default for gated repos
       if (draftRepoId) body.draft_repo_id = draftRepoId
       if (tab === 'hf') {
         body.repo_id = repoId
@@ -157,7 +163,8 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
         body.model_path = localPath
         body.model = localPath
       }
-      await workersApi.loadModel(worker.label, body as Parameters<typeof workersApi.loadModel>[1])
+      const fn = downloadOnly ? workersApi.downloadModel : workersApi.loadModel
+      await fn(worker.label, body as Parameters<typeof workersApi.loadModel>[1])
       setLoadStatus('success')
       qc.invalidateQueries({ queryKey: QK.workers() })
       setTimeout(onClose, 1200)
@@ -437,6 +444,34 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
           )}
         </div>
 
+        {/* HF token + delivery mode (only relevant for HuggingFace downloads) */}
+        {tab === 'hf' && (
+          <div className="px-5 pb-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-text-muted mb-1">HF token (gated/private — blank = master default)</label>
+              <input
+                type="password"
+                value={hfToken}
+                onChange={(e) => setHfToken(e.target.value)}
+                placeholder="hf_… (optional)"
+                className="w-full px-2 py-1.5 rounded text-sm bg-bg-base border border-border-subtle font-mono"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-text-muted mb-1">Delivery</label>
+              <select
+                value={delivery}
+                onChange={(e) => setDelivery(e.target.value as 'auto' | 'agent' | 'push')}
+                className="w-full px-2 py-1.5 rounded text-sm bg-bg-base border border-border-subtle"
+              >
+                <option value="auto">Auto (agent → fallback to master-push)</option>
+                <option value="agent">Agent downloads from HuggingFace</option>
+                <option value="push">Push from master (air-gapped agent)</option>
+              </select>
+            </div>
+          </div>
+        )}
+
         {/* Footer */}
         <div className="flex justify-end gap-2 px-5 py-4 border-t border-border-subtle">
           <button
@@ -445,8 +480,18 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
           >
             Cancel
           </button>
+          {tab === 'hf' && (
+            <button
+              onClick={() => handleSubmit(true)}
+              disabled={loadStatus === 'loading'}
+              title="Download/stage on the agent without loading into VRAM (pre-provision)"
+              className="px-4 py-2 rounded text-sm font-medium bg-bg-card2 text-text-main border border-border-subtle hover:bg-bg-card disabled:opacity-50"
+            >
+              Download only
+            </button>
+          )}
           <button
-            onClick={handleSubmit}
+            onClick={() => handleSubmit(false)}
             disabled={loadStatus === 'loading'}
             className="px-4 py-2 rounded text-sm font-medium bg-accent text-bg-base hover:opacity-90 disabled:opacity-50"
           >
@@ -709,6 +754,10 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange,
     onSuccess: () => qc.invalidateQueries({ queryKey: QK.workers() }),
     onError: () => clearFlight(),
   })
+  const abandonMut = useMutation({
+    mutationFn: () => workersApi.abandon(worker.label),
+    onSuccess: () => qc.invalidateQueries({ queryKey: QK.workers() }),
+  })
 
   const workerCommit = worker.commit ?? ''
   const upToDate = hostCommit && workerCommit && workerCommit === hostCommit
@@ -727,8 +776,42 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange,
         <span className={cn('w-2 h-2 rounded-full flex-shrink-0', dotClass)} />
         <span className="text-sm font-semibold text-text-main">{worker.label}</span>
         <span className="text-[10px] font-mono text-text-muted/60">{worker.url}</span>
+        {worker.health?.disk_full && (
+          <span className="px-1 rounded text-[9px] bg-danger/20 text-danger" title="Agent disk is full — production paused">disk full</span>
+        )}
+        {worker.health?.stalled && (
+          <span className="px-1 rounded text-[9px] bg-warning/20 text-warning" title="Offline production appears stalled">stalled</span>
+        )}
+        {worker.health?.idle_starved && (
+          <span className="px-1 rounded text-[9px] bg-bg-card2 text-text-muted border border-border-subtle" title="Agent is up but has no work">idle</span>
+        )}
+        {(worker.health?.undelivered ?? 0) > 0 && (
+          <span className="px-1 rounded text-[9px] bg-accent/20 text-accent" title="Results buffered locally, awaiting delivery to host">{worker.health!.undelivered} undelivered</span>
+        )}
         <span className="ml-auto text-[10px] text-text-muted whitespace-nowrap">{timeAgo(worker.last_seen)}</span>
       </div>
+
+      {/* Live model-download progress (A5) */}
+      {worker.download_progress?.stage === 'downloading' && (
+        <div className="mb-2">
+          <div className="flex items-center justify-between text-[10px] text-text-muted mb-0.5">
+            <span className="truncate" title={worker.download_progress.model}>
+              ⬇ {worker.download_progress.model}
+            </span>
+            <span>
+              {worker.download_progress.pct != null
+                ? `${worker.download_progress.pct}%`
+                : `${worker.download_progress.downloaded_mb ?? 0} MB`}
+            </span>
+          </div>
+          <div className="h-1.5 rounded bg-bg-base overflow-hidden">
+            <div
+              className="h-full bg-accent transition-all"
+              style={{ width: `${worker.download_progress.pct ?? 30}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* ── Row 2: hardware left · model+task right ── */}
       <div className="flex gap-4 mb-2">
@@ -925,6 +1008,17 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange,
         >
           <Play className="w-3 h-3" />Benchmark
         </button>
+        {!worker.alive && (
+          <button
+            onClick={() => abandonMut.mutate()}
+            disabled={abandonMut.isPending}
+            title="Reassign this dead worker's unfinished strings to other machines now"
+            className="flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-warning/20 text-warning border border-warning/30 hover:bg-warning/30 disabled:opacity-50 transition-colors"
+          >
+            {abandonMut.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+            Abandon
+          </button>
+        )}
       </div>
 
       {/* ── OTA steps (live during update, persisted after) ── */}
@@ -1066,11 +1160,181 @@ function DispatchBackButton({ hostJobId }: { hostJobId: string }) {
   )
 }
 
+// ── Send a model to multiple agents at once (A4 multi-agent dispatch) ─────────
+function DispatchFleetDialog({ workers, onClose }: { workers: WorkerInfo[]; onClose: () => void }) {
+  const live = workers.filter((w) => w.alive)
+  const [modelId, setModelId]     = useState(MODEL_CATALOG[0]?.id ?? '')
+  const [repoId, setRepoId]       = useState(MODEL_CATALOG[0]?.repoId ?? '')
+  const [ggufFile, setGgufFile]   = useState(MODEL_CATALOG[0]?.ggufFilename ?? '')
+  const [backend, setBackend]     = useState<'llamacpp' | 'mlx'>(MODEL_CATALOG[0]?.backend ?? 'llamacpp')
+  const [nCtx, setNCtx]           = useState(8192)
+  const [delivery, setDelivery]   = useState<'auto' | 'agent' | 'push'>('auto')
+  const [hfToken, setHfToken]     = useState('')
+  const [downloadOnly, setDownloadOnly] = useState(true)
+  const [selected, setSelected]   = useState<Set<string>>(new Set(live.map((w) => w.label)))
+  const [status, setStatus]       = useState<'idle' | 'sending' | 'done'>('idle')
+  const [result, setResult]       = useState<{ label: string; ok: boolean; error?: string }[]>([])
+
+  const pickCatalog = (id: string) => {
+    const m = MODEL_CATALOG.find((e) => e.id === id)
+    if (!m) return
+    setModelId(id); setRepoId(m.repoId); setGgufFile(m.ggufFilename); setBackend(m.backend)
+  }
+  const toggle = (label: string) =>
+    setSelected((s) => { const n = new Set(s); n.has(label) ? n.delete(label) : n.add(label); return n })
+
+  const dispatch = async () => {
+    setStatus('sending')
+    try {
+      const r = await modelsApi.dispatch({
+        model: {
+          backend_type: backend, repo_id: repoId, gguf_filename: ggufFile,
+          n_ctx: nCtx, delivery, ...(hfToken ? { hf_token: hfToken } : {}),
+        },
+        targets: Array.from(selected),
+        load: !downloadOnly,
+      })
+      setResult(r.dispatched)
+      setStatus('done')
+    } catch {
+      setStatus('idle')
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 overflow-y-auto py-4">
+      <div className="bg-bg-card border border-border-subtle rounded-lg w-full max-w-lg mx-4">
+        <div className="flex items-center gap-2 px-5 py-4 border-b border-border-subtle">
+          <Rocket className="w-4 h-4 text-accent" />
+          <h2 className="font-semibold text-text-main">Send model to fleet</h2>
+          <button onClick={onClose} className="ml-auto text-text-muted hover:text-text-main"><X className="w-4 h-4" /></button>
+        </div>
+
+        <div className="px-5 py-4 space-y-3">
+          <div>
+            <label className="block text-xs text-text-muted mb-1">Model</label>
+            <select value={modelId} onChange={(e) => pickCatalog(e.target.value)}
+                    className="w-full px-2 py-1.5 rounded text-sm bg-bg-base border border-border-subtle">
+              {MODEL_CATALOG.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <input value={repoId} onChange={(e) => setRepoId(e.target.value)} placeholder="repo_id"
+                   className="px-2 py-1.5 rounded text-xs bg-bg-base border border-border-subtle font-mono" />
+            <input value={ggufFile} onChange={(e) => setGgufFile(e.target.value)} placeholder="gguf filename (blank=MLX)"
+                   className="px-2 py-1.5 rounded text-xs bg-bg-base border border-border-subtle font-mono" />
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <select value={delivery} onChange={(e) => setDelivery(e.target.value as 'auto'|'agent'|'push')}
+                    className="px-2 py-1.5 rounded text-xs bg-bg-base border border-border-subtle">
+              <option value="auto">Auto</option><option value="agent">Agent→HF</option><option value="push">Master push</option>
+            </select>
+            <input type="number" value={nCtx} onChange={(e) => setNCtx(Number(e.target.value))} placeholder="n_ctx"
+                   className="px-2 py-1.5 rounded text-xs bg-bg-base border border-border-subtle" />
+            <label className="flex items-center gap-1 text-xs text-text-muted">
+              <input type="checkbox" checked={downloadOnly} onChange={(e) => setDownloadOnly(e.target.checked)} />
+              Download only
+            </label>
+          </div>
+          <input type="password" value={hfToken} onChange={(e) => setHfToken(e.target.value)}
+                 placeholder="HF token (optional, blank = master default)"
+                 className="w-full px-2 py-1.5 rounded text-xs bg-bg-base border border-border-subtle font-mono" />
+
+          <div>
+            <div className="flex items-center justify-between text-xs text-text-muted mb-1">
+              <span>Targets ({selected.size}/{live.length})</span>
+              <button className="hover:text-text-main"
+                      onClick={() => setSelected(new Set(selected.size === live.length ? [] : live.map((w) => w.label)))}>
+                {selected.size === live.length ? 'none' : 'all'}
+              </button>
+            </div>
+            <div className="max-h-40 overflow-y-auto border border-border-subtle rounded">
+              {live.length === 0 && <div className="px-2 py-2 text-xs text-text-muted">No live agents.</div>}
+              {live.map((w) => {
+                const r = result.find((x) => x.label === w.label)
+                return (
+                  <label key={w.label} className="flex items-center gap-2 px-2 py-1 text-xs hover:bg-bg-card2/40">
+                    <input type="checkbox" checked={selected.has(w.label)} onChange={() => toggle(w.label)} />
+                    <span className="font-mono">{w.label}</span>
+                    {r && <span className={cn('ml-auto', r.ok ? 'text-success' : 'text-danger')}>{r.ok ? 'queued' : (r.error || 'failed')}</span>}
+                  </label>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 px-5 py-4 border-t border-border-subtle">
+          <button onClick={onClose} className="px-4 py-2 rounded text-sm text-text-muted bg-bg-card2 border border-border-subtle">Close</button>
+          <button onClick={dispatch} disabled={status === 'sending' || selected.size === 0}
+                  className="px-4 py-2 rounded text-sm font-medium bg-accent text-bg-base hover:opacity-90 disabled:opacity-50">
+            {status === 'sending' ? 'Sending…' : status === 'done' ? 'Sent ✓' : `Send to ${selected.size} agent(s)`}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Fleet assignments overview (Gap 4 observability) ───────────────────────────
+function FleetOverview() {
+  const { data } = useQuery({
+    queryKey: QK.assignments(),
+    queryFn: workersApi.assignments,
+    refetchInterval: 30_000,   // invalidated in real time by the workers stream
+  })
+  if (!data || data.assignments.length === 0) return null
+  const agg = data.aggregate
+  const pct = agg.total > 0 ? Math.round((agg.delivered / agg.total) * 100) : 0
+  const tierClass = (t: string) =>
+    t === 'presumed_dead' ? 'text-danger'
+      : t === 'disconnected' ? 'text-warning'
+        : t === 'connected' ? 'text-success' : 'text-text-muted'
+  return (
+    <div className="bg-bg-card border border-border-subtle rounded-lg">
+      <div className="flex items-center gap-2 px-5 py-4 border-b border-border-subtle">
+        <Server className="w-4 h-4 text-accent" />
+        <h2 className="font-semibold text-text-main">Fleet assignments</h2>
+        <span className="ml-auto text-xs text-text-muted">{agg.delivered}/{agg.total} delivered ({pct}%)</span>
+      </div>
+      <div className="px-5 py-3 grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div><div className="text-lg font-bold font-mono text-text-main">{agg.active}</div><div className="text-xs text-text-muted">active</div></div>
+        <div><div className="text-lg font-bold font-mono text-warning">{agg.disconnected}</div><div className="text-xs text-text-muted">disconnected</div></div>
+        <div><div className="text-lg font-bold font-mono text-danger">{agg.presumed_dead}</div><div className="text-xs text-text-muted">presumed dead</div></div>
+        <div><div className="text-lg font-bold font-mono text-accent">{agg.delivered}</div><div className="text-xs text-text-muted">delivered</div></div>
+      </div>
+      <div className="px-5 pb-4 overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-text-muted text-left">
+              <th className="py-1 pr-3">Agent</th><th className="pr-3">Mod</th>
+              <th className="pr-3">State</th><th className="pr-3">Tier</th>
+              <th className="pr-3 text-right">Delivered</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.assignments.slice(0, 50).map((a) => (
+              <tr key={a.assignment_id} className="border-t border-border-subtle/50">
+                <td className="py-1 pr-3 font-mono">{a.agent_id}</td>
+                <td className="pr-3 truncate max-w-[10rem]" title={a.mod_name}>{a.mod_name}</td>
+                <td className="pr-3">{a.state}</td>
+                <td className={cn('pr-3', tierClass(a.tier))}>{a.tier}</td>
+                <td className="pr-3 text-right font-mono">{a.delivered}/{a.total}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 function ServersPage() {
   const qc = useQueryClient()
   const [loadModalWorker, setLoadModalWorker]       = useState<WorkerInfo | null>(null)
   const [benchmarkWorker, setBenchmarkWorker] = useState<WorkerInfo | null>(null)
+  const [fleetOpen, setFleetOpen] = useState(false)
   const [scanPoll, setScanPoll] = useState(false)
   const scanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -1079,7 +1343,8 @@ function ServersPage() {
   const workersQ = useQuery({
     queryKey: QK.workers(),
     queryFn: workersApi.list,
-    refetchInterval: otaActive ? 2_000 : 10_000,
+    // real-time via /api/workers/stream (root); fast poll only during OTA, else slow backstop
+    refetchInterval: otaActive ? 2_000 : 30_000,
   })
 
   const serversQ = useQuery({
@@ -1150,6 +1415,13 @@ function ServersPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-text-main">Servers</h1>
         <button
+          onClick={() => setFleetOpen(true)}
+          className="flex items-center gap-2 px-3 py-2 rounded text-sm bg-accent/20 text-accent border border-accent/30 hover:bg-accent/30 transition-colors"
+        >
+          <Rocket className="w-4 h-4" />
+          Send to fleet
+        </button>
+        <button
           onClick={() => {
             qc.invalidateQueries({ queryKey: QK.workers() })
             qc.invalidateQueries({ queryKey: ['ota'] })
@@ -1163,6 +1435,9 @@ function ServersPage() {
 
       {/* Host Server OTA */}
       <HostOtaCard />
+
+      {/* Fleet assignments overview */}
+      <FleetOverview />
 
       {/* Registered Workers card */}
       <div className="bg-bg-card border border-border-subtle rounded-lg">
@@ -1277,6 +1552,10 @@ function ServersPage() {
           worker={loadModalWorker}
           onClose={() => setLoadModalWorker(null)}
         />
+      )}
+
+      {fleetOpen && (
+        <DispatchFleetDialog workers={workers} onClose={() => setFleetOpen(false)} />
       )}
 
       {/* Benchmark Modal */}

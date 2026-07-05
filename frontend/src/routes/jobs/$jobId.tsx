@@ -561,6 +561,113 @@ function RetryButton({ jobId }: { jobId: string }) {
   )
 }
 
+function CollectButton({ jobId }: { jobId: string }) {
+  const qc = useQueryClient()
+  const [open, setOpen] = useState(false)
+  const mut = useMutation({
+    mutationFn: () => jobsApi.collect(jobId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.jobs() })
+      setOpen(false)
+    },
+  })
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-success/20 text-success border border-success/30 hover:bg-success/30 transition-colors"
+      >
+        <ArrowDownToLine size={11} />
+        Deploy What We Have
+      </button>
+      <ConfirmDialog
+        open={open}
+        onOpenChange={setOpen}
+        title="Deploy partial results?"
+        description="Apply every translated string for this job's mods to the game files now — even if some strings are still pending or a worker died. Pending strings stay pending and can be translated later."
+        confirmLabel="Deploy"
+        loading={mut.isPending}
+        onConfirm={() => mut.mutate()}
+      />
+    </>
+  )
+}
+
+// Live funnel — assigned → delivered → translated → pending. Derived from durable
+// assignments on the host, so it stays accurate across master restarts and detach/reattach.
+function TallyCard({ jobId, live }: { jobId: string; live: boolean }) {
+  const { data: t } = useQuery({
+    queryKey: QK.jobTally(jobId),
+    queryFn: () => jobsApi.tally(jobId),
+    refetchInterval: live ? 5_000 : false,
+  })
+  if (!t || (t.assigned === 0 && t.translated === 0 && t.pending === 0)) return null
+
+  const cells: Array<[string, number, string]> = [
+    ['Assigned', t.assigned, 'text-text-main'],
+    ['Delivered', t.delivered, 'text-accent'],
+    ['Translated', t.translated, 'text-success'],
+    ['Pending', t.pending, 'text-warning'],
+    ['Needs review', t.needs_review, 'text-warning'],
+  ]
+  return (
+    <div className="card p-4">
+      <div className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-3">
+        Progress funnel
+      </div>
+      <div className="grid grid-cols-3 sm:grid-cols-5 gap-4">
+        {cells.map(([label, val, color]) => (
+          <div key={label}>
+            <div className={cn('text-2xl font-bold font-mono', color)}>{val}</div>
+            <div className="text-xs text-text-muted">{label}</div>
+          </div>
+        ))}
+      </div>
+      <TallySourceBreakdown counts={t.source_counts} total={t.translated} />
+    </div>
+  )
+}
+
+// UID2/UID4 — where the delivered translations came from. Makes "chained" reuse visible:
+// fresh AI inference vs cache / cross-mod dispatch reuse / consensus / dictionary.
+const TALLY_SOURCE_META: Record<string, { label: string; color: string }> = {
+  ai:              { label: 'AI inference', color: 'bg-accent' },
+  cache:           { label: 'Cache reuse',  color: 'bg-violet-500' },
+  dispatch_cache:  { label: 'Dispatch cache', color: 'bg-violet-400' },
+  dispatch_shared: { label: 'Cross-mod reuse', color: 'bg-sky-500' },
+  consensus:       { label: 'Consensus',    color: 'bg-emerald-500' },
+  dict:            { label: 'Dictionary',   color: 'bg-amber-500' },
+  manual:          { label: 'Manual',       color: 'bg-pink-500' },
+}
+function TallySourceBreakdown({ counts, total }: { counts?: Record<string, number>; total: number }) {
+  if (!counts) return null
+  const entries = Object.entries(counts).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1])
+  if (entries.length === 0) return null
+  const sum = entries.reduce((s, [, n]) => s + n, 0) || 1
+  return (
+    <div className="mt-4 pt-3 border-t border-border-subtle">
+      <div className="text-[11px] font-semibold text-text-muted uppercase tracking-wide mb-2">
+        Translation source {total > 0 && <span className="font-normal normal-case">· reuse {Math.round((sum - (counts.ai ?? 0)) / sum * 100)}%</span>}
+      </div>
+      <div className="flex h-2 rounded overflow-hidden bg-bg-base mb-2">
+        {entries.map(([k, n]) => (
+          <div key={k} className={cn('h-full', TALLY_SOURCE_META[k]?.color ?? 'bg-text-muted')}
+               style={{ width: `${(n / sum) * 100}%` }} title={`${TALLY_SOURCE_META[k]?.label ?? k}: ${n}`} />
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
+        {entries.map(([k, n]) => (
+          <span key={k} className="flex items-center gap-1.5 text-text-muted">
+            <span className={cn('w-2 h-2 rounded-sm', TALLY_SOURCE_META[k]?.color ?? 'bg-text-muted')} />
+            {TALLY_SOURCE_META[k]?.label ?? k} <span className="font-mono text-text-main">{n}</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ── Job detail page ───────────────────────────────────────────────────────────
 
 function JobDetailPage() {
@@ -616,9 +723,14 @@ function JobDetailPage() {
         )}
         {job.status === 'offline_dispatched' && (
           <>
+            <CollectButton jobId={jobId} />
             <DispatchBackButton jobId={jobId} />
             <CancelButton jobId={jobId} />
           </>
+        )}
+        {(job.status === 'failed' || job.status === 'cancelled' || job.status === 'paused')
+          && job.job_type.includes('translate') && (
+          <CollectButton jobId={jobId} />
         )}
         {(job.status === 'failed' || job.status === 'cancelled') && (
           <>
@@ -638,6 +750,9 @@ function JobDetailPage() {
 
       {/* Timing / throughput */}
       <TimingCard job={job} />
+
+      {/* Progress funnel (assigned → delivered → translated → pending) */}
+      {job.job_type.includes('translate') && <TallyCard jobId={jobId} live={!isTerminal} />}
 
       {/* Offline dispatched banner */}
       {job.status === 'offline_dispatched' && (

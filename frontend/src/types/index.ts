@@ -149,7 +149,7 @@ export interface WorkerInfo {
   last_seen: number
   current_task: string | null
   models: CachedModel[]
-  stats: { tps_avg: number; tps_last: number; queue_depth: number; jobs_completed: number } | null
+  stats: { tps_avg: number; tps_last: number; queue_depth: number; jobs_completed: number; n_ctx?: number } | null
   hardware?: WorkerHardware
   alive: boolean
   commit?: string
@@ -165,6 +165,43 @@ export interface WorkerInfo {
     current_text: string
     worker_state?: 'queued' | 'running' | 'lost' | 'done'
   }[]
+  health?: {
+    disk_full?: boolean
+    idle_starved?: boolean
+    stalled?: boolean
+    undelivered?: number
+    open_assignments?: number
+  }
+  download_progress?: {
+    model?: string
+    stage?: string
+    downloaded_mb?: number
+    total_mb?: number
+    pct?: number | null
+  }
+}
+
+export interface AssignmentRow {
+  assignment_id: string
+  job_id: string
+  agent_id: string
+  mod_name: string
+  state: string
+  total: number
+  delivered: number
+  undelivered: number
+  tier: string
+}
+
+export interface AssignmentsOverview {
+  assignments: AssignmentRow[]
+  aggregate: {
+    total: number
+    delivered: number
+    active: number
+    presumed_dead: number
+    disconnected: number
+  }
 }
 
 export interface BenchmarkSampleResult {

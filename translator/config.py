@@ -102,6 +102,7 @@ class TranslationConfig:
     min_latin_ratio:    float = 0.15
     max_cyrillic_ratio: float = 0.30
     use_global_dict:    bool  = True   # reuse cross-mod translations without AI
+    string_encoding:    str   = "utf-8"  # embedded-string output encoding; 'cp1251' for RU installs showing mojibake
 
 
 @dataclass
@@ -121,6 +122,7 @@ class RemoteConfig:
     scan_on_startup: bool  = False
     mdns_enabled:    bool  = True
     port:            int   = 8765     # default port for server + TCP fallback scan
+    agent_hub_port:  int | None = None  # if set, master listens for agent-dialed socket links
 
 
 @dataclass
@@ -132,6 +134,7 @@ class TranslatorConfig:
     translation: TranslationConfig
     logging:     LoggingConfig
     remote:      RemoteConfig = field(default_factory=RemoteConfig)
+    hf_token:    str = ""   # HuggingFace token for gated/private model downloads (never logged)
 
 
 # ── Loader ────────────────────────────────────────────────────────────────────
@@ -245,6 +248,7 @@ def load_config(config_file: Path = _CONFIG_FILE) -> TranslatorConfig:
         min_latin_ratio    = tr.get("min_latin_ratio", 0.15),
         max_cyrillic_ratio = tr.get("max_cyrillic_ratio", 0.30),
         use_global_dict    = tr.get("use_global_dict", True),
+        string_encoding    = tr.get("string_encoding", "utf-8"),
     )
 
     lg = raw.get("logging", {})
@@ -264,6 +268,7 @@ def load_config(config_file: Path = _CONFIG_FILE) -> TranslatorConfig:
         scan_on_startup = rm.get("scan_on_startup", False),
         mdns_enabled    = rm.get("mdns_enabled", True),
         port            = rm.get("port", 8765),
+        agent_hub_port  = rm.get("agent_hub_port"),
     )
 
     _config = TranslatorConfig(
@@ -274,6 +279,7 @@ def load_config(config_file: Path = _CONFIG_FILE) -> TranslatorConfig:
         translation = translation,
         logging     = logging_cfg,
         remote      = remote_cfg,
+        hf_token    = (raw.get("models", {}) or {}).get("hf_token", "") or raw.get("hf_token", ""),
     )
     return _config
 

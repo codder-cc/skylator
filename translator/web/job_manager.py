@@ -494,7 +494,11 @@ class JobManager:
                     d["string_updates"] = []
                 data[j.id] = d
 
-            self._persist_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            # Atomic write: a crash mid-write can no longer truncate job history.
+            import os as _os
+            tmp = self._persist_path.with_suffix(self._persist_path.suffix + ".tmp")
+            tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            _os.replace(tmp, self._persist_path)
         except Exception:
             pass
 

@@ -64,14 +64,15 @@ def test_get_active_excludes_stale_worker():
 
 def test_heartbeat_returns_false_for_unknown():
     reg = WorkerRegistry()
-    result = reg.heartbeat("unknown-worker")
-    assert result is False
+    found, lost = reg.heartbeat("unknown-worker")   # (found, lost_job_ids)
+    assert found is False and lost == []
 
 
 def test_heartbeat_returns_true_for_known():
     reg = WorkerRegistry()
     reg.register(_make_worker("w1"))
-    assert reg.heartbeat("w1") is True
+    found, lost = reg.heartbeat("w1")
+    assert found is True and lost == []
 
 
 def test_heartbeat_updates_model_info():

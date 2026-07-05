@@ -101,6 +101,85 @@ MIGRATION_STEPS: list[tuple[int, str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_waiters_job  ON dispatch_waiters(waiter_job_id)",
         ],
     ),
+    (
+        8,
+        "Fault-tolerant dispatch: durable assignments, manifests, agent pull cursors",
+        [
+            # One row per (job, agent) work parcel — the unit of recovery.
+            """CREATE TABLE IF NOT EXISTS assignments (
+                assignment_id    TEXT PRIMARY KEY,
+                job_id           TEXT NOT NULL,
+                agent_id         TEXT NOT NULL,
+                mod_name         TEXT NOT NULL DEFAULT '',
+                state            TEXT NOT NULL DEFAULT 'queued',
+                    -- queued|leased|in_progress|partially_delivered|complete|failed|orphaned
+                total            INTEGER NOT NULL DEFAULT 0,
+                delivered        INTEGER NOT NULL DEFAULT 0,
+                lease_expires_at REAL,
+                created_at       REAL DEFAULT (unixepoch('now','subsec')),
+                updated_at       REAL DEFAULT (unixepoch('now','subsec'))
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_assign_job   ON assignments(job_id)",
+            "CREATE INDEX IF NOT EXISTS idx_assign_agent ON assignments(agent_id, state)",
+            "CREATE INDEX IF NOT EXISTS idx_assign_lease ON assignments(state, lease_expires_at)",
+            # Host-side manifest + per-string delivery tracking.
+            """CREATE TABLE IF NOT EXISTS assignment_strings (
+                assignment_id TEXT    NOT NULL,
+                string_id     INTEGER NOT NULL REFERENCES strings(id) ON DELETE CASCADE,
+                string_hash   TEXT    NOT NULL,
+                delivered     INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (assignment_id, string_id)
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_astr_hash    ON assignment_strings(string_hash)",
+            "CREATE INDEX IF NOT EXISTS idx_astr_undeliv ON assignment_strings(assignment_id, delivered)",
+            # Pull high-water mark per agent (survives master restart).
+            """CREATE TABLE IF NOT EXISTS agent_cursors (
+                agent_id   TEXT PRIMARY KEY,
+                last_seq   INTEGER NOT NULL DEFAULT 0,
+                updated_at REAL DEFAULT (unixepoch('now','subsec'))
+            )""",
+        ],
+    ),
+    (
+        9,
+        "Add norm_hash for fuzzy (case/whitespace-insensitive) translation reuse",
+        [
+            "ALTER TABLE strings ADD COLUMN norm_hash TEXT",
+            "CREATE INDEX IF NOT EXISTS idx_strings_norm_hash ON strings(norm_hash) WHERE norm_hash IS NOT NULL",
+        ],
+    ),
+    (
+        10,
+        "Add mods.priority for translation scheduling (higher = translated first)",
+        [
+            "ALTER TABLE mods ADD COLUMN priority INTEGER DEFAULT 0",
+        ],
+    ),
+    (
+        11,
+        "Append-only work-event ledger (single source of truth for coordination — strangler)",
+        [
+            # One row per state transition of a unit of work. The current coordination state
+            # (who owns what, what's done, dedup) is a *projection* (fold) over this log, not
+            # stored separately — this is the table that lets the 4 overlapping coordination
+            # systems collapse into one. Built beside them for now; nothing reads it in prod
+            # yet (dual-run / cut-over comes later).
+            """CREATE TABLE IF NOT EXISTS work_events (
+                seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts         REAL NOT NULL DEFAULT (unixepoch('now','subsec')),
+                work_key   TEXT NOT NULL,           -- stable identity of the unit of work
+                content_hash TEXT,                  -- sha256 of source text → cross-mod dedup
+                event_type TEXT NOT NULL,           -- queued|assigned|in_flight|result|committed|failed|released
+                agent_id   TEXT,                    -- who, when relevant
+                job_id     TEXT,
+                payload    TEXT                      -- JSON blob (translation, error, etc.)
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_workev_key  ON work_events(work_key, seq)",
+            "CREATE INDEX IF NOT EXISTS idx_workev_hash ON work_events(content_hash) WHERE content_hash IS NOT NULL",
+            "CREATE INDEX IF NOT EXISTS idx_workev_job  ON work_events(job_id)",
+            "CREATE INDEX IF NOT EXISTS idx_workev_type ON work_events(event_type, seq)",
+        ],
+    ),
 ]
 
 

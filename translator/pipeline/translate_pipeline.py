@@ -236,9 +236,25 @@ class TranslatePipeline:
             if len(tm):
                 job.add_log(f"TM: {len(tm)} pairs loaded for {mod_name}")
 
-            def _build_chunk_context(originals: list[str]) -> str:
+            # Human-readable hints for the common record types (cheap per-record context).
+            _REC_HINTS = {
+                "DIAL": "dialogue", "INFO": "dialogue response", "BOOK": "book/note text",
+                "QUST": "quest", "NPC_": "character name", "MGEF": "magic effect",
+                "PERK": "perk", "SPEL": "spell", "ARMO": "armor", "WEAP": "weapon",
+                "ALCH": "potion/ingredient", "MESG": "UI message", "ACTI": "activator",
+            }
+
+            def _build_chunk_context(chunk) -> str:
+                # `chunk` is the list of string dicts for this batch (record-grouped).
+                originals = [s.get("original", "") for s in chunk] if chunk and isinstance(chunk[0], dict) else list(chunk)
                 ai_preview, _ = prepare_for_ai(originals)
-                return enrich_context(context, tm.build_block(ai_preview), ai_preview)
+                base = enrich_context(context, tm.build_block(ai_preview), ai_preview)
+                # Per-record hint: what kind of text this is (dialogue vs book vs item name).
+                rtypes = {s.get("rec_type") for s in chunk if isinstance(s, dict) and s.get("rec_type")}
+                if rtypes:
+                    labels = sorted({_REC_HINTS.get(rt, rt) for rt in rtypes})
+                    return f"Text type: {', '.join(labels)}\n{base}".strip()
+                return base
 
             # ── Step 8: Dispatch to WorkerPool ───────────────────────────────
             # Steps 9-12 happen inside the on_string_done callback below.
@@ -289,6 +305,24 @@ class TranslatePipeline:
 
                 actual_label = r.get("machine_label") or (backends[0][0] if backends else "")
 
+                # G6 — multi-agent quality: if this string already had a translation (a
+                # re-translation pass, e.g. routed to a bigger-model agent), keep whichever
+                # candidate scores higher, so quality is monotonic and a worse re-translation
+                # never clobbers a good one.
+                save_qs     = r.get("quality_score")
+                save_status = r.get("status")
+                save_source = "ai"
+                prev = (s.get("translation") or "").strip()
+                if prev and prev != translation:
+                    from translator.validation.quality import pick_better
+                    best = pick_better(s.get("original", ""), prev, translation)
+                    if best["chose"] == "a":          # the existing translation won
+                        job.add_log(f"[keep] existing translation better for [{s.get('key','?')}]")
+                    translation = best["translation"]
+                    save_qs     = best["quality_score"]
+                    save_status = best["status"]
+                    save_source = "consensus"
+
                 # Step 10: Save via StringManager
                 result = self._string_mgr.save_string(
                     mod_name=mod_name,
@@ -296,11 +330,11 @@ class TranslatePipeline:
                     key=s["key"],
                     translation=translation,
                     original=s.get("original", ""),
-                    source="ai",
+                    source=save_source,
                     machine_label=actual_label,
                     job_id=job.id,
-                    quality_score=r.get("quality_score"),
-                    status=r.get("status"),
+                    quality_score=save_qs,
+                    status=save_status,
                 )
 
                 # Step 11: Invalidate stats cache
@@ -378,7 +412,14 @@ class TranslatePipeline:
             def _on_status(statuses) -> None:
                 job._worker_statuses = {st.label: st.to_dict() for st in statuses}
 
-            pool = WorkerPool(backends, chunk_size=10)
+            # Align chunk size with the configured inference batch size so one chunk maps
+            # to one inference call — avoids splitting a 10-string chunk into 3 calls that
+            # each re-pay the system+context prompt prefill (costly on no-prefix-reuse models).
+            try:
+                _chunk = int(getattr(self._cfg.ensemble.model_b, "batch_size", 10)) or 10
+            except Exception:
+                _chunk = 10
+            pool = WorkerPool(backends, chunk_size=max(1, _chunk))
 
             # on_progress uses n_dispatch_cache as offset so the bar reflects all strings
             _offset = n_dispatch_cache

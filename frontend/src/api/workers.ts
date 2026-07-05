@@ -1,5 +1,5 @@
 import { apiFetch, apiPost } from './client'
-import type { WorkerInfo, SetupReport, CachedModel, BenchmarkResult } from '@/types'
+import type { WorkerInfo, SetupReport, CachedModel, BenchmarkResult, AssignmentsOverview } from '@/types'
 
 interface ModelLoadBody {
   model: string
@@ -36,6 +36,13 @@ export const workersApi = {
       body,
     ),
 
+  // A4 — download/stage a model on the worker WITHOUT loading it into VRAM (pre-provision).
+  downloadModel: (label: string, body: ModelLoadBody) =>
+    apiPost<{ ok: boolean; downloaded?: boolean; path?: string }>(
+      `/api/workers/${encodeURIComponent(label)}/model/download`,
+      body,
+    ),
+
   unloadModel: (label: string) =>
     apiPost<{ ok: boolean }>(
       `/api/workers/${encodeURIComponent(label)}/model/unload`,
@@ -61,4 +68,15 @@ export const workersApi = {
     apiPost<{ ok: boolean; chunk_id?: string }>(
       `/api/workers/${encodeURIComponent(label)}/ota-update`,
     ),
+
+  // Phase 7 — operator action: immediately orphan a dead agent's active assignments so
+  // its undelivered strings become reassignable (instead of waiting the multi-day horizon).
+  abandon: (label: string) =>
+    apiPost<{ ok: boolean; orphaned: string[]; reassignable: number }>(
+      `/api/workers/${encodeURIComponent(label)}/abandon`,
+    ),
+
+  // Gap 4 — fleet observability: per-assignment funnel + liveness tiers + aggregate.
+  assignments: () =>
+    apiFetch<AssignmentsOverview>('/api/assignments'),
 }

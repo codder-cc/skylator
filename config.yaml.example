@@ -4,6 +4,12 @@
 # config.yaml is in .gitignore so secrets never end up in git.
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ── Models ────────────────────────────────────────────────────────────────────
+models:
+  # HuggingFace access token for gated/private model downloads. Used as the default;
+  # can be overridden per-download in the UI. Never logged. (config.yaml is gitignored.)
+  hf_token: ""
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 paths:
   model_cache_dir:  "models"          # relative to project root; models/ is gitignored
@@ -76,6 +82,9 @@ context:
 translation:
   source_lang:    "English"
   target_lang:    "Russian"
+  # Embedded (non-localized) ESP string output encoding. Default utf-8 (Skyrim SE
+  # localized plugins). Set to "cp1251" if Russian text shows as mojibake in-game.
+  string_encoding: "utf-8"
   preserve_tokens:
     - "<Alias="
     - "<mag>"
@@ -119,3 +128,7 @@ remote:
   scan_on_startup: false      # run LAN scan automatically when web UI starts
   mdns_enabled:    true       # announce/discover via mDNS (requires zeroconf)
   port:            8765       # default port for the translation server
+  # agent_hub_port: 8770      # if set, master listens for persistent agent-dialed socket
+                              # links — instant master→agent push + event-driven telemetry
+                              # without agents being inbound-reachable (agent dials out).
+                              # Leave unset to use the durable HTTP pull/heartbeat path only.

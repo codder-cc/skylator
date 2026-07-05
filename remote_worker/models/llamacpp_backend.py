@@ -74,6 +74,7 @@ class LlamaCppBackend(BaseBackend):
             self._mcfg.repo_id,
             self._mcfg.local_dir_name,
             self._mcfg.gguf_filename,
+            token=getattr(self._mcfg, "hf_token", "") or None,
         )
         size_mb = os.path.getsize(gguf_path) // 1024 // 1024
         log.info("Loading GGUF: %s  (%d MB)", self._mcfg.gguf_filename, size_mb)

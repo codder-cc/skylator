@@ -28,7 +28,8 @@ def _lock_hf_cache() -> None:
 _lock_hf_cache()   # runs once at import time
 
 
-def resolve_gguf(repo_id: str, local_dir_name: str, gguf_filename: str) -> str:
+def resolve_gguf(repo_id: str, local_dir_name: str, gguf_filename: str,
+                 token: str | None = None) -> str:
     """
     Return absolute path to a .gguf file.
 
@@ -36,6 +37,8 @@ def resolve_gguf(repo_id: str, local_dir_name: str, gguf_filename: str) -> str:
       1. local_dir_name is an absolute path AND file exists  → use directly
       2. models_cache/<local_dir_name>/<gguf_filename>       → local copy
       3. Download from HuggingFace into models_cache/        → first run
+
+    `token` (HF access token) is used for gated/private repos. Never logged.
     """
     import re
 
@@ -74,7 +77,8 @@ def resolve_gguf(repo_id: str, local_dir_name: str, gguf_filename: str) -> str:
             dest = local_dir / fname
             if not dest.exists():
                 log.info("  Downloading shard: %s", fname)
-                hf_hub_download(repo_id=repo_id, filename=fname, local_dir=str(local_dir))
+                hf_hub_download(repo_id=repo_id, filename=fname, local_dir=str(local_dir),
+                                token=token or None)
         return str(first_shard)
     except Exception as e:
         raise RuntimeError(

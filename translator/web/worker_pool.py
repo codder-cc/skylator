@@ -69,7 +69,7 @@ class WorkerPool:
         on_progress:     Callable,           # (done: int, total: int) → None
         on_status:       Callable,           # (list[BackendWorkerStatus]) → None
         should_stop:     Callable,           # () → bool
-        context_builder: Callable | None = None,  # (originals: list[str]) → str
+        context_builder: Callable | None = None,  # (chunk: list[dict]) → str
     ) -> dict:
         """
         Distribute *strings* across all backends and block until all done.
@@ -122,12 +122,24 @@ class WorkerPool:
                 status.current_text = originals[0] if originals else ""
                 on_status(list(statuses.values()))
 
-                # Build enriched context for this chunk (e.g. TM block) if a
-                # builder was provided; otherwise fall back to the fixed context.
-                chunk_context = context_builder(originals) if context_builder else context
+                # Build enriched context for this chunk (TM block + per-record hint) if a
+                # builder was provided; otherwise fall back to the fixed context. The
+                # builder receives the full chunk dicts so it can use rec_type/form_id.
+                chunk_context = context_builder(chunk) if context_builder else context
+
+                # Mask inline game tokens / HTML as opaque placeholders ({T#}, ⟨H#⟩) so the
+                # model copies them verbatim, then restore them in the output. Previously the
+                # bulk path sent RAW tokens while the prompt told the model to preserve
+                # placeholders that weren't there — the #1 source of token-corruption.
+                from scripts.esp_engine import prepare_for_ai, restore_from_ai
+                masked, metas = prepare_for_ai(originals)
 
                 try:
-                    raw = backend.translate(originals, context=chunk_context, params=params)
+                    raw = backend.translate(masked, context=chunk_context, params=params)
+                    try:
+                        raw = restore_from_ai(raw, metas)
+                    except Exception as exc:
+                        log.warning("WorkerPool [%s]: token restore failed: %s", label, exc)
                     # Wrap raw strings into result dicts matching translate_texts format
                     core_results = []
                     for orig, trans in zip(originals, raw):

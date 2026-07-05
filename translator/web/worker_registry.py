@@ -43,6 +43,8 @@ class WorkerInfo:
     ota_steps:    list = field(default_factory=list)  # step strings from last OTA run
     ota_restart_at: float = 0.0   # time.time() when restarting phase began
     offline_jobs:   list  = field(default_factory=list)  # [{offline_job_id, total, done, tps, current_text}]
+    health:         dict  = field(default_factory=dict)  # {disk_full, idle_starved, stalled, undelivered}
+    download_progress: dict = field(default_factory=dict) # {model, stage, downloaded_mb, total_mb, pct}
 
     def to_dict(self) -> dict:
         return {
@@ -64,6 +66,8 @@ class WorkerInfo:
             "ota_steps":    self.ota_steps,
             "ota_restart_at": self.ota_restart_at,
             "offline_jobs": self.offline_jobs,
+            "health":       self.health,
+            "download_progress": self.download_progress,
         }
 
 
@@ -95,6 +99,47 @@ class WorkerRegistry:
         if persist_dir:
             persist_dir.mkdir(parents=True, exist_ok=True)
             self._restore_persisted_packages()
+        # Master-pull-over-poll (NAT): label → seq the master wants the agent to resend from.
+        # Delivered on the agent's next heartbeat reply; the agent re-arms those results.
+        self._resend: dict[str, int] = {}
+        # Real-time pub/sub: subscribers (SSE streams) get a tick on every worker change, so
+        # the browser is *pushed* updates instead of polling. Separate lock so _publish can be
+        # called while self._lock is held (non-reentrant) without deadlocking.
+        self._sub_lock = threading.Lock()
+        self._subscribers: set[queue.Queue] = set()
+
+    def subscribe(self) -> "queue.Queue":
+        """Register an SSE subscriber. Returns a queue that gets a token on every change."""
+        q: queue.Queue = queue.Queue(maxsize=8)
+        with self._sub_lock:
+            self._subscribers.add(q)
+        return q
+
+    def unsubscribe(self, q: "queue.Queue") -> None:
+        with self._sub_lock:
+            self._subscribers.discard(q)
+
+    def _publish(self) -> None:
+        """Signal all subscribers that worker state changed (coalesced — just a token)."""
+        with self._sub_lock:
+            subs = list(self._subscribers)
+        for q in subs:
+            try:
+                q.put_nowait(1)
+            except queue.Full:
+                pass   # subscriber already has a pending tick; it'll rebuild a fresh snapshot
+
+    def request_resend(self, label: str, since: int = 0) -> None:
+        """Ask an agent (incl. NAT/pull-mode) to re-deliver results with seq > `since`.
+        Used by rebuild-from-agents so the master can recover even from unreachable agents."""
+        with self._lock:
+            cur = self._resend.get(label)
+            self._resend[label] = since if cur is None else min(cur, since)
+
+    def take_resend(self, label: str) -> int | None:
+        """Pop a pending resend request for an agent (called by the heartbeat handler)."""
+        with self._lock:
+            return self._resend.pop(label, None)
 
     # ── Worker lifecycle ──────────────────────────────────────────────────────
 
@@ -116,12 +161,15 @@ class WorkerRegistry:
             # Ensure work queue exists
             if info.label not in self._work_queues:
                 self._work_queues[info.label] = queue.Queue()
+        self._publish()
 
     def heartbeat(self, label: str, models: list | None = None,
                   model: str | None = None, backend_type: str | None = None,
                   stats: dict | None = None, hardware: dict | None = None,
                   commit: str | None = None,
-                  offline_jobs: list | None = None) -> tuple[bool, list[str]]:
+                  offline_jobs: list | None = None,
+                  health: dict | None = None,
+                  download_progress: dict | None = None) -> tuple[bool, list[str]]:
         """Update last_seen and any pushed fields.
 
         Returns (found, lost_job_ids):
@@ -141,6 +189,8 @@ class WorkerRegistry:
             if stats        is not None: w.stats        = stats
             if hardware     is not None: w.hardware     = hardware
             if commit       is not None: w.commit       = commit
+            if health       is not None: w.health       = health
+            if download_progress is not None: w.download_progress = download_progress
 
             # Build set of offline_job_ids currently reported by this worker
             reported_ids: set[str] = set()
@@ -159,32 +209,38 @@ class WorkerRegistry:
                         if rec.get("worker_state") != "done":
                             rec["worker_state"] = "running"
 
-            # Detect lost packages: jobs assigned to this worker that are not
-            # reported in the heartbeat and have not been confirmed done.
-            for ojid, rec in self._offline_jobs.items():
-                if rec.get("worker_label") != label:
-                    continue
-                if rec.get("finished") or rec.get("worker_state") == "done":
-                    continue
-                if ojid in reported_ids:
-                    continue  # actively running — already updated above
-                # Worker is connected but not reporting this job.
-                # If the package file is still on disk → it hasn't been polled yet (queued).
-                # If the file is gone → the remote polled it but rejected it (lost).
-                chunk_id = rec.get("chunk_id", "")
-                if self._package_exists(label, chunk_id):
-                    rec["worker_state"] = "queued"
-                else:
-                    # File gone + connected + not reporting = lost
-                    if rec.get("worker_state") not in ("done", "lost"):
-                        rec["worker_state"] = "lost"
-                        lost_job_ids.append(ojid)
-                        log.warning(
-                            "Offline job %s on %s detected as LOST "
-                            "(package polled but worker not reporting it)",
-                            ojid[:8], label,
-                        )
+                # Detect lost packages: jobs assigned to this worker that are not
+                # reported in the heartbeat and have not been confirmed done.
+                for ojid, rec in self._offline_jobs.items():
+                    if rec.get("worker_label") != label:
+                        continue
+                    if rec.get("finished") or rec.get("worker_state") == "done":
+                        continue
+                    if ojid in reported_ids:
+                        continue  # actively running — already updated above
+                    # Worker is connected but not reporting this job.
+                    # If the package file is still on disk → it hasn't been polled yet (queued).
+                    # If the file is gone → the remote polled it but rejected it (lost).
+                    chunk_id = rec.get("chunk_id", "")
+                    if self._package_exists(label, chunk_id):
+                        rec["worker_state"] = "queued"
+                    else:
+                        # File gone + connected + not reporting = lost
+                        if rec.get("worker_state") not in ("done", "lost"):
+                            rec["worker_state"] = "lost"
+                            lost_job_ids.append(ojid)
+                            log.warning(
+                                "Offline job %s on %s detected as LOST "
+                                "(package polled but worker not reporting it)",
+                                ojid[:8], label,
+                            )
 
+                # RT1: surface the string an offline agent is currently translating so the
+                # Operations UI shows live activity (the offline path doesn't call update_task).
+                cur = next((oj.get("current_text") for oj in offline_jobs if oj.get("current_text")), "")
+                if cur:
+                    w.current_task = cur
+        self._publish()
         return True, lost_job_ids
 
     def _package_exists(self, label: str, chunk_id: str) -> bool:
@@ -196,12 +252,14 @@ class WorkerRegistry:
     def remove(self, label: str) -> None:
         with self._lock:
             self._workers.pop(label, None)
+        self._publish()
 
     def update_task(self, label: str, task: str) -> None:
         with self._lock:
             w = self._workers.get(label)
             if w:
                 w.current_task = task
+        self._publish()
 
     # ── Query ─────────────────────────────────────────────────────────────────
 
@@ -417,6 +475,7 @@ class WorkerRegistry:
                 oj["tps"] = tps
             if current_text:
                 oj["current_text"] = current_text
+        self._publish()
 
     def get_offline_jobs_for_host_job(self, host_job_id: str) -> list[dict]:
         with self._lock:

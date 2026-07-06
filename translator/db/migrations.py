@@ -180,6 +180,19 @@ MIGRATION_STEPS: list[tuple[int, str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_workev_type ON work_events(event_type, seq)",
         ],
     ),
+    (
+        12,
+        "Fold the global cross-mod translation dictionary into SQLite (#7 one-store)",
+        [
+            # Was cache/_global_text_dict.json — now the DB is the single store. One-time
+            # seeded from the JSON on first load if present (see GlobalTextDict.load).
+            """CREATE TABLE IF NOT EXISTS global_dict (
+                original    TEXT PRIMARY KEY,
+                translation TEXT NOT NULL,
+                updated_at  REAL DEFAULT (unixepoch('now','subsec'))
+            )""",
+        ],
+    ),
 ]
 
 

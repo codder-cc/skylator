@@ -32,7 +32,7 @@ class GlobalTextDict:
     """
 
     def __init__(self, mods_dir: Path | None = None, cache_path: Path = Path("cache/_global_text_dict.json"),
-                 mods_dirs: list | None = None) -> None:
+                 mods_dirs: list | None = None, db=None) -> None:
         if mods_dirs is not None:
             self.mods_dirs = [Path(d) for d in mods_dirs if d]
         elif mods_dir is not None:
@@ -41,19 +41,24 @@ class GlobalTextDict:
             self.mods_dirs = []
         self.mods_dir   = self.mods_dirs[0] if self.mods_dirs else Path("mods")
         self.cache_path = cache_path
+        # #7 one-store: when a DB is provided, the global_dict table is the store (SQLite is
+        # the single source of truth). Without a DB (e.g. CLI), fall back to the JSON file.
+        self._db = db
         self._dict: dict[str, str] = {}
         self._loaded = False
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def load(self) -> None:
-        """Load dictionary from disk (no-op if already loaded)."""
+        """Load dictionary (no-op if already loaded). From SQLite when a DB is set, else JSON."""
         if self._loaded:
             return
         with _LOCK:
             if self._loaded:
                 return
-            if self.cache_path.exists():
+            if self._db is not None:
+                self._load_from_db()
+            elif self.cache_path.exists():
                 try:
                     self._dict = json.loads(
                         self.cache_path.read_text(encoding="utf-8")
@@ -64,6 +69,27 @@ class GlobalTextDict:
                     log.warning("GlobalTextDict: could not load cache: %s", exc)
                     self._dict = {}
             self._loaded = True
+
+    def _load_from_db(self) -> None:
+        try:
+            rows = self._db.execute("SELECT original, translation FROM global_dict").fetchall()
+            self._dict = {r[0]: r[1] for r in rows}
+            # One-time migration: seed the table from the legacy JSON if the table is empty.
+            if not self._dict and self.cache_path.exists():
+                try:
+                    legacy = json.loads(self.cache_path.read_text(encoding="utf-8"))
+                    if legacy:
+                        self._dict = dict(legacy)
+                        self._persist_db(self._dict)
+                        log.info("GlobalTextDict: migrated %d entries from JSON → SQLite",
+                                 len(self._dict))
+                except Exception as exc:
+                    log.warning("GlobalTextDict: JSON→SQLite seed failed: %s", exc)
+            else:
+                log.info("GlobalTextDict: loaded %d entries from SQLite", len(self._dict))
+        except Exception as exc:
+            log.warning("GlobalTextDict: could not load from DB: %s", exc)
+            self._dict = {}
 
     def get(self, original: str) -> Optional[str]:
         """Return existing translation for an exact original string, or None."""
@@ -84,12 +110,12 @@ class GlobalTextDict:
                 self._dict[original] = translation
 
     def save(self) -> None:
-        """Merge current dictionary into disk file (read-merge-write under lock).
-
-        Reading the file inside the lock ensures concurrent jobs don't overwrite
-        each other's entries — the last writer merges rather than replaces.
-        """
+        """Persist the dictionary. SQLite upsert when a DB is set (merges by construction —
+        ON CONFLICT keeps the latest); otherwise a read-merge-write of the JSON file."""
         with _LOCK:
+            if self._db is not None:
+                self._persist_db(self._dict)
+                return
             try:
                 self.cache_path.parent.mkdir(parents=True, exist_ok=True)
                 existing: dict = {}
@@ -107,6 +133,22 @@ class GlobalTextDict:
                 )
             except Exception as exc:
                 log.warning("GlobalTextDict: could not save: %s", exc)
+
+    def _persist_db(self, entries: dict) -> None:
+        if not entries:
+            return
+        import time as _t
+        now = _t.time()
+        try:
+            self._db.executemany(
+                "INSERT INTO global_dict (original, translation, updated_at) VALUES (?,?,?) "
+                "ON CONFLICT(original) DO UPDATE SET translation=excluded.translation, "
+                "updated_at=excluded.updated_at",
+                [(o, t, now) for o, t in entries.items()],
+            )
+            self._db.commit()
+        except Exception as exc:
+            log.warning("GlobalTextDict: could not persist to DB: %s", exc)
 
     def size(self) -> int:
         return len(self._dict)

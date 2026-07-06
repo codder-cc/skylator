@@ -1636,6 +1636,30 @@ def import_translations(name: str):
     return jsonify({"ok": True, **stats})
 
 
+@bp.route("/mods/<name>/terminology-check", methods=["GET"])
+def terminology_check(name: str):
+    """C — glossary consistency for a mod: translated strings whose original contains a
+    glossary term but whose translation is missing the expected term translation."""
+    from translator.validation.terminology import terminology_summary
+    from pathlib import Path as _Path
+    repo = current_app.config.get("STRING_REPO")
+    if repo is None:
+        return jsonify({"terms_with_issues": 0, "total_violations": 0, "report": []})
+    rows = repo.get_all_strings(name)
+    # load the curated glossary (same file the terminology editor manages)
+    terms = {}
+    try:
+        import json as _json
+        cfg = current_app.config.get("TRANSLATOR_CFG")
+        tpath = (cfg.paths.skyrim_terms if cfg and getattr(cfg.paths, "skyrim_terms", None)
+                 else _Path(__file__).parent.parent.parent.parent / "data/skyrim_terms.json")
+        if _Path(tpath).exists():
+            terms = _json.loads(_Path(tpath).read_text(encoding="utf-8"))
+    except Exception as exc:
+        log.warning("terminology-check: could not load glossary: %s", exc)
+    return jsonify(terminology_summary(rows, terms if isinstance(terms, dict) else {}))
+
+
 @bp.route("/ledger/stats", methods=["GET"])
 def ledger_stats():
     """#6 — projection read from the work ledger: fleet-wide done count, unique source texts,

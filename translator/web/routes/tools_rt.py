@@ -11,6 +11,42 @@ from translator.web.routes.utils import get_mod_path
 bp = Blueprint("tools", __name__, url_prefix="/tools")
 
 
+def _within_allowed_roots(raw: str) -> bool:
+    """True if `raw` resolves inside a configured root (mods / temp / backup / model-cache /
+    project). Defense-in-depth against path traversal on the /tools file+subprocess surface —
+    a request can't make these tools read/write/unpack outside the translator's own trees."""
+    if not raw:
+        return False
+    try:
+        p = Path(raw).resolve()
+    except Exception:
+        return False
+    cfg = current_app.config.get("TRANSLATOR_CFG")
+    roots: list[Path] = [Path(__file__).resolve().parents[3]]   # project root (tools/, cache/)
+    if cfg:
+        for d in (cfg.paths.mods_dirs or []):
+            try:
+                roots.append(Path(d).resolve())
+            except Exception:
+                pass
+        for attr in ("temp_dir", "backup_dir", "model_cache_dir"):
+            v = getattr(cfg.paths, attr, None)
+            if v:
+                try:
+                    roots.append(Path(v).resolve())
+                except Exception:
+                    pass
+    return any(p == r or r in p.parents for r in roots)
+
+
+def _reject_path(*raws):
+    """Return a 403 response if any request-supplied path escapes the allowed roots, else None."""
+    for raw in raws:
+        if raw and not _within_allowed_roots(raw):
+            return jsonify({"error": f"path not allowed (outside translator roots): {raw}"}), 403
+    return None
+
+
 @bp.route("/")
 def tools_page():
     if not request.headers.get("Accept", "").startswith("application/json"):
@@ -27,6 +63,9 @@ def esp_parse():
     esp_path = data.get("path", "")
     if not esp_path:
         return jsonify({"error": "No path"}), 400
+    denied = _reject_path(esp_path)
+    if denied:
+        return denied
 
     p = Path(esp_path)
     if not p.exists():
@@ -94,6 +133,9 @@ def bsa_unpack():
 
     if not bsa_path:
         return jsonify({"error": "No bsa_path"}), 400
+    denied = _reject_path(bsa_path, out_dir)
+    if denied:
+        return denied
     if not out_dir:
         out_dir = str(Path(bsa_path).parent / (Path(bsa_path).stem + "_unpacked"))
 
@@ -124,6 +166,9 @@ def bsa_pack():
 
     if not src_dir or not bsa_out:
         return jsonify({"error": "src_dir and bsa_path required"}), 400
+    denied = _reject_path(src_dir, bsa_out)
+    if denied:
+        return denied
 
     jm = current_app.config["JOB_MANAGER"]
     from translator.web.workers import bsa_pack_worker
@@ -151,6 +196,9 @@ def swf_decompile():
 
     if not swf_path or not ffdec:
         return jsonify({"error": "swf_path and ffdec_jar required"}), 400
+    denied = _reject_path(swf_path, out_dir)
+    if denied:
+        return denied
     if not out_dir:
         out_dir = str(Path(swf_path).parent / (Path(swf_path).stem + "_decompiled"))
 
@@ -179,6 +227,9 @@ def swf_list_fonts():
     ffdec = data.get("ffdec_jar") or (str(cfg.paths.ffdec_jar) if cfg and cfg.paths.ffdec_jar else "")
     if not swf_path or not ffdec:
         return jsonify({"error": "swf_path and ffdec_jar required"}), 400
+    denied = _reject_path(swf_path)
+    if denied:
+        return denied
     if not Path(swf_path).exists():
         return jsonify({"error": "SWF file not found"}), 404
 
@@ -206,6 +257,9 @@ def swf_fix_fonts():
 
     if not swf_path or not ffdec or not ttf_path:
         return jsonify({"error": "swf_path, ffdec_jar, and ttf_path required"}), 400
+    denied = _reject_path(swf_path, out_path, ttf_path)
+    if denied:
+        return denied
     if not Path(swf_path).exists():
         return jsonify({"error": "SWF file not found"}), 404
     if not Path(ttf_path).exists():
@@ -251,6 +305,9 @@ def swf_compile():
 
     if not src_dir or not swf_path or not ffdec:
         return jsonify({"error": "src_dir, swf_path, ffdec_jar required"}), 400
+    denied = _reject_path(src_dir, swf_path)
+    if denied:
+        return denied
 
     jm = current_app.config["JOB_MANAGER"]
     from translator.web.workers import swf_compile_worker

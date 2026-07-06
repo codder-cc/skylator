@@ -29,26 +29,21 @@ production hardening for networks that only pass HTTP(S) (see notes).
 from __future__ import annotations
 
 import hmac
-import json
 import logging
 import socket
 import threading
 import time
 
-log = logging.getLogger(__name__)
+from translator.protocol import (
+    PROTOCOL_VERSION, MSG_HELLO, MSG_COMMAND, MSG_RESULT, MSG_TELEMETRY,
+    MSG_PING, MSG_PONG, MSG_BYE, encode, decode_line, ping as _ping, pong as _pong,
+)
 
-PROTOCOL_VERSION = 1
-MSG_HELLO     = "hello"
-MSG_COMMAND   = "command"
-MSG_RESULT    = "result"
-MSG_TELEMETRY = "telemetry"
-MSG_PING      = "ping"
-MSG_PONG      = "pong"
-MSG_BYE       = "bye"
+log = logging.getLogger(__name__)
 
 
 def _send(sock: socket.socket, obj: dict) -> None:
-    sock.sendall((json.dumps(obj) + "\n").encode("utf-8"))
+    sock.sendall(encode(obj).encode("utf-8"))
 
 
 class _Conn:
@@ -132,8 +127,8 @@ class AgentHub:
             if not first:
                 sock.close()
                 return
-            hello = json.loads(first)
-            if hello.get("type") != MSG_HELLO or not hello.get("label"):
+            hello = decode_line(first)
+            if hello is None or hello.get("type") != MSG_HELLO or not hello.get("label"):
                 sock.close()
                 return
             # Auth: if a token is configured, the agent must present it (constant-time compare).
@@ -161,16 +156,15 @@ class AgentHub:
             for line in reader:
                 if self._stop.is_set():
                     break
-                try:
-                    msg = json.loads(line)
-                except ValueError:
-                    continue
+                msg = decode_line(line)      # validated against the shared contract
+                if msg is None:
+                    continue                 # malformed / unknown type — ignore
                 c.last_seen = time.time()
                 mtype = msg.get("type")
                 if mtype == MSG_PONG:
                     continue
                 if mtype == MSG_PING:
-                    self._write(c, {"type": MSG_PONG})
+                    self._write(c, _pong())
                     continue
                 if mtype == MSG_BYE:
                     break
@@ -219,8 +213,8 @@ class AgentHub:
 
     def command(self, label: str, command: str, payload: dict | None = None,
                 cmd_id: str | None = None) -> bool:
-        return self.push(label, {"type": MSG_COMMAND, "id": cmd_id,
-                                 "command": command, "payload": payload or {}})
+        from translator.protocol import command as _command
+        return self.push(label, _command(command, payload or {}, cmd_id))
 
     def _write(self, c: _Conn, msg: dict) -> None:
         with c.wlock:
@@ -259,6 +253,6 @@ class AgentHub:
                             pass
                 else:
                     try:
-                        self._write(c, {"type": MSG_PING})
+                        self._write(c, _ping())
                     except OSError:
                         pass

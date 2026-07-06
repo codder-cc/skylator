@@ -19,26 +19,33 @@ truth so nothing is lost while the line is down.
 """
 from __future__ import annotations
 
-import json
 import logging
 import socket
 import threading
 import time
 
-log = logging.getLogger(__name__)
+# ONE wire contract, shared with the host (translator/protocol.py). Import it from the repo;
+# fall back to a vendored path only if the worker is deployed without the translator package.
+try:
+    from translator.protocol import (
+        PROTOCOL_VERSION, MSG_HELLO, MSG_COMMAND, MSG_RESULT, MSG_TELEMETRY,
+        MSG_PING, MSG_PONG, MSG_BYE, encode, decode_line,
+        hello as _hello, result as _result, telemetry as _telemetry, pong as _pong, bye as _bye,
+    )
+except ImportError:  # pragma: no cover - standalone deploy
+    import sys as _sys, pathlib as _pathlib
+    _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parent.parent))
+    from translator.protocol import (
+        PROTOCOL_VERSION, MSG_HELLO, MSG_COMMAND, MSG_RESULT, MSG_TELEMETRY,
+        MSG_PING, MSG_PONG, MSG_BYE, encode, decode_line,
+        hello as _hello, result as _result, telemetry as _telemetry, pong as _pong, bye as _bye,
+    )
 
-PROTOCOL_VERSION = 1
-MSG_HELLO     = "hello"
-MSG_COMMAND   = "command"
-MSG_RESULT    = "result"
-MSG_TELEMETRY = "telemetry"
-MSG_PING      = "ping"
-MSG_PONG      = "pong"
-MSG_BYE       = "bye"
+log = logging.getLogger(__name__)
 
 
 def _send(sock: socket.socket, obj: dict) -> None:
-    sock.sendall((json.dumps(obj) + "\n").encode("utf-8"))
+    sock.sendall(encode(obj).encode("utf-8"))
 
 
 class AgentLink:
@@ -67,8 +74,7 @@ class AgentLink:
                                          timeout=self.connect_timeout)
         sock.settimeout(None)
         self._sock = sock
-        _send(sock, {"type": MSG_HELLO, "label": self.label,
-                     "protocol": PROTOCOL_VERSION, "token": self.token})
+        _send(sock, _hello(self.label, self.token))
         self._connected.set()
         if self.on_connect:
             try:
@@ -99,13 +105,12 @@ class AgentLink:
         for line in reader:
             if self._stop.is_set():
                 break
-            try:
-                msg = json.loads(line)
-            except ValueError:
-                continue
+            msg = decode_line(line)          # validated against the shared contract
+            if msg is None:
+                continue                     # malformed / unknown type — ignore
             mtype = msg.get("type")
             if mtype == MSG_PING:
-                self.send({"type": MSG_PONG})
+                self.send(_pong())
             elif mtype == MSG_COMMAND:
                 self._handle_command(msg)
             # results/telemetry are agent→master only; ignore if echoed back
@@ -114,17 +119,14 @@ class AgentLink:
         cmd = msg.get("command")
         fn = self.handlers.get(cmd)
         if fn is None:
-            self.send({"type": MSG_RESULT, "id": msg.get("id"), "ok": False,
-                       "payload": {"error": f"unknown command: {cmd}"}})
+            self.send(_result(False, {"error": f"unknown command: {cmd}"}, msg.get("id")))
             return
         try:
-            result = fn(msg.get("payload") or {})
-            self.send({"type": MSG_RESULT, "id": msg.get("id"), "ok": True,
-                       "payload": result if result is not None else {}})
+            out = fn(msg.get("payload") or {})
+            self.send(_result(True, out if out is not None else {}, msg.get("id")))
         except Exception as exc:
             log.exception("command %s failed", cmd)
-            self.send({"type": MSG_RESULT, "id": msg.get("id"), "ok": False,
-                       "payload": {"error": str(exc)}})
+            self.send(_result(False, {"error": str(exc)}, msg.get("id")))
 
     # ── sends (agent → master) ────────────────────────────────────────────────
     def send(self, msg: dict) -> bool:
@@ -141,7 +143,7 @@ class AgentLink:
     def send_telemetry(self, payload: dict) -> bool:
         """Event-driven telemetry — call when state changes (tps, current string, progress),
         not on a fixed heartbeat tick."""
-        return self.send({"type": MSG_TELEMETRY, "payload": payload})
+        return self.send(_telemetry(payload))
 
     def wait_connected(self, timeout: float | None = None) -> bool:
         return self._connected.wait(timeout)
@@ -158,7 +160,7 @@ class AgentLink:
     def close(self) -> None:
         self._stop.set()
         try:
-            self.send({"type": MSG_BYE})
+            self.send(_bye())
         except Exception:
             pass
         self._close_sock()

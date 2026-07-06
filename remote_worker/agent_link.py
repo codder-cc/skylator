@@ -45,10 +45,11 @@ class AgentLink:
     def __init__(self, master_host: str, master_port: int, label: str,
                  handlers: dict | None = None,
                  on_connect=None, connect_timeout: float = 10.0,
-                 backoff_max: float = 30.0):
+                 backoff_max: float = 30.0, token: str = ""):
         self.master_host = master_host
         self.master_port = master_port
         self.label = label
+        self.token = token or ""    # presented in hello; must match the hub's token if set
         # command name → fn(payload) -> result dict
         self.handlers = dict(handlers or {})
         self.on_connect = on_connect
@@ -66,7 +67,8 @@ class AgentLink:
                                          timeout=self.connect_timeout)
         sock.settimeout(None)
         self._sock = sock
-        _send(sock, {"type": MSG_HELLO, "label": self.label, "protocol": PROTOCOL_VERSION})
+        _send(sock, {"type": MSG_HELLO, "label": self.label,
+                     "protocol": PROTOCOL_VERSION, "token": self.token})
         self._connected.set()
         if self.on_connect:
             try:

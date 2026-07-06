@@ -28,6 +28,7 @@ production hardening for networks that only pass HTTP(S) (see notes).
 """
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import socket
@@ -64,9 +65,11 @@ class _Conn:
 class AgentHub:
     def __init__(self, host: str = "0.0.0.0", port: int = 8770,
                  on_message=None, on_connect=None, on_disconnect=None,
-                 ping_interval: float = 20.0, dead_after: float = 60.0):
+                 ping_interval: float = 20.0, dead_after: float = 60.0,
+                 token: str = ""):
         self.host = host
         self.port = port
+        self.token = token or ""    # if set, agents must present it in hello (else rejected)
         self.on_message = on_message            # (label, msg) for telemetry/result/...
         self.on_connect = on_connect            # (label)
         self.on_disconnect = on_disconnect      # (label)
@@ -131,6 +134,11 @@ class AgentHub:
                 return
             hello = json.loads(first)
             if hello.get("type") != MSG_HELLO or not hello.get("label"):
+                sock.close()
+                return
+            # Auth: if a token is configured, the agent must present it (constant-time compare).
+            if self.token and not hmac.compare_digest(str(hello.get("token", "")), self.token):
+                log.warning("AgentHub: rejected %s — bad/missing token", hello.get("label"))
                 sock.close()
                 return
             label = hello["label"]

@@ -140,3 +140,26 @@ def test_disconnect_fires_on_clean_close(hub):
     link.close()
     assert _wait(lambda: "gpu-1" not in hub.connected_labels())
     assert "gpu-1" in hub.disconnects
+
+
+# ── auth: a configured token gates the socket ──
+def test_token_hub_rejects_wrong_and_accepts_right():
+    connects = []
+    h = AgentHub(host="127.0.0.1", port=0, ping_interval=0.3, dead_after=1.5,
+                 token="s3cret", on_connect=lambda l: connects.append(l))
+    h.start()
+    try:
+        # wrong token → rejected (never registers)
+        bad = AgentLink("127.0.0.1", h.port, "bad", token="nope")
+        threading.Thread(target=bad.serve_forever, kwargs={"reconnect": False}, daemon=True).start()
+        assert not _wait(lambda: "bad" in h.connected_labels(), timeout=1.0)
+
+        # correct token → accepted, and master can push over it
+        good = AgentLink("127.0.0.1", h.port, "good", token="s3cret")
+        threading.Thread(target=good.serve_forever, kwargs={"reconnect": True}, daemon=True).start()
+        assert good.wait_connected(3.0)
+        assert _wait(lambda: "good" in h.connected_labels())
+        assert h.command("good", "noop") is True
+        good.close()
+    finally:
+        h.stop()

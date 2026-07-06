@@ -170,4 +170,10 @@ export const modsApi = {
     apiPost<{ ok: boolean; priority: number }>(
       `/api/mods/${encodeURIComponent(name)}/priority`, { priority },
     ),
+
+  // A — seed from an existing community translation (xTranslate/SST XML).
+  importTranslations: (name: string, xml: string, overwrite = false) =>
+    apiPost<{ ok: boolean; pairs: number; matched: number; applied: number; skipped_existing: number }>(
+      `/api/mods/${encodeURIComponent(name)}/import-translations`, { xml, overwrite },
+    ),
 }

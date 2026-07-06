@@ -3,6 +3,8 @@ Flask application factory for Nolvus Translator Web UI.
 """
 from __future__ import annotations
 import logging
+import os
+import secrets
 import shutil
 import sys
 from pathlib import Path
@@ -19,7 +21,10 @@ def create_app(config_path: Path | None = None) -> Flask:
         static_folder="static",
         static_url_path="/static",
     )
-    app.secret_key = "nolvus-translator-web-ui-2025"
+    # Secret key from env; fall back to a random per-process key (never a hardcoded, published
+    # constant). SKYLATOR_TOKEN gates agent/admin/OTA endpoints AND the agent socket hub.
+    app.secret_key = os.environ.get("SKYLATOR_SECRET_KEY") or secrets.token_hex(32)
+    app.config["API_TOKEN"] = os.environ.get("SKYLATOR_TOKEN", "")
 
     # ── Load translator config ──────────────────────────────────────────────
     ROOT = Path(__file__).parent.parent.parent
@@ -244,7 +249,8 @@ def create_app(config_path: Path | None = None) -> Flask:
 
         _hub = AgentHub(host="0.0.0.0", port=int(_hub_port), on_message=_on_agent_msg,
                         on_connect=_on_agent_connect,
-                        on_disconnect=lambda l: log.info("Agent socket disconnected: %s", l))
+                        on_disconnect=lambda l: log.info("Agent socket disconnected: %s", l),
+                        token=app.config.get("API_TOKEN", ""))   # same shared secret as the HTTP API
         try:
             _hub.start()
             app.config["AGENT_HUB"] = _hub
@@ -346,8 +352,7 @@ def create_app(config_path: Path | None = None) -> Flask:
     # Opt-in: set SKYLATOR_TOKEN on the master + every agent to require a matching
     # X-Skylator-Token header on agent/admin/OTA endpoints. Off by default (trusted LAN),
     # but closes the result-injection / cursor-reset / OTA-RCE surface when enabled.
-    import os as _os
-    app.config["API_TOKEN"] = _os.environ.get("SKYLATOR_TOKEN", "")
+    # (API_TOKEN is set from SKYLATOR_TOKEN at the top of create_app.)
     _PROTECTED = ("/api/workers", "/api/admin", "/api/ota", "/ota", "/setup-report")
 
     @app.before_request

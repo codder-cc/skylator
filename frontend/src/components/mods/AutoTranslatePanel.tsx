@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { Sparkles, ArrowRight, Cpu, Zap, Layers } from 'lucide-react'
+import { Sparkles, ArrowRight, Cpu, Zap, Layers, Upload } from 'lucide-react'
 import { planApi, PROFILES, type QualityProfile } from '@/api/models'
 import { jobsApi } from '@/api/jobs'
+import { modsApi } from '@/api/mods'
 import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/utils'
 
@@ -122,6 +123,51 @@ export function AutoTranslatePanel({ modName, machines }: { modName: string; mac
           <span className="text-[11px] text-warning">Select a translation machine first.</span>
         )}
       </div>
+
+      <ImportTranslations modName={modName} />
+    </div>
+  )
+}
+
+// A — seed from an existing community translation (xTranslate/SST .xml) so the pipeline
+// doesn't re-translate strings a human already did. Fills untranslated rows by source-text match.
+function ImportTranslations({ modName }: { modName: string }) {
+  const queryClient = useQueryClient()
+  const [overwrite, setOverwrite] = useState(false)
+  const [result, setResult] = useState<string | null>(null)
+
+  const mut = useMutation({
+    mutationFn: (xml: string) => modsApi.importTranslations(modName, xml, overwrite),
+    onSuccess: (r) => {
+      setResult(`Imported ${r.applied} (matched ${r.matched}/${r.pairs}, skipped ${r.skipped_existing})`)
+      queryClient.invalidateQueries({ queryKey: ['mods', modName] })
+      queryClient.invalidateQueries({ queryKey: ['mods', modName, 'strings'] })
+      queryClient.invalidateQueries({ queryKey: QK.stats() })
+    },
+    onError: () => setResult('Import failed — is this a valid xTranslate/SST XML?'),
+  })
+
+  const onFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setResult(null)
+    file.text().then((xml) => mut.mutate(xml))
+    e.target.value = ''   // allow re-selecting the same file
+  }
+
+  return (
+    <div className="mt-3 pt-3 border-t border-border-subtle flex items-center gap-3 flex-wrap">
+      <label className="flex items-center gap-1.5 text-xs text-text-muted cursor-pointer hover:text-text-main">
+        <Upload className="w-3.5 h-3.5" />
+        <span>Import community translation (.xml)</span>
+        <input type="file" accept=".xml" className="hidden" onChange={onFile} disabled={mut.isPending} />
+      </label>
+      <label className="flex items-center gap-1 text-[11px] text-text-muted">
+        <input type="checkbox" checked={overwrite} onChange={(e) => setOverwrite(e.target.checked)} />
+        overwrite existing
+      </label>
+      {mut.isPending && <span className="text-[11px] text-text-muted">Importing…</span>}
+      {result && <span className="text-[11px] text-accent">{result}</span>}
     </div>
   )
 }

@@ -161,11 +161,14 @@ class WorkLedger:
         return [wk for wk, st in last_state.items() if st in _OPEN_STATES]
 
     def dedup_translation(self, content_hash_value: str) -> str | None:
-        """Cross-mod reuse: any committed/done translation for this source-text hash.
-        Replaces HashDispatchPool's dedup lookup with a fold over the log."""
+        """Cross-mod reuse: any done translation for this source-text hash. Matches the hash on
+        ANY event (it may be attached at queue OR result time), then returns a done work item's
+        translation. Replaces HashDispatchPool's dedup lookup with a fold over the log."""
+        if not content_hash_value:
+            return None
         rows = self.db.execute(
-            "SELECT work_key FROM work_events WHERE content_hash=? AND event_type=? "
-            "ORDER BY seq", (content_hash_value, QUEUED)).fetchall()
+            "SELECT DISTINCT work_key FROM work_events WHERE content_hash=?",
+            (content_hash_value,)).fetchall()
         for (wk,) in rows:
             if self.is_done(wk):
                 tr = self.translation(wk)

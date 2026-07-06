@@ -65,6 +65,7 @@ class StringManager:
         """
         self._repo = repo
         self._mods_dir = Path(mods_dir)
+        self._ledger = None   # lazy WorkLedger (strangler #1 dual-write)
 
     # ── Main write entry point ───────────────────────────────────────────────
 
@@ -173,11 +174,33 @@ class StringManager:
 
             self._repo.db.commit()
 
+        # Dual-write to the work ledger (strangler #1): shadow the completed translation as an
+        # append-only event carrying the source-text hash → cross-mod dedup + progress
+        # projections read from ONE log. Best-effort: never let it affect the real save.
+        if translation and (computed_status or "") in ("translated", "needs_review"):
+            try:
+                self._ledger_write(mod_name, esp_name, key, original, translation,
+                                   machine_label or source, job_id)
+            except Exception:
+                pass
+
         return SaveResult(
             quality_score=computed_qs,
             status=computed_status or "pending",
             string_id=string_id or 0,
             was_inserted=string_id is not None,
+        )
+
+    def _ledger_write(self, mod_name, esp_name, key, original, translation, agent, job_id):
+        if self._ledger is None:
+            from translator.jobs.work_ledger import WorkLedger
+            self._ledger = WorkLedger(self._repo.db)
+        from translator.jobs.work_ledger import content_hash as _lhash, RESULT
+        self._ledger.append(
+            f"{mod_name}::{esp_name}::{key}", RESULT,
+            agent_id=(agent or None), job_id=(job_id or None),
+            content_hash=_lhash(original) if original else None,
+            payload={"translation": translation},
         )
 
     # ── ESP bootstrap ────────────────────────────────────────────────────────

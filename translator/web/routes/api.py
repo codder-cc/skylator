@@ -1636,6 +1636,22 @@ def import_translations(name: str):
     return jsonify({"ok": True, **stats})
 
 
+@bp.route("/ledger/stats", methods=["GET"])
+def ledger_stats():
+    """#6 — projection read from the work ledger: fleet-wide done count, unique source texts,
+    cross-mod reuse opportunity (duplicate texts already translated), and per-agent output.
+    Observability computed straight from the single event log — no separate counters."""
+    ledger = current_app.config.get("WORK_LEDGER")
+    if ledger is None:
+        return jsonify({"total_events": 0, "done_items": 0, "unique_texts": 0,
+                        "reuse_opportunity": 0, "per_agent": {}})
+    try:
+        return jsonify(ledger.global_stats())
+    except Exception as exc:
+        log.warning("ledger/stats failed: %s", exc)
+        return jsonify({"error": "ledger unavailable"}), 200
+
+
 @bp.route("/translate/plan", methods=["GET"])
 def translate_plan():
     """VM1 — preview the auto/variable-model plan for a mod's pending strings under a quality

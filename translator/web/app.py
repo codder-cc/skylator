@@ -219,6 +219,11 @@ def create_app(config_path: Path | None = None) -> Flask:
     _model_state = ModelStateManager(_registry)
     app.config["MODEL_STATE"] = _model_state
 
+    # Work ledger (strangler #1) — single append-only source of truth, populated by the
+    # save-path dual-write. Exposed for projection reads (#6) while cutover proceeds.
+    from translator.jobs.work_ledger import WorkLedger
+    app.config["WORK_LEDGER"] = WorkLedger(_db)
+
     # ── Persistent agent socket channel (opt-in fast path over the durable pull substrate) ──
     # When configured, the master listens for agent-dialed connections so it can push commands
     # instantly (model switch, cancel) and receive event-driven telemetry — without the agent

@@ -120,3 +120,18 @@ def test_recovery_is_pure_replay(ledger):
 def test_unknown_event_type_rejected(ledger):
     with pytest.raises(ValueError):
         ledger.append("k", "bogus")
+
+
+def test_global_stats_projection(ledger):
+    # two mods translate the same source text ("Iron Sword") → 1 reuse opportunity
+    ledger.append("A::a.esp::k1", "result", agent_id="gpu-1",
+                  content_hash=content_hash("Iron Sword"), payload={"translation": "Железный меч"})
+    ledger.append("B::b.esp::k9", "result", agent_id="gpu-2",
+                  content_hash=content_hash("Iron Sword"), payload={"translation": "Железный меч"})
+    ledger.append("A::a.esp::k2", "result", agent_id="gpu-1",
+                  content_hash=content_hash("Shield"), payload={"translation": "Щит"})
+    s = ledger.global_stats()
+    assert s["done_items"] == 3
+    assert s["unique_texts"] == 2
+    assert s["reuse_opportunity"] == 1          # the duplicated "Iron Sword"
+    assert s["per_agent"] == {"gpu-1": 2, "gpu-2": 1}

@@ -189,6 +189,33 @@ class WorkLedger:
         out["total"] = len(last_state)
         return out
 
+    def global_stats(self) -> dict:
+        """Fleet-wide projection folded from the log: total events, distinct done work items,
+        unique source texts, cross-mod reuse opportunity (duplicate source texts already
+        translated), and per-agent result counts. This is observability read straight from the
+        single source of truth — no separate counters to drift."""
+        q = self.db.execute
+        total_events = q("SELECT COUNT(*) FROM work_events").fetchone()[0]
+        done_items = q("SELECT COUNT(DISTINCT work_key) FROM work_events "
+                       "WHERE event_type IN (?, ?)", (RESULT, COMMITTED)).fetchone()[0]
+        unique_texts = q("SELECT COUNT(DISTINCT content_hash) FROM work_events "
+                         "WHERE content_hash IS NOT NULL").fetchone()[0]
+        # result events that repeat an already-seen source hash = strings that could reuse
+        # instead of re-translating (the dedup payoff, made measurable).
+        result_hashes = q("SELECT COUNT(*) FROM work_events "
+                          "WHERE event_type=? AND content_hash IS NOT NULL", (RESULT,)).fetchone()[0]
+        reuse_opportunity = max(0, result_hashes - unique_texts)
+        per_agent = {row[0] or "?": row[1] for row in q(
+            "SELECT agent_id, COUNT(*) FROM work_events WHERE event_type=? GROUP BY agent_id",
+            (RESULT,)).fetchall()}
+        return {
+            "total_events":      total_events,
+            "done_items":        done_items,
+            "unique_texts":      unique_texts,
+            "reuse_opportunity": reuse_opportunity,
+            "per_agent":         per_agent,
+        }
+
     def recover_open(self, agent_id: str, job_id=None) -> list[str]:
         """After an agent dies: every key it owned (assigned/in_flight) that never reached a
         result is implicitly back to QUEUED for redispatch — no separate recovery state, just

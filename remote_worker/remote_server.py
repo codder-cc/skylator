@@ -302,6 +302,9 @@ class ServerState:
         self.result_store = None         # ResultStore | None
         self.stalled: bool = False       # watchdog: offline production appears stuck
         self.download_progress: dict = {}  # {model, stage, downloaded_mb, total_mb, pct} during a download
+        # Persistent socket channel to the master (fast path over the pull substrate).
+        self.agent_link = None           # AgentLink | None
+        self.agent_hub_port: int | None = None  # advertised by the host in the register reply
 
     @property
     def tps_avg(self) -> float:
@@ -873,15 +876,79 @@ async def _async_register(client, host_url: str, my_url: str,
         if r.status_code == 200:
             log.info("Registered with host %s as %s", host_url, label)
             try:
-                reconcile = (r.json() or {}).get("reconcile") or {}
-                _apply_reconcile(state, reconcile)
+                body = r.json() or {}
+                _apply_reconcile(state, body.get("reconcile") or {})
+                # If the host advertises a socket hub, dial it (fast path for instant push +
+                # event-driven telemetry). Wrapped so any failure leaves the pull path intact.
+                hub_port = body.get("agent_hub_port")
+                if hub_port:
+                    state.agent_hub_port = int(hub_port)
+                    _maybe_start_agent_link(state, host_url, label)
             except Exception as exc:
-                log.debug("register: could not apply reconcile: %s", exc)
+                log.debug("register: post-register handling skipped: %s", exc)
             return True
         log.warning("Host registration returned HTTP %s", r.status_code)
     except Exception as exc:
         log.warning("Could not register with host %s: %s", host_url, exc)
     return False
+
+
+def _socket_load_model(state: ServerState, payload: dict) -> dict:
+    """Socket command handler: load/hot-swap a model. Mirrors the pull-loop load_model path
+    (build backend + load + swap). Runs in the AgentLink thread — synchronous, GIL-safe swap."""
+    from remote_server import _build_backend, ModelLoadRequest
+    req = ModelLoadRequest(**{k: v for k, v in payload.items()
+                              if k in ModelLoadRequest.model_fields})
+    if not req.load:
+        from remote_server import _download_only
+        path = _download_only(req)
+        state.refresh_free_memory()
+        return {"ok": True, "downloaded": True, "loaded": False, "path": path}
+    backend, bt = _build_backend(req)
+    backend.load()
+    state.backend      = backend
+    state.backend_type = bt
+    state.model_label  = req.gguf_filename or req.repo_id or req.model_path or "unknown"
+    state.refresh_free_memory()
+    log.info("Socket: model loaded — %s via %s", state.model_label, bt)
+    return {"ok": True, "model": state.model_label}
+
+
+def _socket_unload_model(state: ServerState, _payload: dict) -> dict:
+    state.backend = None
+    state.model_label = ""
+    return {"ok": True}
+
+
+def _maybe_start_agent_link(state: ServerState, host_url: str, label: str) -> None:
+    """Start the persistent outbound socket to the master (once). The agent DIALS the master
+    (NAT-friendly); the master then pushes commands over it. Runs in a daemon thread with its
+    own reconnect loop. Best-effort: the durable HTTP pull path is unaffected if this fails."""
+    if state.agent_link is not None or not state.agent_hub_port:
+        return
+    try:
+        import os as _os
+        import threading as _threading
+        from urllib.parse import urlparse as _urlparse
+        try:
+            from agent_link import AgentLink
+        except ImportError:
+            from remote_worker.agent_link import AgentLink
+
+        master_host = _urlparse(host_url).hostname or "127.0.0.1"
+        token = _os.environ.get("SKYLATOR_TOKEN", "")
+        link = AgentLink(master_host, int(state.agent_hub_port), label,
+                         handlers={
+                             "load_model":   lambda p: _socket_load_model(state, p),
+                             "unload_model": lambda p: _socket_unload_model(state, p),
+                         },
+                         token=token)
+        state.agent_link = link
+        _threading.Thread(target=link.serve_forever, kwargs={"reconnect": True},
+                          daemon=True, name="agent-link").start()
+        log.info("Agent socket link dialing master %s:%s", master_host, state.agent_hub_port)
+    except Exception as exc:
+        log.warning("Could not start agent socket link: %s", exc)
 
 
 def _apply_reconcile(state: ServerState, reconcile: dict) -> None:
@@ -996,6 +1063,23 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
                     _async_register(state.http_client, host_url, my_url, caps, state)
                 )
             needs_register = False
+
+            # Also push telemetry over the fast socket channel when connected → instant UI
+            # (hub → registry → SSE). The HTTP heartbeat above remains the durable fallback.
+            if state.agent_link is not None and state.agent_link.connected:
+                try:
+                    state.agent_link.send_telemetry({
+                        "model": state.model_label,
+                        "health": health_payload,
+                        "download_progress": state.download_progress or {},
+                        "stats": {
+                            "tps_avg": state.tps_avg, "tps_last": state.tps_last,
+                            "queue_depth": state.queue_depth,
+                            "n_ctx": int(getattr(getattr(state.backend, "_mcfg", None), "n_ctx", 0) or 0),
+                        },
+                    })
+                except Exception:
+                    pass
             # (Result delivery is handled by the always-on _deliver_loop.)
             # Master-pull-over-poll (Gap 2): if the host asked us to resend (e.g. it
             # restored an older backup), re-arm those durable results so the deliver loop

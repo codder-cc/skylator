@@ -19,6 +19,20 @@ def _enqueue_inference_chunks(app, label, n):
     return ids
 
 
+def test_register_advertises_agent_hub_port_when_enabled(tmp_path):
+    import types
+    with real_app(tmp_path) as (app, client):
+        app.config["AGENT_HUB"] = types.SimpleNamespace(port=8770)   # simulate hub enabled
+        reg = FakeAgent(client, label="gpu-1").register()
+        assert reg["agent_hub_port"] == 8770        # agent will dial this (socket cutover)
+
+
+def test_register_no_hub_port_when_disabled(tmp_path):
+    with real_app(tmp_path) as (app, client):       # AGENT_HUB is None by default
+        reg = FakeAgent(client, label="gpu-1").register()
+        assert reg.get("agent_hub_port") is None    # agent stays on the durable pull path
+
+
 def test_register_then_drain_full_cycle(tmp_path):
     with real_app(tmp_path) as (app, client):
         agent = FakeAgent(client, label="gpu-1")

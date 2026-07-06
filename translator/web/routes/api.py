@@ -1280,8 +1280,12 @@ def workers_register():
         except Exception as exc:
             log.warning("register: handshake diff failed for %s: %s", label, exc)
     from translator.jobs.assignment_store import PROTOCOL_VERSION as _HOST_PROTO
+    # Advertise the persistent-socket hub so the agent can dial it (fast path). Absent/None
+    # → the agent stays on the durable HTTP pull path only.
+    _hub = current_app.config.get("AGENT_HUB")
+    agent_hub_port = _hub.port if _hub is not None else None
     return jsonify({"ok": True, "label": label, "reconcile": reconcile,
-                    "protocol": _HOST_PROTO})
+                    "protocol": _HOST_PROTO, "agent_hub_port": agent_hub_port})
 
 
 @bp.route("/workers/heartbeat", methods=["POST"])

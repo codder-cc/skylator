@@ -203,6 +203,20 @@ MIGRATION_STEPS: list[tuple[int, str, list[str]]] = [
             "DROP TABLE IF EXISTS string_reservations",
         ],
     ),
+    (
+        14,
+        "Fold the Nexus description cache into SQLite (#7 one-store)",
+        [
+            # Was a dir of per-mod-id JSON files (cache/nexus_cache/<id>.json) — now the DB is
+            # the single store. NexusFetcher falls back to the JSON files if the table is absent.
+            """CREATE TABLE IF NOT EXISTS nexus_cache (
+                mod_id     INTEGER PRIMARY KEY,
+                name       TEXT,
+                summary    TEXT,
+                fetched_at REAL
+            )""",
+        ],
+    ),
 ]
 
 

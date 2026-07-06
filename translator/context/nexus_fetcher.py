@@ -58,6 +58,56 @@ class NexusFetcher:
         self._ttl_days   = cfg.nexus.cache_ttl_days
         self._cache_dir  = cfg.paths.nexus_cache
         self._cache_dir.mkdir(parents=True, exist_ok=True)
+        # #7 one-store: prefer the SQLite nexus_cache table (the single store). We use the
+        # app's DB file directly when it exists; otherwise fall back to per-file JSON (CLI).
+        self._db_path = cfg.paths.translation_cache.parent / "translations.db"
+
+    def _cache_get(self, mod_id: int):
+        """Return (summary, age_days) from SQLite (preferred) or the legacy JSON file."""
+        if self._db_path.exists():
+            try:
+                import sqlite3
+                conn = sqlite3.connect(str(self._db_path))
+                try:
+                    row = conn.execute("SELECT summary, fetched_at FROM nexus_cache WHERE mod_id=?",
+                                       (mod_id,)).fetchone()
+                finally:
+                    conn.close()
+                if row:
+                    return row[0], (time.time() - (row[1] or 0)) / 86400
+            except Exception:
+                pass
+        cache_file = self._cache_dir / f"{mod_id}.json"
+        if cache_file.exists():
+            try:
+                data = json.loads(cache_file.read_text(encoding="utf-8"))
+                return data.get("summary", ""), (time.time() - data.get("_fetched_at", 0)) / 86400
+            except Exception:
+                pass
+        return None, None
+
+    def _cache_put(self, mod_id: int, name: str, summary: str):
+        """Write to SQLite (preferred) or the legacy JSON file."""
+        if self._db_path.exists():
+            try:
+                import sqlite3
+                conn = sqlite3.connect(str(self._db_path))
+                try:
+                    conn.execute(
+                        "INSERT INTO nexus_cache (mod_id, name, summary, fetched_at) VALUES (?,?,?,?) "
+                        "ON CONFLICT(mod_id) DO UPDATE SET name=excluded.name, "
+                        "summary=excluded.summary, fetched_at=excluded.fetched_at",
+                        (mod_id, name, summary, time.time()))
+                    conn.commit()
+                    return
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+        (self._cache_dir / f"{mod_id}.json").write_text(
+            json.dumps({"_fetched_at": time.time(), "mod_id": mod_id, "name": name,
+                        "summary": summary}, ensure_ascii=False, indent=2),
+            encoding="utf-8")
 
     def test_connection(self) -> bool:
         """Ping the Nexus API to verify the API key works."""
@@ -101,18 +151,11 @@ class NexusFetcher:
         return None
 
     def _get_description(self, mod_id: int) -> Optional[str]:
-        cache_file = self._cache_dir / f"{mod_id}.json"
-
-        # Check cache freshness
-        if cache_file.exists():
-            try:
-                data = json.loads(cache_file.read_text(encoding="utf-8"))
-                age_days = (time.time() - data.get("_fetched_at", 0)) / 86400
-                if age_days < self._ttl_days:
-                    log.debug(f"Nexus cache hit for mod {mod_id} (age {age_days:.1f}d)")
-                    return data.get("summary", "")
-            except Exception:
-                pass
+        # Check cache freshness (SQLite first, JSON fallback)
+        summary, age_days = self._cache_get(mod_id)
+        if summary is not None and age_days is not None and age_days < self._ttl_days:
+            log.debug(f"Nexus cache hit for mod {mod_id} (age {age_days:.1f}d)")
+            return summary
 
         if not self._api_key:
             log.debug("No Nexus API key configured — skipping API fetch.")
@@ -127,17 +170,7 @@ class NexusFetcher:
             description = payload.get("description") or payload.get("summary") or ""
             description = _clean_markup(description)
 
-            # Save to cache
-            cache_data = {
-                "_fetched_at": time.time(),
-                "mod_id": mod_id,
-                "name": payload.get("name", ""),
-                "summary": description,
-            }
-            cache_file.write_text(
-                json.dumps(cache_data, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            self._cache_put(mod_id, payload.get("name", ""), description)
             log.info(f"Fetched Nexus description for mod {mod_id}: {payload.get('name','')!r}")
             return description
 

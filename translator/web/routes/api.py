@@ -2771,14 +2771,18 @@ def recompute_stats():
 
 @bp.route("/mods/<path:mod_name>/reservations")
 def get_mod_reservations(mod_name: str):
-    """Return active string reservations for a mod."""
+    """Return the strings currently in-flight for a mod — now from the live dispatch pool
+    (string_dispatch), since ReservationManager was retired (#2). Output shape unchanged so the
+    existing UI keeps working."""
     repo = current_app.config.get("STRING_REPO")
     if not repo:
         return jsonify([])
     rows = repo.db.execute("""
-        SELECT sr.id, sr.string_id, s.key, sr.machine_label, sr.job_id, sr.expires_at
-        FROM string_reservations sr
-        JOIN strings s ON sr.string_id = s.id
-        WHERE s.mod_name = ? AND sr.status = 'active'
+        SELECT sd.id, s.id AS string_id, s.key,
+               sd.owner_machine AS machine_label, sd.owner_job_id AS job_id,
+               sd.claimed_at AS expires_at
+        FROM string_dispatch sd
+        JOIN strings s ON s.string_hash = sd.string_hash
+        WHERE s.mod_name = ? AND sd.status = 'translating'
     """, (mod_name,)).fetchall()
     return jsonify([dict(r) for r in rows])

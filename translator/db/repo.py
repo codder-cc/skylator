@@ -269,7 +269,7 @@ class StringRepo:
                 conditions.append("source='untranslatable'")
             elif status == "reserved":
                 conditions.append(
-                    "id IN (SELECT string_id FROM string_reservations WHERE status='active')"
+                    "string_hash IN (SELECT string_hash FROM string_dispatch WHERE status='translating')"
                 )
             else:
                 conditions.append("status=?")
@@ -335,8 +335,8 @@ class StringRepo:
                 SUM(CASE WHEN key LIKE 'swf:%'     THEN 1 ELSE 0 END) AS swf_cnt,
                 SUM(CASE WHEN status='needs_review'         THEN 1 ELSE 0 END) AS review_cnt,
                 SUM(CASE WHEN source='untranslatable'       THEN 1 ELSE 0 END) AS untranslatable_cnt,
-                SUM(CASE WHEN id IN (
-                    SELECT string_id FROM string_reservations WHERE status='active'
+                SUM(CASE WHEN string_hash IN (
+                    SELECT string_hash FROM string_dispatch WHERE status='translating'
                 ) THEN 1 ELSE 0 END) AS reserved_cnt
             FROM strings WHERE mod_name=?
         """, (mod_name,)).fetchone()

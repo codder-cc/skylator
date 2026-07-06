@@ -64,8 +64,9 @@ def create_app(config_path: Path | None = None) -> Flask:
     app.config["STRING_REPO"] = _repo
 
     # ReservationManager RETIRED (#2): superseded by HashDispatchPool (live hash-keyed dedup) +
-    # the assignments layer (durability). The old string_reservations table is left in place
-    # (empty; a few read-only queries still LEFT JOIN it as a no-op) pending a drop-migration.
+    # the assignments layer. The string_reservations table is dropped by migration 13; the
+    # remaining "in-flight strings" reads were repointed to string_dispatch. Kept in config as
+    # None so any lingering `.get("RESERVATION_MGR")` caller stays a safe no-op.
     app.config["RESERVATION_MGR"] = None
 
     # ── Init HashDispatchPool ────────────────────────────────────────────────

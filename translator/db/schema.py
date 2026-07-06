@@ -54,22 +54,9 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     applied_at REAL    DEFAULT (unixepoch('now', 'subsec'))
 );
 
-CREATE TABLE IF NOT EXISTS string_reservations (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    string_id     INTEGER NOT NULL REFERENCES strings(id) ON DELETE CASCADE,
-    machine_label TEXT    NOT NULL,
-    job_id        TEXT    NOT NULL,
-    reserved_at   REAL    DEFAULT (unixepoch('now', 'subsec')),
-    expires_at    REAL    NOT NULL,
-    status        TEXT    NOT NULL DEFAULT 'active'
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_reservations_active
-    ON string_reservations(string_id) WHERE status = 'active';
-CREATE INDEX IF NOT EXISTS idx_reservations_job
-    ON string_reservations(job_id);
-CREATE INDEX IF NOT EXISTS idx_reservations_expiry
-    ON string_reservations(expires_at, status);
+-- string_reservations REMOVED (#2): ReservationManager retired; superseded by
+-- string_dispatch (HashDispatchPool) + the assignments layer. Migration 13 drops it on
+-- existing DBs.
 
 CREATE TABLE IF NOT EXISTS string_history (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,

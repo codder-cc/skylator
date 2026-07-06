@@ -193,6 +193,16 @@ MIGRATION_STEPS: list[tuple[int, str, list[str]]] = [
             )""",
         ],
     ),
+    (
+        13,
+        "Drop the retired string_reservations table (#2 — ReservationManager removed)",
+        [
+            # Superseded by HashDispatchPool (string_dispatch) + the assignments layer. Nothing
+            # writes it anymore; the remaining reads were repointed to string_dispatch. Indexes
+            # drop with the table.
+            "DROP TABLE IF EXISTS string_reservations",
+        ],
+    ),
 ]
 
 

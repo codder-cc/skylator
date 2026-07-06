@@ -107,14 +107,17 @@ def mod_strings(mod_name: str):
                 offset=(page - 1) * per_page,
             )
             scope_counts = repo.scope_counts(mod_name)
-            # Bulk-fetch active reservations for this page's strings
+            # Bulk-fetch which machine is currently translating each of this page's strings —
+            # now from the live dispatch pool (string_dispatch), joined on string_hash, since
+            # ReservationManager was retired (#2).
             string_ids = [s["id"] for s in strings if s.get("id")]
             reserved_map: dict[int, str] = {}
             if string_ids:
                 placeholders = ",".join("?" * len(string_ids))
                 res_rows = repo.db.execute(
-                    f"SELECT string_id, machine_label FROM string_reservations "
-                    f"WHERE string_id IN ({placeholders}) AND status='active'",
+                    f"SELECT s.id AS string_id, sd.owner_machine AS machine_label "
+                    f"FROM strings s JOIN string_dispatch sd ON s.string_hash = sd.string_hash "
+                    f"WHERE s.id IN ({placeholders}) AND sd.status='translating'",
                     string_ids,
                 ).fetchall()
                 reserved_map = {r["string_id"]: r["machine_label"] for r in res_rows}

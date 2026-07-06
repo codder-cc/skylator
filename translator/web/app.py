@@ -63,16 +63,10 @@ def create_app(config_path: Path | None = None) -> Flask:
     app.config["TRANSLATION_DB"] = _db
     app.config["STRING_REPO"] = _repo
 
-    # ── Init ReservationManager (LEGACY/ZOMBIE — slated for removal) ─────────
-    # Superseded by HashDispatchPool (live dedup) + the assignments layer (durability).
-    # Its translate-path branch is dead (DISPATCH_POOL is always present), and the
-    # 'reserved' stat now derives from string_dispatch, not string_reservations.
-    # TODO(consolidate): remove this manager, its expiry thread, and the
-    # string_reservations table in a dedicated migration once no code references it.
-    from translator.reservation.reservation_manager import ReservationManager
-    _reservation_mgr = ReservationManager(_db, ttl_seconds=300)
-    _reservation_mgr.release_all_active()
-    app.config["RESERVATION_MGR"] = _reservation_mgr
+    # ReservationManager RETIRED (#2): superseded by HashDispatchPool (live hash-keyed dedup) +
+    # the assignments layer (durability). The old string_reservations table is left in place
+    # (empty; a few read-only queries still LEFT JOIN it as a no-op) pending a drop-migration.
+    app.config["RESERVATION_MGR"] = None
 
     # ── Init HashDispatchPool ────────────────────────────────────────────────
     from translator.reservation.hash_dispatch_pool import HashDispatchPool
@@ -136,20 +130,7 @@ def create_app(config_path: Path | None = None) -> Flask:
     import threading as _threading
     import time as _time
 
-    def _bg_expire_reservations():
-        while True:
-            _time.sleep(60)
-            try:
-                n = _reservation_mgr.expire_stale()
-                if n:
-                    log.info("Expired %d stale reservations", n)
-            except Exception as exc:
-                log.warning("expire_stale error: %s", exc)
-
-    _threading.Thread(
-        target=_bg_expire_reservations,
-        daemon=True, name="reservation-expiry",
-    ).start()
+    # (reservation-expiry thread retired with ReservationManager — #2)
 
     def _bg_populate_hashes():
         _time.sleep(5)  # let the app finish starting up

@@ -1,14 +1,14 @@
 """
 TranslatePipeline — 12-step translation pipeline for a single mod.
 
-Wires together StringManager, ReservationManager, TranslationCache,
+Wires together StringManager, HashDispatchPool, TranslationCache,
 StatsManager, ContextBuilder, and WorkerPool into a clean sequence.
 
 Steps:
   1.  Resolve strings (filtered by scope + TranslationMode)
   2.  Mark untranslatable strings
-  3.  Skip already-reserved strings
-  4.  Acquire reservations
+  3.  Claim strings via HashDispatchPool (hash-keyed dedup; waiters for in-flight hashes)
+  4.  Apply dispatch-pool cache hits
   5.  Cache lookup (TranslationCache / DB hash dedup)
   6.  Dict lookup (GlobalDict compat layer)
   7.  Build mod context
@@ -19,7 +19,7 @@ Steps:
   11. Invalidate StatsManager cache
   12. Notify SSE via JobManager.add_string_update
   (finally):
-      Release reservations
+      Release dispatch-pool slots
       Save GlobalDict
       Recompute StatsManager
 """
@@ -53,16 +53,15 @@ class TranslatePipeline:
         cfg,
         repo,
         string_mgr,
-        reservation_mgr,
         translation_cache,
         stats_mgr,
         global_dict=None,
         dispatch_pool=None,
+        reservation_mgr=None,   # retired (HashDispatchPool superseded it); accepted + ignored
     ):
         self._cfg              = cfg
         self._repo             = repo
         self._string_mgr       = string_mgr
-        self._reservation_mgr  = reservation_mgr
         self._translation_cache = translation_cache
         self._stats_mgr        = stats_mgr
         self._global_dict      = global_dict
@@ -100,9 +99,8 @@ class TranslatePipeline:
                        or mode == TranslationMode.FORCE_ALL]
             job.add_log(f"[DEBUG] After untranslatable filter: {len(strings)} strings")
 
-        # ── Steps 3 & 4: Dispatch pool claim (or legacy reservations fallback) ──
+        # ── Steps 3 & 4: Dispatch pool claim (hash-keyed dedup) ──
         _dispatch_pool   = self._dispatch_pool
-        _reservation_mgr = self._reservation_mgr if not _dispatch_pool else None
         machine_label    = (backends[0][0] if backends else job.name)
         claim            = None   # ClaimResult from dispatch pool
         hash_map: dict   = {}     # hash → string_id (populated when dispatch_pool is active)
@@ -141,22 +139,6 @@ class TranslatePipeline:
                 [s for s in strings if s.get("string_hash") in owned_hashes]
                 + hashless
             )
-            n_owned = len(strings)
-
-        elif _reservation_mgr and strings:
-            reserved_ids = _reservation_mgr.get_reserved_string_ids(mod_name)
-            before = len(strings)
-            strings = [s for s in strings if s.get("id") not in reserved_ids]
-            if len(reserved_ids) > 0:
-                job.add_log(f"[DEBUG] Reservation pre-filter: {before} → {len(strings)} (reserved={len(reserved_ids)})")
-
-            string_ids = [s["id"] for s in strings if s.get("id")]
-            if string_ids:
-                acq = _reservation_mgr.acquire_batch(string_ids, machine_label, job.id)
-                if acq.already_taken:
-                    job.add_log(f"Skipped {len(acq.already_taken)} strings reserved by another job")
-                acquired_set = set(acq.reserved)
-                strings = [s for s in strings if not s.get("id") or s["id"] in acquired_set]
             n_owned = len(strings)
         else:
             n_owned = len(strings)
@@ -500,12 +482,6 @@ class TranslatePipeline:
                     _dispatch_pool.release_job(job.id)
                 except Exception as exc:
                     log.warning("dispatch_pool.release_job failed: %s", exc)
-            elif _reservation_mgr:
-                # Legacy fallback
-                try:
-                    _reservation_mgr.release_batch(job.id)
-                except Exception as exc:
-                    log.warning("release_batch failed: %s", exc)
             # Recompute stats after job
             if self._stats_mgr:
                 try:

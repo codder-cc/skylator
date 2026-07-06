@@ -353,7 +353,9 @@ def create_app(config_path: Path | None = None) -> Flask:
     # X-Skylator-Token header on agent/admin/OTA endpoints. Off by default (trusted LAN),
     # but closes the result-injection / cursor-reset / OTA-RCE surface when enabled.
     # (API_TOKEN is set from SKYLATOR_TOKEN at the top of create_app.)
-    _PROTECTED = ("/api/workers", "/api/admin", "/api/ota", "/ota", "/setup-report")
+    # /tools shells out to BSArch/FFDec with request-supplied paths — gate it like the other
+    # code-exec-adjacent surfaces when a token is configured.
+    _PROTECTED = ("/api/workers", "/api/admin", "/api/ota", "/ota", "/setup-report", "/tools")
 
     @app.before_request
     def _require_token():

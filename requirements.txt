@@ -34,3 +34,4 @@ zeroconf>=0.132.0         # mDNS service announcement + LAN discovery
 
 # ── Dev / testing ──────────────────────────────────────────────────────────────
 pytest>=8.3.0
+pytest-timeout>=2.3.0   # per-test timeout safety net (see pyproject [tool.pytest])

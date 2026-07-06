@@ -8,7 +8,7 @@ import logging
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -60,20 +60,37 @@ class Job:
         self._worker_statuses: dict[str, dict] = {}  # label → BackendWorkerStatus.to_dict()
 
     def to_dict(self) -> dict:
-        d = asdict(self)
-        d["status"]           = self.status.value
-        d["progress"]         = asdict(self.progress)
-        d["elapsed"]          = self._elapsed()
-        d["pct"]              = self.progress.current / max(self.progress.total, 1) * 100
-        d["mod_name"]          = self.params.get("mod_name", "")
-        d["assigned_machines"] = self.params.get("assigned_machines") or []
-        d["eta_seconds"]      = self._eta_seconds()
-        d["tokens_generated"] = self.tokens_generated
-        d["tps_avg"]          = self.tps_avg
-        # Include worker statuses so completed jobs retain their machine stats
-        d["worker_updates"]   = list(self._worker_statuses.values())
-        d["waiting_on_jobs"]  = self.waiting_on_jobs
-        return d
+        # Built with SHALLOW copies — NOT dataclasses.asdict(), which recursively deep-copies
+        # the entire string_updates history + logs. _notify() runs on every string update, so
+        # asdict made this O(n²) and could stall a long-running job. The result is JSON-
+        # serialized and never mutated, so shallow references are safe; list() guards the REST
+        # path against a concurrent append mutating a list mid-serialization.
+        return {
+            "id":                self.id,
+            "name":              self.name,
+            "job_type":          self.job_type,
+            "params":            self.params,
+            "status":            self.status.value,
+            "progress":          {"current": self.progress.current, "total": self.progress.total,
+                                  "message": self.progress.message, "sub_step": self.progress.sub_step},
+            "created_at":        self.created_at,
+            "started_at":        self.started_at,
+            "finished_at":       self.finished_at,
+            "result":            self.result,
+            "error":             self.error,
+            "log_lines":         list(self.log_lines),
+            "string_updates":    list(self.string_updates),
+            "tokens_generated":  self.tokens_generated,
+            "tps_avg":           self.tps_avg,
+            "waiting_on_jobs":   dict(self.waiting_on_jobs),
+            "elapsed":           self._elapsed(),
+            "pct":               self.progress.current / max(self.progress.total, 1) * 100,
+            "mod_name":          self.params.get("mod_name", ""),
+            "assigned_machines": self.params.get("assigned_machines") or [],
+            "eta_seconds":       self._eta_seconds(),
+            # Include worker statuses so completed jobs retain their machine stats
+            "worker_updates":    list(self._worker_statuses.values()),
+        }
 
     def _elapsed(self) -> float:
         if self.started_at is None:
@@ -394,14 +411,37 @@ class JobManager:
         try:
             terminal = job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.PAUSED)
             # OFFLINE_DISPATCHED is not terminal — SSE stream stays open
-            d = job.to_dict()
-            if not terminal and not include_logs:
-                d["log_lines"] = []
-            # Send only new string updates since last broadcast
             cursor = job._string_update_cursor
-            d["new_string_updates"] = job.string_updates[cursor:]
+            # Compact payload built directly (NOT job.to_dict()): _notify runs on every string
+            # update, so it must be O(1) in history size. The precise delta rides in
+            # new_string_updates; string_updates carries only a bounded recent tail for the live
+            # panel (which shows the last ~50). The full history is available via GET /jobs/<id>.
+            d = {
+                "id":                job.id,
+                "name":              job.name,
+                "job_type":          job.job_type,
+                "status":            job.status.value,
+                "progress":          {"current": job.progress.current, "total": job.progress.total,
+                                      "message": job.progress.message, "sub_step": job.progress.sub_step},
+                "created_at":        job.created_at,
+                "started_at":        job.started_at,
+                "finished_at":       job.finished_at,
+                "result":            job.result,
+                "error":             job.error,
+                "mod_name":          job.params.get("mod_name", ""),
+                "assigned_machines": job.params.get("assigned_machines") or [],
+                "tokens_generated":  job.tokens_generated,
+                "tps_avg":           job.tps_avg,
+                "waiting_on_jobs":   dict(job.waiting_on_jobs),
+                "elapsed":           job._elapsed(),
+                "pct":               job.progress.current / max(job.progress.total, 1) * 100,
+                "eta_seconds":       job._eta_seconds(),
+                "log_lines":         list(job.log_lines) if (terminal or include_logs) else [],
+                "string_updates":    job.string_updates[-500:],
+                "new_string_updates": job.string_updates[cursor:],
+                "worker_updates":    list(job._worker_statuses.values()),
+            }
             job._string_update_cursor = len(job.string_updates)
-            d["worker_updates"] = list(job._worker_statuses.values())
         except Exception:
             log.exception("_notify: failed to build payload for job %s", job.id)
             return

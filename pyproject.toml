@@ -32,3 +32,11 @@ include = ["translator*", "scripts*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths    = ["tests"]
+# Safety net: no single test may hang the suite (the O(n²) _notify bug once stalled it for
+# minutes). Requires pytest-timeout; degrades to a harmless warning if it's not installed.
+timeout        = 120
+timeout_method = "thread"
+markers = [
+    "network: test performs real network I/O (mDNS/scan/HTTP to a real host); may be skipped offline",
+    "slow: test is intentionally slow (large loops / real sockets)",
+]

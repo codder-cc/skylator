@@ -7,11 +7,8 @@ Covers:
 - _split_round_robin: empty list → empty buckets
 - _split_round_robin: more workers than strings
 - dispatch: happy path → OFFLINE_DISPATCHED, offline_job_ids set
-- dispatch: worker returns busy (\x00busy\x00) → RuntimeError
-- dispatch: no ACK (timeout) → RuntimeError
-- dispatch: bad JSON ACK → RuntimeError
-- dispatch: ok=false in ACK → RuntimeError
-- dispatch: all buckets empty → RuntimeError
+- dispatch: fire-and-forget — no ACK required (detached operation)
+- dispatch: no machines → RuntimeError
 - dispatch: two workers, both ACK → two offline_job_ids
 - dispatch-back: enqueues cancel_offline_job chunks per worker
 """
@@ -226,35 +223,22 @@ def test_dispatch_finished_at_is_none_after_dispatch():
 # ── dispatch: error paths ──────────────────────────────────────────────────
 
 
-def test_dispatch_raises_on_no_ack(timeout=True):
+def test_dispatch_is_fire_and_forget_no_ack_required():
+    """Detached operation: dispatch must NOT wait for or require an ACK. Even if the agent is
+    offline at dispatch time (no ACK ever comes), the package is queued + the offline job is
+    registered + the host job goes OFFLINE_DISPATCHED — the agent picks it up when it connects,
+    possibly hours/days later. (Superseded the old ACK-wait, which broke detached dispatch.)"""
     job      = _make_job()
-    registry = _make_registry(timeout=True)
+    registry = _make_registry(timeout=True)   # collect_result would return None (no ACK)
 
     with patch("translator.web.offline_backend._build_terminology", return_value=""):
-        with pytest.raises(RuntimeError, match="no ACK"):
-            dispatch(job, "TestMod", _make_strings(5), "", _make_inf_params(),
-                     [("w", MagicMock())], registry, MagicMock(), _make_repo(), _make_cfg())
+        dispatch(job, "TestMod", _make_strings(5), "", _make_inf_params(),
+                 [("w", MagicMock())], registry, MagicMock(), _make_repo(), _make_cfg())
 
-
-def test_dispatch_skips_busy_worker_and_raises_nothing_dispatched():
-    """A single busy worker is skipped; since no workers succeed, raises RuntimeError."""
-    job      = _make_job()
-    registry = _make_registry(ack_json="\x00busy\x00")
-
-    with patch("translator.web.offline_backend._build_terminology", return_value=""):
-        with pytest.raises(RuntimeError, match="busy"):
-            dispatch(job, "TestMod", _make_strings(5), "", _make_inf_params(),
-                     [("w", MagicMock())], registry, MagicMock(), _make_repo(), _make_cfg())
-
-
-def test_dispatch_raises_on_ok_false():
-    job      = _make_job()
-    registry = _make_registry(ack_json='{"ok": false, "error": "busy"}')
-
-    with patch("translator.web.offline_backend._build_terminology", return_value=""):
-        with pytest.raises(RuntimeError, match="ok=false"):
-            dispatch(job, "TestMod", _make_strings(5), "", _make_inf_params(),
-                     [("w", MagicMock())], registry, MagicMock(), _make_repo(), _make_cfg())
+    assert job.status == JobStatus.OFFLINE_DISPATCHED
+    registry.enqueue_chunk.assert_called_once()          # package queued
+    registry.register_offline_job.assert_called_once()   # tracked for lost-detection
+    registry.collect_result.assert_not_called()          # never blocked waiting for an ACK
 
 
 def test_dispatch_raises_on_no_machines():

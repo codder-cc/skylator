@@ -90,6 +90,7 @@ def test_agent_has_no_inbound_surface(hub):
         conn = hub._conns["gpu-1"]
     assert not hasattr(conn, "agent_address")           # no dial-back address anywhere
     assert hub.command("gpu-1", "noop") is True         # reachable ONLY via that connection
+    link.close()
 
 
 def test_severing_connection_makes_master_blind_until_redial(hub):

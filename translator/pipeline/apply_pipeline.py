@@ -20,6 +20,52 @@ from translator.pipeline.translate_pipeline import DeployMode
 log = logging.getLogger(__name__)
 
 
+def _apply_bsa_localized_strings(cfg, mod_name: str, mod_dir: Path, repo, job) -> None:
+    """B — translate BSA-packed localized .STRINGS files. For each .bsa in the mod: unpack,
+    translate the Strings/ files by source-text lookup from the DB (reusing the #5 codec), and
+    repack if anything changed. BSArch-gated: a safe no-op when BSArch isn't configured (so it
+    never affects environments/tests without the tool). The real round-trip validates on the
+    owner's hardware with BSArch installed."""
+    import shutil
+    import subprocess
+    from scripts.strings_codec import translate_strings_dir
+
+    bsarch = getattr(cfg.paths, "bsarch_exe", None)
+    if not bsarch or not Path(bsarch).exists():
+        return
+    bsa_files = list(mod_dir.glob("*.bsa"))
+    if not bsa_files:
+        return
+
+    # source→translation from the DB (translated rows only)
+    by_source = {}
+    for r in repo.get_all_strings(mod_name):
+        o, t = r.get("original"), r.get("translation")
+        if o and t and r.get("status") == "translated":
+            by_source[o] = t
+    if not by_source:
+        return
+
+    enc = getattr(getattr(cfg, "translation", None), "string_encoding", "utf-8")
+    for bsa in bsa_files:
+        extract_dir = cfg.paths.temp_dir / (bsa.stem + "_strings")
+        strings_dir = extract_dir / "Strings"
+        try:
+            extract_dir.mkdir(parents=True, exist_ok=True)
+            r = subprocess.run([str(bsarch), "unpack", str(bsa), str(extract_dir), "-q", "-mt"],
+                               capture_output=True, text=True, timeout=300)
+            if r.returncode != 0 or not strings_dir.is_dir():
+                continue
+            files, applied = translate_strings_dir(strings_dir, by_source, encoding=enc)
+            if applied:
+                job.add_log(f"BSA strings: translated {applied} string(s) in {files} file(s) "
+                            f"→ {bsa.name}")
+                from scripts.translate_mcm import repack_bsa
+                repack_bsa(str(bsa), extract_dir)
+        finally:
+            shutil.rmtree(extract_dir, ignore_errors=True)
+
+
 class ApplyPipeline:
     """ESP and BSA/SWF apply pipelines with optional DeployMode filtering."""
 
@@ -172,6 +218,13 @@ class ApplyPipeline:
             job.add_log(f"MCM/BSA translation error: {exc}")
             log.exception("translate_bsa failed for %s", mod_name)
             raise
+
+        # B — translate BSA-packed localized .STRINGS files (best-effort, BSArch-gated).
+        if repo and not dry_run:
+            try:
+                _apply_bsa_localized_strings(cfg, mod_name, mod_dir, repo, job)
+            except Exception as exc:
+                job.add_log(f"BSA localized-strings warning: {exc}")
 
         # SWF translation (if FFDec configured)
         ffdec = getattr(getattr(cfg, "tools", None), "ffdec_jar", None)

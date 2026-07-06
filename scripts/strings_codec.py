@@ -151,6 +151,52 @@ def discover_language(plugin_path: Path, strings_dir: Path | None = None) -> str
     return None
 
 
+def extract_strings_dir(strings_dir: Path) -> list[dict]:
+    """Extract every localized string from the .STRINGS/.ILSTRINGS/.DLSTRINGS files directly
+    under `strings_dir` — the layout inside an unpacked BSA (`<Bsa>/Strings/*.STRINGS`). Returns
+    [{file, kind, string_id, text}]. This is the read side for BSA-packed localized plugins
+    (loose Strings/ folders are handled by esp_engine.extract_all_strings)."""
+    strings_dir = Path(strings_dir)
+    out: list[dict] = []
+    if not strings_dir.is_dir():
+        return out
+    for f in sorted(strings_dir.iterdir()):
+        kind = f.suffix.lstrip(".").upper()
+        if kind not in KINDS or not f.is_file():
+            continue
+        for sid, text in parse_strings_bytes(f.read_bytes(), kind).items():
+            if text and text.strip():
+                out.append({"file": f.name, "kind": kind, "string_id": sid, "text": text})
+    return out
+
+
+def translate_strings_dir(strings_dir: Path, by_source: dict, encoding: str = "utf-8") -> tuple[int, int]:
+    """Apply translations to every localized string file under `strings_dir` (unpacked BSA),
+    matching each string's current text against by_source {source_text: translation}. Writes
+    changed files in place. Returns (files_written, strings_applied). This is the write side
+    that the BSA unpack→translate→repack path calls after building by_source from the DB."""
+    strings_dir = Path(strings_dir)
+    files_written = applied = 0
+    if not strings_dir.is_dir() or not by_source:
+        return 0, 0
+    for f in sorted(strings_dir.iterdir()):
+        kind = f.suffix.lstrip(".").upper()
+        if kind not in KINDS or not f.is_file():
+            continue
+        entries = parse_strings_bytes(f.read_bytes(), kind)
+        changed = False
+        for sid, text in list(entries.items()):
+            tr = by_source.get(text)
+            if tr and tr.strip() and tr != text:
+                entries[sid] = tr
+                applied += 1
+                changed = True
+        if changed:
+            f.write_bytes(build_strings_bytes(entries, kind, encoding))
+            files_written += 1
+    return files_written, applied
+
+
 class LocalizedStrings:
     """Loads the three string files for a plugin, exposes a merged id→text map, and writes
     translations back into the correct file (remembering each id's origin)."""

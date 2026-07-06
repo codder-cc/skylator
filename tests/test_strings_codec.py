@@ -101,3 +101,40 @@ def test_plugin_level_load_translate_write(tmp_path):
 def test_empty_and_truncated_blobs_are_safe():
     assert parse_strings_bytes(b"", "STRINGS") == {}
     assert parse_strings_bytes(b"\x01\x00\x00\x00", "STRINGS") == {}   # < 8 bytes header
+
+
+# ── B: BSA-packed strings (extract from + translate into an unpacked Strings/ dir) ──
+from scripts.strings_codec import extract_strings_dir, translate_strings_dir  # noqa: E402
+
+
+def _write_strings_dir(tmp_path):
+    sdir = tmp_path / "Strings"
+    sdir.mkdir()
+    (sdir / "Mod_english.STRINGS").write_bytes(build_strings_bytes({1: "Iron Sword", 2: "Shield"}, "STRINGS"))
+    (sdir / "Mod_english.DLSTRINGS").write_bytes(build_strings_bytes({100: "A fine blade."}, "DLSTRINGS"))
+    return sdir
+
+
+def test_extract_strings_dir(tmp_path):
+    sdir = _write_strings_dir(tmp_path)
+    got = {(e["kind"], e["string_id"]): e["text"] for e in extract_strings_dir(sdir)}
+    assert got == {("STRINGS", 1): "Iron Sword", ("STRINGS", 2): "Shield",
+                   ("DLSTRINGS", 100): "A fine blade."}
+
+
+def test_translate_strings_dir_writes_back(tmp_path):
+    sdir = _write_strings_dir(tmp_path)
+    by_source = {"Iron Sword": "Железный меч", "A fine blade.": "Прекрасный клинок."}
+    files, applied = translate_strings_dir(sdir, by_source, encoding="cp1251")
+    assert files == 2 and applied == 2
+    # reload: translated ids changed, untranslated "Shield" preserved
+    again = {(e["kind"], e["string_id"]): e["text"] for e in extract_strings_dir(sdir)}
+    assert again[("STRINGS", 1)] == "Железный меч"
+    assert again[("STRINGS", 2)] == "Shield"
+    assert again[("DLSTRINGS", 100)] == "Прекрасный клинок."
+
+
+def test_translate_strings_dir_noop_when_no_match(tmp_path):
+    sdir = _write_strings_dir(tmp_path)
+    files, applied = translate_strings_dir(sdir, {"Unrelated": "X"})
+    assert files == 0 and applied == 0

@@ -126,16 +126,33 @@ def quality_score(original: str, translation: str) -> int:
     return max(0, min(100, score))
 
 
-def compute_string_status(original: str, translation: str) -> tuple[int, bool, list[str], str]:
-    """Single source of truth: returns (quality_score, tok_ok, token_issues, status).
-    status is 'pending' if no translation, 'translated' if tok_ok and qs>70, else 'needs_review'.
+def compute_string_status(original: str, translation: str,
+                          terms: dict | None = None) -> tuple[int, bool, list[str], str]:
+    """Single source of truth: returns (quality_score, tok_ok, issues, status).
+
+    status is 'pending' with no translation, 'translated' when the tokens survived, the
+    score is above 70 AND the glossary was respected, otherwise 'needs_review'.
+
+    The glossary check is what stops a wrong proper noun from counting as finished work.
+    It was injected into every prompt and verified nowhere, which let 352 strings through
+    on the live collection with "Skyrim" rendered as "Сиродил" — a different province —
+    all of them marked translated. Pass `terms` to enforce it; omit for the token/score
+    checks alone.
     """
     if not translation or not translation.strip():
         return 0, False, [], "pending"
     tok_ok, tok_issues = validate_tokens(original, translation)
     qs = quality_score(original, translation)
-    status = "translated" if (tok_ok and qs > 70) else "needs_review"
-    return qs, tok_ok, tok_issues, status
+    issues = list(tok_issues)
+    glossary_ok = True
+    if terms:
+        from translator.validation.terminology import glossary_violations
+        bad = glossary_violations(original, translation, terms)
+        if bad:
+            glossary_ok = False
+            issues.extend(f"glossary: {en} should be {ru}" for en, ru in bad[:5])
+    status = "translated" if (tok_ok and glossary_ok and qs > 70) else "needs_review"
+    return qs, tok_ok, issues, status
 
 
 def _candidate_score(original: str, t: str) -> float:

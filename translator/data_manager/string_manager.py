@@ -11,6 +11,7 @@ This fixes:
 from __future__ import annotations
 import ast
 import hashlib
+import json
 import logging
 import threading
 import time
@@ -66,6 +67,26 @@ class StringManager:
         self._repo = repo
         self._mods_dir = Path(mods_dir)
         self._ledger = None   # lazy WorkLedger (strangler #1 dual-write)
+        self._terms = None    # lazy glossary, see _glossary()
+
+    def _glossary(self) -> dict:
+        """The curated EN→RU glossary, loaded once.
+
+        It is injected into every prompt and, until now, verified nowhere. On the live
+        collection that let 352 strings through in which "Skyrim" had become "Сиродил" —
+        a different province — every one of them recorded as translated. Enforcing it here,
+        in the single write gate, means no delivery path can skip the check.
+        """
+        if self._terms is None:
+            self._terms = {}
+            try:
+                from translator.config import get_config
+                path = get_config().paths.skyrim_terms
+                if path and Path(path).exists():
+                    self._terms = json.loads(Path(path).read_text(encoding="utf-8"))
+            except Exception as exc:
+                log.warning("glossary: could not load terms, enforcement is off: %s", exc)
+        return self._terms
 
     # ── Main write entry point ───────────────────────────────────────────────
 
@@ -118,6 +139,21 @@ class StringManager:
                         computed_qs = None
                     if computed_status is None:
                         computed_status = "translated"
+
+            # Enforced whatever the caller claimed. An agent computes its own status and
+            # has no glossary, so a delivery arrives asserting "translated" — which is how
+            # 352 strings recorded Skyrim as Сиродил, a different province, and counted as
+            # finished. A term the glossary fixes is not a stylistic choice, so the string
+            # goes to review instead of being accepted.
+            if original and computed_status == "translated":
+                terms = self._glossary()
+                if terms:
+                    from translator.validation.terminology import glossary_violations
+                    bad = glossary_violations(original, translation, terms)
+                    if bad:
+                        computed_status = "needs_review"
+                        log.debug("glossary: %s/%s → review (%s)", mod_name, key,
+                                  ", ".join(f"{en}->{ru}" for en, ru in bad[:3]))
         else:
             computed_qs = None
             computed_status = "pending"

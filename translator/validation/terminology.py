@@ -65,3 +65,87 @@ def terminology_summary(rows: list[dict], terms: dict) -> dict:
         "total_violations":  sum(r["violations"] for r in rep),
         "report":            rep,
     }
+
+
+# ── Enforcement ───────────────────────────────────────────────────────────────
+#
+# The glossary was injected into every prompt and never checked afterwards. On the live
+# collection that let 352 strings through in which "Skyrim" had become "Сиродил" — a
+# different province — and nothing anywhere marked them as suspect. Detection after the
+# fact is not enough: a wrong proper noun has to stop a string from counting as done.
+#
+# Precision matters more than recall here, because a false positive sends good work to a
+# human. So a term is only enforced when it is unambiguous:
+#   * the English term appears as a whole word in the original;
+#   * the expected Russian stem is absent from the translation;
+#   * the translation is not simply the original passed through (that is already caught by
+#     the quality score, and would otherwise double-report);
+#   * the original is not a filename or a bare mod title, where names stay in English.
+
+_FILENAME_RE = re.compile(r"\.(esp|esm|esl|bsa|txt|json|swf|pex|dds|nif)\b", re.I)
+
+
+
+# Russian inflects, and a glossary entry is one form of a word. "Железо" is the noun; a
+# sword made of it is "Железный", and "Здоровье" becomes "здоровья". Matching the entry
+# verbatim reports those as violations and sends correct work to a human, so the
+# comparison is on the stem.
+_RU_ENDINGS = ("ого", "ому", "ыми", "ими", "ая", "ое", "ые", "ый", "ий", "ой", "ом",
+               "ах", "ям", "ев", "ов", "а", "я", "о", "е", "ы", "и", "у", "ю", "ь", "й")
+
+
+def _stem(term: str) -> str:
+    """Drop a trailing inflection so a glossary entry matches its declined forms.
+
+    Conservative: only trims single words over five characters and never below five, so a
+    short name stays exact rather than shrinking into something that matches half the text.
+    """
+    t = (term or "").lower().strip()
+    if len(t) <= 4 or " " in t:
+        return t                      # "Нирн" stays exact — a shorter stem matches anything
+    for end in _RU_ENDINGS:
+        if t.endswith(end) and len(t) - len(end) >= 4:
+            return t[: -len(end)]
+    return t
+
+
+_TOKEN_RE = re.compile(r"<[^>]*>|\{[^}]*\}|\[[A-Za-z][^\]]*\]|%\w+")
+
+
+def _strip_tokens(text: str) -> str:
+    """Remove game tokens so their contents are not read as translatable words."""
+    return _TOKEN_RE.sub(" ", text or "")
+
+
+def _is_untranslatable_name(original: str) -> bool:
+    """Filenames and plugin names keep their English form; a glossary hit there is noise."""
+    return bool(_FILENAME_RE.search(original or ""))
+
+
+def glossary_violations(original: str, translation: str, terms: dict) -> list[tuple[str, str]]:
+    """Glossary terms present in `original` whose expected translation is missing.
+
+    Returns [(english_term, expected_russian), ...], empty when the translation is clean,
+    the inputs are empty, or the string is a name that should stay in English.
+    """
+    if not original or not translation or not terms:
+        return []
+    if original.strip() == translation.strip():
+        return []                      # untranslated passthrough — a different problem
+    if _is_untranslatable_name(original):
+        return []
+    # Game tokens are copied verbatim by design — <Alias=Jarl> is a runtime placeholder,
+    # not the word "Jarl". Matching inside one reports a violation for text the translator
+    # was never allowed to touch.
+    original = _strip_tokens(original)
+    low_translation = _strip_tokens(translation).lower()
+    out = []
+    for en, ru in terms.items():
+        if not en or not ru:
+            continue
+        if not _contains_word(original, en):
+            continue
+        if _stem(ru) in low_translation:
+            continue
+        out.append((en, ru))
+    return out

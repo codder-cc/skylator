@@ -189,9 +189,14 @@ class ModScanner:
         bsa_cache: BsaStringCache instance (optional) — enables BSA-embedded MCM.
         swf_cache: SwfStringCache instance (optional) — enables SWF text strings.
 
-        When a .trans.json file exists for an ESP, it is used as the primary source.
-        This preserves original English text even after translations have been applied
-        back to the ESP binary (which would otherwise show Russian as "original").
+        This is the NO-DATABASE path. Both callers reach it only when SQLite has no rows
+        for the mod — the strings page falls back to it while an import is still running,
+        and the translate pipeline uses it to bootstrap a mod it has never seen. SQLite is
+        the source of truth everywhere else; nothing here overrides it.
+
+        Within this path a .trans.json file, when present, is preferred over re-parsing the
+        plugin, because applying translations rewrites the ESP and a re-parse would then
+        report Russian as the original English.
         """
         folder = self.get_mod_path(folder_name)
         if folder is None or not folder.is_dir():
@@ -209,9 +214,10 @@ class ModScanner:
                     trans_json_path = esp_path.with_suffix(".trans.json")
 
                     if trans_json_path.exists():
-                        # .trans.json is authoritative: preserves original English
-                        # text even after the ESP binary has been overwritten with
-                        # translated strings.
+                        # Preferred over the plugin — not over the database, which this
+                        # method is only reached in the absence of. Applying translations
+                        # overwrites the ESP, so a re-parse would report the Russian text
+                        # as the original English; the sidecar still has the source.
                         saved = json.loads(trans_json_path.read_text(encoding="utf-8"))
                         for s in saved:
                             vmad_idx = s.get("vmad_str_idx", 0) or 0

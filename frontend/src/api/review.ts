@@ -1,7 +1,7 @@
 import { apiFetch, apiPost } from './client'
 
 export interface ReviewIssue {
-  kind: 'glossary' | 'tokens' | 'untranslated' | 'low_score'
+  kind: 'glossary' | 'tokens' | 'untranslated' | 'markup' | 'low_score'
   detail: string
   term?: string
   expected?: string

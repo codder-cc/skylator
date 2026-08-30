@@ -25,6 +25,7 @@ const ISSUE_STYLE: Record<ReviewIssue['kind'], { label: string; cls: string }> =
   glossary:     { label: 'glossary',     cls: 'bg-warning/15 text-warning border-warning/30' },
   tokens:       { label: 'game token',   cls: 'bg-danger/15 text-danger border-danger/30' },
   untranslated: { label: 'untranslated', cls: 'bg-danger/15 text-danger border-danger/30' },
+  markup:       { label: 'markup',       cls: 'bg-danger/15 text-danger border-danger/30' },
   low_score:    { label: 'low score',    cls: 'bg-text-muted/15 text-text-muted border-border-subtle' },
 }
 

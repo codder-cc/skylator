@@ -184,8 +184,10 @@ def create_app(config_path: Path | None = None) -> Flask:
     from translator.web.job_manager import JobManager, JobStatus
     jm = JobManager.get()
     jm.set_app(app)   # job threads need an app context (current_app in job fns)
-    jobs_file = ROOT / "cache/jobs.json"
-    jm.set_persist_path(jobs_file)
+    # Job history lives in SQLite (migration 15). The legacy path is still handed over so
+    # an existing cache/jobs.json can be imported once, then set aside.
+    jm._persist_path = (cfg.paths.translation_cache.parent if cfg else ROOT / "cache") / "jobs.json"
+    jm.set_db(_db)
     app.config["JOB_MANAGER"] = jm
 
     # Release dispatch slots from dead jobs; keep OFFLINE_DISPATCHED owners alive

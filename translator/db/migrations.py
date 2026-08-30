@@ -217,6 +217,31 @@ MIGRATION_STEPS: list[tuple[int, str, list[str]]] = [
             )""",
         ],
     ),
+    (
+        15,
+        "Fold job history into SQLite (#7 one-store) — retires cache/jobs.json",
+        [
+            # cache/jobs.json was the last large store still on disk as JSON, and the only
+            # one rewritten in full on every job state change: it reached 15 MB, which under
+            # incremental feeding meant rewriting it constantly. A row per job replaces that
+            # with a single upsert, and makes "which jobs are running" a query instead of a
+            # scan of every record.
+            """CREATE TABLE IF NOT EXISTS jobs (
+                id           TEXT PRIMARY KEY,
+                name         TEXT,
+                job_type     TEXT,
+                status       TEXT,
+                created_at   REAL,
+                started_at   REAL,
+                finished_at  REAL,
+                result       TEXT,
+                error        TEXT,
+                payload      TEXT     -- the rest of the record as JSON: params, progress, feed tail
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_jobs_status  ON jobs(status)",
+        ],
+    ),
 ]
 
 

@@ -150,6 +150,7 @@ class JobManager:
         self._jobs:    dict[str, Job] = {}
         self._lock     = threading.Lock()
         self._persist_path: Optional[Path] = None
+        self._db = None                    # TranslationDB — preferred store, see set_db()
         self._app      = None   # Flask app, for the job thread's app context (see _wrapped)
 
         # Lazy-import to avoid circular dependency at module load time
@@ -162,6 +163,20 @@ class JobManager:
     def set_app(self, app) -> None:
         """Register the Flask app so job functions run inside an app context."""
         self._app = app
+
+    def set_db(self, db) -> None:
+        """Persist job history to SQLite instead of a JSON file.
+
+        cache/jobs.json was the last large store still on disk as JSON, and the only one
+        rewritten in full on every job state change — it reached 15 MB on the live host,
+        which under incremental feeding meant rewriting all of it constantly. A row per
+        job turns that into one upsert.
+
+        The JSON path stays supported for a JobManager built without a database (the
+        standalone paths and the unit tests), and an existing file is imported once.
+        """
+        self._db = db
+        self._load_persisted()
 
     def set_persist_path(self, path: Path):
         self._persist_path = path
@@ -538,34 +553,60 @@ class JobManager:
 
     # ── Persistence ──────────────────────────────────────────────────────────
 
+    def _trimmed_records(self) -> list:
+        """The newest 500 jobs, with the live feed and logs cut to a tail. Shared by both
+        stores so they cannot drift."""
+        with self._lock:
+            all_jobs = list(self._jobs.values())
+        all_jobs.sort(key=lambda j: j.created_at)
+        all_jobs = all_jobs[-500:]
+        cutoff = time.time() - 86400
+        out = []
+        for j in all_jobs:
+            d = j.to_dict()
+            d["string_updates"] = (d.get("string_updates") or [])[-_PERSIST_STRING_TAIL:]
+            d["log_lines"]      = (d.get("log_lines") or [])[-_PERSIST_LOG_TAIL:]
+            if (j.finished_at or j.created_at) < cutoff:
+                d["log_lines"]      = []
+                d["string_updates"] = []
+            out.append((j, d))
+        return out
+
+    def _persist_to_db(self) -> None:
+        records = self._trimmed_records()
+        keep = [j.id for j, _ in records]
+        rows = [(
+            j.id, j.name, j.job_type, j.status.value, j.created_at, j.started_at,
+            j.finished_at, j.result, j.error,
+            json.dumps(d, ensure_ascii=False),
+        ) for j, d in records]
+        self._db.executemany(
+            """INSERT INTO jobs (id, name, job_type, status, created_at, started_at,
+                                 finished_at, result, error, payload)
+               VALUES (?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET
+                   name=excluded.name, job_type=excluded.job_type, status=excluded.status,
+                   started_at=excluded.started_at, finished_at=excluded.finished_at,
+                   result=excluded.result, error=excluded.error, payload=excluded.payload""",
+            rows,
+        )
+        if keep:
+            ph = ",".join("?" * len(keep))
+            self._db.execute(f"DELETE FROM jobs WHERE id NOT IN ({ph})", tuple(keep))
+        self._db.commit()
+
     def _persist(self):
+        if self._db is not None:
+            try:
+                self._persist_to_db()
+            except Exception as exc:
+                log.warning("job persist to db failed: %s", exc)
+            return
         if not self._persist_path:
             return
         try:
             self._persist_path.parent.mkdir(parents=True, exist_ok=True)
-            with self._lock:
-                all_jobs = list(self._jobs.values())
-
-            # Keep only the newest 500 jobs by created_at
-            all_jobs.sort(key=lambda j: j.created_at)
-            all_jobs = all_jobs[-500:]
-
-            cutoff = time.time() - 86400  # 24 hours ago
-            data: dict = {}
-            for j in all_jobs:
-                d = j.to_dict()
-                # The live feed is display data for a running job, capped at 10,000 entries
-                # in memory — about 5 MB each. Writing all of it made cache/jobs.json 15 MB,
-                # rewritten in full on every job state change, which with incremental
-                # feeding is constant. Nobody replays ten thousand past translations after a
-                # restart, so only a short tail is kept.
-                d["string_updates"] = (d.get("string_updates") or [])[-_PERSIST_STRING_TAIL:]
-                d["log_lines"]      = (d.get("log_lines") or [])[-_PERSIST_LOG_TAIL:]
-                # Old finished jobs keep nothing but their outcome.
-                if (j.finished_at or j.created_at) < cutoff:
-                    d["log_lines"]      = []
-                    d["string_updates"] = []
-                data[j.id] = d
+            data = {j.id: d for j, d in self._trimmed_records()}
 
             # Atomic write: a crash mid-write can no longer truncate job history.
             import os as _os
@@ -578,12 +619,10 @@ class JobManager:
         except Exception:
             pass
 
-    def _load_persisted(self):
-        if not self._persist_path or not self._persist_path.exists():
-            return
-        try:
-            data = json.loads(self._persist_path.read_text(encoding="utf-8"))
-            for jid, d in data.items():
+    def _rebuild(self, records: dict) -> None:
+        """Turn stored payloads back into Job objects. Shared by both stores."""
+        for jid, d in records.items():
+            try:
                 j = Job(
                     id               = d["id"],
                     name             = d["name"],
@@ -615,5 +654,29 @@ class JobManager:
                     j.error  = "Paused (server restart)"
                 with self._lock:
                     self._jobs[jid] = j
+            except Exception as exc:
+                log.warning("Could not restore job %s: %s", jid, exc)
+
+    def _load_persisted(self):
+        """Restore job history from whichever store is configured.
+
+        A cache/jobs.json left over from before the move is imported once and renamed
+        aside, so upgrading does not lose history and does not keep reading the file.
+        """
+        try:
+            if self._db is not None:
+                rows = self._db.execute("SELECT id, payload FROM jobs").fetchall()
+                if rows:
+                    self._rebuild({r["id"]: json.loads(r["payload"]) for r in rows})
+                    return
+                legacy = self._persist_path or Path("cache/jobs.json")
+                if legacy.exists():
+                    self._rebuild(json.loads(legacy.read_text(encoding="utf-8")))
+                    self._persist_to_db()
+                    legacy.replace(legacy.with_suffix(".json.imported"))
+                    log.info("Imported %s into the jobs table and set it aside", legacy.name)
+                return
+            if self._persist_path and self._persist_path.exists():
+                self._rebuild(json.loads(self._persist_path.read_text(encoding="utf-8")))
         except Exception as exc:
-            log.warning(f"Could not load job history: {exc}")
+            log.warning("Could not load job history: %s", exc)

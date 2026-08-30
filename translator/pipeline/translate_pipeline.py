@@ -592,14 +592,21 @@ class TranslatePipeline:
             elif scope == "review":
                 strings = [s for s in strings if s.get("status") == "needs_review"]
 
-            # Mode filter
-            if mode == TranslationMode.UNTRANSLATED:
+            # Mode filter. Asking for the review scope means the review queue: those strings
+            # all carry a translation, so the UNTRANSLATED filter would empty the set and the
+            # job would report success having done nothing.
+            _mode = TranslationMode.NEEDS_REVIEW if (
+                scope == "review" and mode == TranslationMode.UNTRANSLATED) else mode
+            if _mode == TranslationMode.UNTRANSLATED:
                 strings = [s for s in strings if not s["translation"]]
-            elif mode == TranslationMode.NEEDS_REVIEW:
+            elif _mode == TranslationMode.NEEDS_REVIEW:
                 strings = [s for s in strings if s.get("status") == "needs_review"]
             # FORCE_ALL: keep everything
 
-            strings = [s for s in strings if not s["original"].startswith("[LOC:")]
+        # [LOC:xxxxxxxx] is a pointer into a .STRINGS table, not text. Sending one to a model
+        # yields garbage that then gets written back into the plugin. This has to hold for
+        # explicitly selected keys too — picking rows by hand in the UI was a way around it.
+        strings = [s for s in strings if not s["original"].startswith("[LOC:")]
 
         return strings
 

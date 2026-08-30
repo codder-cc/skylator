@@ -1635,7 +1635,153 @@ def review_queue():
             ORDER BY quality_score ASC, mod_name LIMIT ?""",
         (*params, limit),
     ).fetchall()
-    return jsonify({"total": total, "strings": [dict(r) for r in rows]})
+
+    # Say WHY each string is here. Reviewing without that means re-deriving the reason by
+    # eye on every row, and the reasons are not interchangeable: a dropped <mag> token
+    # breaks the game, a glossary slip is a wording decision, an untranslated passthrough
+    # is work that never happened.
+    terms = _glossary_terms()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["issues"] = _review_reasons(d.get("original") or "", d.get("translation") or "",
+                                      d.get("quality_score"), terms)
+        out.append(d)
+
+    # Filtering by term turns "615 strings say Сиродил" into one pass instead of 615
+    # separate decisions.
+    if a.get("term"):
+        want = a["term"].lower()
+        out = [d for d in out if any(i.get("term", "").lower() == want for i in d["issues"])]
+
+    return jsonify({"total": total, "strings": out,
+                    "terms": _queue_term_counts(repo, wsql, params, terms)})
+
+
+def _glossary_terms() -> dict:
+    cfg = current_app.config.get("TRANSLATOR_CFG")
+    try:
+        tpath = cfg.paths.skyrim_terms if cfg else None
+        if tpath and Path(tpath).exists():
+            return json.loads(Path(tpath).read_text(encoding="utf-8"))
+    except Exception as exc:
+        log.warning("review: could not load glossary: %s", exc)
+    return {}
+
+
+def _review_reasons(original: str, translation: str, qs, terms: dict) -> list:
+    """Why this string is in the queue, most actionable first."""
+    from translator.validation.quality import validate_tokens
+    from translator.validation.terminology import glossary_violations
+    issues = []
+    if translation and original and translation.strip() == original.strip():
+        issues.append({"kind": "untranslated",
+                       "detail": "translation is identical to the source"})
+    tok_ok, tok_issues = validate_tokens(original, translation)
+    if not tok_ok:
+        issues.append({"kind": "tokens", "detail": "; ".join(tok_issues)[:200]})
+    for en, ru in glossary_violations(original, translation, terms):
+        issues.append({"kind": "glossary", "term": en, "expected": ru,
+                       "detail": f"{en} should be {ru}"})
+    if qs is not None and qs <= 70 and not issues:
+        issues.append({"kind": "low_score", "detail": f"quality score {qs}"})
+    return issues
+
+
+def _queue_term_counts(repo, wsql: str, params: list, terms: dict) -> list:
+    """How many queued strings each glossary term accounts for — the grouping the UI
+    offers so a reviewer can settle one term at a time."""
+    if not terms:
+        return []
+    from translator.validation.terminology import glossary_violations
+    counts: dict = {}
+    rows = repo.db.execute(
+        f"SELECT original, translation FROM strings WHERE {wsql} LIMIT 20000", params
+    ).fetchall()
+    for r in rows:
+        for en, ru in glossary_violations(r["original"] or "", r["translation"] or "", terms):
+            e = counts.setdefault(en, {"term": en, "expected": ru, "count": 0})
+            e["count"] += 1
+    return sorted(counts.values(), key=lambda x: -x["count"])[:30]
+
+
+@bp.route("/review/reject", methods=["POST"])
+def review_reject():
+    """Send strings back to be translated again.
+
+    Approving is not the only outcome a reviewer needs. A translation that is simply wrong
+    should go back to pending so the fleet picks it up again, rather than sitting in the
+    queue forever or being waved through to clear it.
+    """
+    import time as _t
+    repo = current_app.config.get("STRING_REPO")
+    if repo is None:
+        return jsonify({"ok": False, "error": "not initialized"}), 500
+    ids = [int(i) for i in ((request.get_json(silent=True) or {}).get("ids") or [])]
+    if not ids:
+        return jsonify({"ok": True, "rejected": 0})
+    ph = ",".join("?" * len(ids))
+    mods = {r[0] for r in repo.db.execute(
+        f"SELECT DISTINCT mod_name FROM strings WHERE id IN ({ph})", tuple(ids)).fetchall()}
+    # Keep the rejected text in history, so a re-translation can be compared against it.
+    for sid in ids:
+        try:
+            row = repo.db.execute(
+                "SELECT translation, status, quality_score FROM strings WHERE id=?",
+                (sid,)).fetchone()
+            if row and row["translation"]:
+                repo.insert_history(sid, row["translation"], row["status"],
+                                    row["quality_score"], "review-rejected", None, None)
+        except Exception:
+            pass
+    repo.db.execute(
+        f"UPDATE strings SET translation='', status='pending', quality_score=NULL, "
+        f"updated_at=? WHERE id IN ({ph})", (_t.time(), *ids))
+    repo.db.commit()
+    stats = current_app.config.get("STATS_MGR")
+    for m in mods:
+        try:
+            stats and stats.invalidate(m)
+        except Exception:
+            pass
+    log.info("review: %d string(s) sent back for re-translation", len(ids))
+    return jsonify({"ok": True, "rejected": len(ids)})
+
+
+@bp.route("/review/edit", methods=["POST"])
+def review_edit():
+    """Save a corrected translation and approve it in one step.
+
+    The common case in a review pass is not yes-or-no but "almost — one word is wrong".
+    Without this the reviewer has to leave the queue, find the string, edit it, come back.
+    """
+    from translator.data_manager.string_manager import StringManager
+    repo = current_app.config.get("STRING_REPO")
+    cfg = current_app.config.get("TRANSLATOR_CFG")
+    if repo is None:
+        return jsonify({"ok": False, "error": "not initialized"}), 500
+    data = request.get_json(silent=True) or {}
+    sid, text = data.get("id"), (data.get("translation") or "").strip()
+    if not sid or not text:
+        return jsonify({"ok": False, "error": "id and translation required"}), 400
+    row = repo.db.execute(
+        "SELECT mod_name, esp_name, key, original FROM strings WHERE id=?", (int(sid),)
+    ).fetchone()
+    if not row:
+        return jsonify({"ok": False, "error": "not found"}), 404
+
+    sm = StringManager(repo, Path(cfg.paths.mods_dir) if cfg else Path("."))
+    # source='manual' with an explicit status: a person decided, so the glossary check
+    # does not get to overrule them.
+    sm.save_string(mod_name=row["mod_name"], esp_name=row["esp_name"], key=row["key"],
+                   translation=text, original=row["original"] or "",
+                   source="manual", status="translated", quality_score=100)
+    stats = current_app.config.get("STATS_MGR")
+    try:
+        stats and stats.invalidate(row["mod_name"])
+    except Exception:
+        pass
+    return jsonify({"ok": True})
 
 
 @bp.route("/review/approve", methods=["POST"])

@@ -117,6 +117,29 @@ def smart_partition(strings: list[dict], agents: list[dict]) -> dict:
     return buckets
 
 
+def dedupe_by_text(strings: list[dict]) -> tuple[list[dict], int]:
+    """Keep one string per distinct source text. Returns (unique, dropped).
+
+    42% of a real backlog is repeated text — "Chest" appears 912 times across the live
+    collection. An agent works from its own durable manifest, so anything dispatched
+    gets translated whether or not a twin was already done elsewhere; the only place to
+    avoid that work is before the package is built. The twins are filled from the
+    delivered result by StringRepo.apply_to_pending_duplicates, so nothing is skipped —
+    it is translated once instead of hundreds of times.
+    """
+    seen: set = set()
+    unique: list[dict] = []
+    for s in strings:
+        text = s.get("original") or ""
+        if not text:
+            continue
+        if text in seen:
+            continue
+        seen.add(text)
+        unique.append(s)
+    return unique, len(strings) - len(unique)
+
+
 def _make_remote_strings(bucket: list[dict], default_mod: str):
     """Build the remote payload string dicts AND the host-side manifest items, sharing
     one string_hash per string so the agent and master agree on the integrity anchor.
@@ -198,6 +221,11 @@ def dispatch(
     term_str  = _build_terminology(originals)
 
     params_dict = inf_params.as_dict() if inf_params else {}
+
+    strings, _dropped = dedupe_by_text(strings)
+    if _dropped:
+        job.add_log(f"Deduplicated {_dropped:,} repeated string(s) — "
+                    f"{len(strings):,} distinct texts to translate")
 
     # Split strings across workers — throughput-aware + long-string→big-model routing.
     partition = smart_partition(strings, _agent_meta(machines, registry))
@@ -320,6 +348,11 @@ def dispatch_multi(
                     break
             if len(merged_tm) >= _TM_MAX_PAIRS:
                 break
+
+    all_strings, _dropped = dedupe_by_text(all_strings)
+    if _dropped:
+        job.add_log(f"Deduplicated {_dropped:,} repeated string(s) — "
+                    f"{len(all_strings):,} distinct texts to translate")
 
     originals = [s.get("original") or "" for s in all_strings]
     term_str  = _build_terminology(originals)

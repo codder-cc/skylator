@@ -88,3 +88,41 @@ def test_needs_review_status_propagates_too(repo):
     _add(repo, "ModA", "a", "Chest")
     repo.apply_to_pending_duplicates(_sha256_hash("Chest"), "Chest", "needs_review", 30)
     assert _get(repo, "ModA", "a") == ("Chest", "needs_review")
+
+
+# ── dispatch side: don't put the twins in a package at all ────────────────────
+
+from translator.web.offline_backend import dedupe_by_text
+
+
+def test_dispatch_keeps_one_string_per_distinct_text():
+    strings = [{"id": i, "original": t} for i, t in
+               enumerate(["Chest", "Chest", "Chair", "Chest", "Limb"])]
+    unique, dropped = dedupe_by_text(strings)
+    assert [s["original"] for s in unique] == ["Chest", "Chair", "Limb"]
+    assert dropped == 2
+
+
+def test_dispatch_dedup_keeps_the_first_occurrence():
+    """Whichever row is kept carries the id the manifest and delivery use."""
+    strings = [{"id": 7, "original": "Chest"}, {"id": 9, "original": "Chest"}]
+    unique, _ = dedupe_by_text(strings)
+    assert [s["id"] for s in unique] == [7]
+
+
+def test_dispatch_dedup_drops_empty_text():
+    unique, dropped = dedupe_by_text([{"id": 1, "original": ""}, {"id": 2, "original": "A"}])
+    assert [s["id"] for s in unique] == [2] and dropped == 1
+
+
+def test_dispatch_dedup_on_already_unique_input_is_a_no_op():
+    strings = [{"id": 1, "original": "A"}, {"id": 2, "original": "B"}]
+    unique, dropped = dedupe_by_text(strings)
+    assert unique == strings and dropped == 0
+
+
+def test_dispatch_dedup_is_case_and_whitespace_sensitive():
+    """Different bytes mean a different string_hash, so they cannot share a fill."""
+    unique, _ = dedupe_by_text([{"original": "Chest"}, {"original": "chest"},
+                                {"original": "Chest "}])
+    assert len(unique) == 3

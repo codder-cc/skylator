@@ -121,6 +121,13 @@ class ModelStateManager:
             self._defaults[label] = {"spec": clean, "suspended": False,
                                      "updated_at": time.time()}
             self._save_defaults_nolock()
+            # A desire materialised from the PREVIOUS default is pinned until LOAD_TIMEOUT
+            # (an hour), so without this the agent keeps chasing the old spec — and if that
+            # spec was unloadable, it sits with no model the whole time. A job's desire is
+            # left alone: only the default-driven one is re-derived.
+            d = self._desired.get(label)
+            if d is not None and d.get("job_id") == DEFAULT_JOB_ID and                     _sanitize_spec(d.get("spec") or {}) != clean:
+                del self._desired[label]
 
     def get_default(self, label: str) -> dict | None:
         with self._lock:

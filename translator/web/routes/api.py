@@ -2348,7 +2348,7 @@ def _stage_gguf(repo_id: str, gguf_filename: str, staging_path, token: str = "")
     return {"dest_subdir": dest_subdir, "files": files, "serve_root": local_dir}
 
 
-def _finalize_load(registry, label: str, result_str) -> "Response":
+def _finalize_load(registry, label: str, result_str, spec: dict | None = None) -> "Response":
     import json as _json
     if result_str is None:
         return jsonify({"error": "Timed out waiting for worker to load model"}), 504
@@ -2360,6 +2360,14 @@ def _finalize_load(registry, label: str, result_str) -> "Response":
         w = registry.get(label)
         if w:
             w.model = data["model"]
+        # Only a load the agent confirmed becomes the durable auto-restore target.
+        if spec:
+            model_state = current_app.config.get("MODEL_STATE")
+            if model_state is not None:
+                try:
+                    model_state.set_default(label, spec)
+                except Exception as exc:
+                    log.warning("model defaults: failed to record default for %s: %s", label, exc)
     return jsonify(data)
 
 
@@ -2409,12 +2417,10 @@ def _do_model_load(label: str, payload: dict):
     # per-agent default so the agent converges back to it after reboots / host restarts
     # (token and transport keys are stripped before persisting). Download-only staging
     # (load=False) expresses no preference.
-    model_state = current_app.config.get("MODEL_STATE")
-    if model_state is not None and payload.get("load", True):
-        try:
-            model_state.set_default(label, payload)
-        except Exception as exc:
-            log.warning("model defaults: failed to record default for %s: %s", label, exc)
+    # Recorded in _finalize_load once the agent confirms the load. Recording it here, before
+    # the attempt, meant a typo'd or gone repo became the agent's permanent auto-restore
+    # target: the master would keep trying to heal it back to a model that cannot load.
+    _record_default = payload.get("load", True)
 
     # ── Explicit local path (user clicked cached badge) — forward directly ────
     if model_path:
@@ -2423,7 +2429,8 @@ def _do_model_load(label: str, payload: dict):
         registry.enqueue_chunk(label, {"type": "load_model", "chunk_id": chunk_id,
                                        "payload": payload})
         result_str = registry.collect_result(chunk_id, timeout=120.0)
-        return _finalize_load(registry, label, result_str)
+        return _finalize_load(registry, label, result_str,
+                          payload if _record_default else None)
 
     # ── delivery='push' → go straight to master-push, skip agent download ─────
     if delivery == "push":
@@ -2437,7 +2444,8 @@ def _do_model_load(label: str, payload: dict):
         direct["model_path"] = cached["path"]
         registry.enqueue_chunk(label, {"type": "load_model", "chunk_id": chunk_id, "payload": direct})
         result_str = registry.collect_result(chunk_id, timeout=120.0)
-        return _finalize_load(registry, label, result_str)
+        return _finalize_load(registry, label, result_str,
+                          payload if _record_default else None)
 
     # ── Try remote download first ─────────────────────────────────────────────
     log.info("Trying direct HF download on worker %s for %s", label, repo_id)
@@ -2483,6 +2491,8 @@ def _host_proxy_load(label: str, payload: dict, registry, worker):
     backend_type  = payload.get("backend_type", "llamacpp")
     repo_id       = payload.get("repo_id", "")
     gguf_filename = payload.get("gguf_filename", "")
+    # Local to this function — _do_model_load's copy is not in scope here.
+    _record_default = payload.get("load", True)
     cfg       = current_app.config.get("TRANSLATOR_CFG")
     cache_dir = _Path(cfg.paths.translation_cache).parent if cfg else _Path("cache")
 
@@ -2519,7 +2529,8 @@ def _host_proxy_load(label: str, payload: dict, registry, worker):
 
     result_str = registry.collect_result(xfer_chunk_id, timeout=3600.0)
     model_staging.delete_session(sid)          # always clean up, success or failure
-    return _finalize_load(registry, label, result_str)
+    return _finalize_load(registry, label, result_str,
+                          payload if _record_default else None)
 
 
 @bp.route("/workers/<label>/model/unload", methods=["POST"])

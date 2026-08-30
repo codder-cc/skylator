@@ -149,3 +149,62 @@ def glossary_violations(original: str, translation: str, terms: dict) -> list[tu
             continue
         out.append((en, ru))
     return out
+
+
+def audit_stored(repo, terms: dict, mod_name: str | None = None,
+                 apply: bool = False, limit: int | None = None) -> dict:
+    """Re-check translations already stored, and optionally send the bad ones to review.
+
+    Enforcement at the write gate only protects what is written from now on. Everything
+    saved before it existed was never checked — on the live collection that is a hundred
+    thousand strings, several thousand of which break a glossary term. This walks them.
+
+    apply=False reports without touching anything, which is the safe default: the report
+    is worth reading before several thousand strings move into someone's review queue.
+    """
+    sql = ("SELECT id, mod_name, original, translation FROM strings "
+           "WHERE status='translated' AND translation != ''")
+    params: tuple = ()
+    if mod_name:
+        sql += " AND mod_name=?"
+        params = (mod_name,)
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+
+    checked = 0
+    by_term: dict[str, int] = {}
+    by_mod: dict[str, int] = {}
+    offenders: list[int] = []
+    examples: list[dict] = []
+    for r in repo.db.execute(sql, params).fetchall():
+        checked += 1
+        bad = glossary_violations(r["original"] or "", r["translation"] or "", terms)
+        if not bad:
+            continue
+        offenders.append(r["id"])
+        by_mod[r["mod_name"]] = by_mod.get(r["mod_name"], 0) + 1
+        for en, _ru in bad:
+            by_term[en] = by_term.get(en, 0) + 1
+        if len(examples) < 20:
+            examples.append({"mod": r["mod_name"], "original": r["original"][:120],
+                             "translation": r["translation"][:120],
+                             "terms": [f"{en}→{ru}" for en, ru in bad[:3]]})
+
+    moved = 0
+    if apply and offenders:
+        for i in range(0, len(offenders), 500):
+            chunk = offenders[i:i + 500]
+            ph = ",".join("?" * len(chunk))
+            repo.db.execute(
+                f"UPDATE strings SET status='needs_review' WHERE id IN ({ph})", tuple(chunk))
+            moved += len(chunk)
+        repo.db.commit()
+
+    return {
+        "checked": checked,
+        "violations": len(offenders),
+        "moved_to_review": moved,
+        "by_term": dict(sorted(by_term.items(), key=lambda kv: -kv[1])[:25]),
+        "by_mod": dict(sorted(by_mod.items(), key=lambda kv: -kv[1])[:25]),
+        "examples": examples,
+    }

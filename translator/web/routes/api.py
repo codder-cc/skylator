@@ -1,6 +1,7 @@
 """JSON API endpoints for AJAX calls."""
 from __future__ import annotations
 import json
+from pathlib import Path
 import logging
 import queue
 from flask import Blueprint, Response, current_app, jsonify, request, stream_with_context
@@ -1737,6 +1738,38 @@ def terminology_check(name: str):
     except Exception as exc:
         log.warning("terminology-check: could not load glossary: %s", exc)
     return jsonify(terminology_summary(rows, terms if isinstance(terms, dict) else {}))
+
+
+@bp.route("/terminology/audit", methods=["POST"])
+def terminology_audit():
+    """Re-check stored translations against the glossary; optionally send the bad ones back.
+
+    Enforcement at the write gate protects what is written from now on. Everything saved
+    before it existed was never checked. Body: {mod_name?, apply?} — apply defaults to
+    false, so this reports first and moves nothing until asked.
+    """
+    from translator.validation.terminology import audit_stored
+    repo = current_app.config.get("STRING_REPO")
+    if repo is None:
+        return jsonify({"error": "No database"}), 503
+    data  = request.get_json(silent=True) or {}
+    terms = {}
+    try:
+        cfg = current_app.config.get("TRANSLATOR_CFG")
+        tpath = cfg.paths.skyrim_terms if cfg else None
+        if tpath and Path(tpath).exists():
+            terms = json.loads(Path(tpath).read_text(encoding="utf-8"))
+    except Exception as exc:
+        log.warning("terminology audit: could not load glossary: %s", exc)
+    if not terms:
+        return jsonify({"error": "No glossary configured"}), 400
+
+    result = audit_stored(repo, terms,
+                          mod_name=data.get("mod_name") or None,
+                          apply=bool(data.get("apply")))
+    log.info("terminology audit: %d/%d violating, %d moved to review",
+             result["violations"], result["checked"], result["moved_to_review"])
+    return jsonify(result)
 
 
 @bp.route("/ledger/stats", methods=["GET"])

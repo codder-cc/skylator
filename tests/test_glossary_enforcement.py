@@ -106,3 +106,67 @@ def test_enforcement_is_off_without_a_glossary(tmp_path):
                   original="Skyrim", source="ai", status="translated", quality_score=100)
     assert db.execute("SELECT status FROM strings WHERE key='k'").fetchone()["status"] \
         == "translated"
+
+
+# ── retrospective audit of what was stored before enforcement existed ─────────
+
+def test_audit_finds_violations_without_changing_anything(mgr):
+    from translator.validation.terminology import audit_stored
+    m, db = mgr
+    db.execute("INSERT INTO strings (mod_name, esp_name, key, original, translation, status)"
+               " VALUES (?,?,?,?,?,?)",
+               ("Mod", "m.esp", "bad", "Skyrim", "Сиродил", "translated"))
+    db.execute("INSERT INTO strings (mod_name, esp_name, key, original, translation, status)"
+               " VALUES (?,?,?,?,?,?)",
+               ("Mod", "m.esp", "good", "Skyrim", "Скайрим", "translated"))
+    db.commit()
+
+    r = audit_stored(m._repo, TERMS, apply=False)
+    assert r["violations"] == 1 and r["moved_to_review"] == 0
+    assert db.execute("SELECT status FROM strings WHERE key='bad'").fetchone()["status"] \
+        == "translated", "a dry run must not move anything"
+
+
+def test_audit_sends_offenders_to_review_when_asked(mgr):
+    from translator.validation.terminology import audit_stored
+    m, db = mgr
+    db.execute("INSERT INTO strings (mod_name, esp_name, key, original, translation, status)"
+               " VALUES (?,?,?,?,?,?)",
+               ("Mod", "m.esp", "bad", "Skyrim", "Сиродил", "translated"))
+    db.execute("INSERT INTO strings (mod_name, esp_name, key, original, translation, status)"
+               " VALUES (?,?,?,?,?,?)",
+               ("Mod", "m.esp", "good", "Skyrim", "Скайрим", "translated"))
+    db.commit()
+
+    r = audit_stored(m._repo, TERMS, apply=True)
+    assert r["moved_to_review"] == 1
+    assert db.execute("SELECT status FROM strings WHERE key='bad'").fetchone()["status"] \
+        == "needs_review"
+    assert db.execute("SELECT status FROM strings WHERE key='good'").fetchone()["status"] \
+        == "translated", "clean strings must be left alone"
+
+
+def test_audit_can_be_scoped_to_one_mod(mgr):
+    from translator.validation.terminology import audit_stored
+    m, db = mgr
+    for mod in ("A", "B"):
+        db.execute("INSERT INTO strings (mod_name, esp_name, key, original, translation,"
+                   " status) VALUES (?,?,?,?,?,?)",
+                   (mod, "m.esp", f"k{mod}", "Skyrim", "Сиродил", "translated"))
+    db.commit()
+    r = audit_stored(m._repo, TERMS, mod_name="A", apply=True)
+    assert r["violations"] == 1
+    assert db.execute("SELECT status FROM strings WHERE mod_name='B'").fetchone()["status"] \
+        == "translated"
+
+
+def test_audit_reports_the_terms_and_examples(mgr):
+    from translator.validation.terminology import audit_stored
+    m, db = mgr
+    db.execute("INSERT INTO strings (mod_name, esp_name, key, original, translation, status)"
+               " VALUES (?,?,?,?,?,?)",
+               ("Mod", "m.esp", "k", "Skyrim", "Сиродил", "translated"))
+    db.commit()
+    r = audit_stored(m._repo, TERMS, apply=False)
+    assert r["by_term"].get("Skyrim") == 1
+    assert r["examples"][0]["terms"] == ["Skyrim→Скайрим"]

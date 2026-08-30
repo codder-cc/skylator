@@ -28,7 +28,9 @@ CATALOG: list[dict] = [
         "id": "qwen35-27b-mlx-4bit",
         "name": "Qwen3.5-27B (MLX 4-bit, Apple Silicon)",
         "backend": "mlx",
-        "repo_id": "Huihui-Qwen3.5-27B-mlx-4bit",
+        # Must be a full org/name — the bare name 401s on the Hub. This is the MLX build of
+        # the same weights as the llamacpp preset above (16.1 GB across 3 safetensors shards).
+        "repo_id": "mlx-community/Huihui-Qwen3.5-27B-Claude-4.6-Opus-abliterated-4bit",
         "gguf_filename": "",
         "params_b": 27, "file_size_mb": 15200,
         "n_layers": 48, "n_kv_heads": 8, "head_dim": 128,

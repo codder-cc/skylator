@@ -19,6 +19,17 @@ from pathlib import Path
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
 
+# Verify TLS against the OS trust store rather than certifi's bundle. On Windows boxes
+# where an antivirus (Avast/Kaspersky/ESET) or a corporate proxy terminates TLS, the
+# replacement root CA is installed system-wide but is absent from certifi, so every
+# huggingface_hub download dies with CERTIFICATE_VERIFY_FAILED. This keeps verification
+# fully on — it just trusts what the OS trusts.
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass   # optional dependency; certifi's bundle is used as before
+
 
 def _setup_logging(level_name: str = "INFO") -> None:
     level = getattr(logging, level_name.upper(), logging.INFO)

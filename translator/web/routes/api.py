@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import logging
 import queue
+import threading
 from flask import Blueprint, Response, current_app, jsonify, request, stream_with_context
 from translator.web.routes.utils import get_mod_path
 
@@ -1691,21 +1692,63 @@ def _review_reasons(original: str, translation: str, qs, terms: dict) -> list:
     return issues
 
 
+# Counting the terms means running the glossary over the whole queue — 20 000 strings,
+# nine seconds. The queue endpoint is what the review page calls to advance to the next
+# card, so paying that per keystroke made the page unusable. The counts describe a
+# backlog of thousands and shift by one when a string is settled, so they are cached and
+# dropped whenever a decision actually changes the queue.
+_TERM_COUNT_CACHE: dict[str, tuple[float, list]] = {}
+_TERM_COUNT_BUILDING: dict[str, bool] = {}
+_TERM_COUNT_TTL = 180.0
+
+
+def _invalidate_term_counts() -> None:
+    _TERM_COUNT_CACHE.clear()
+
+
 def _queue_term_counts(repo, wsql: str, params: list, terms: dict) -> list:
     """How many queued strings each glossary term accounts for — the grouping the UI
     offers so a reviewer can settle one term at a time."""
     if not terms:
         return []
+    import time as _t
+    ck = f"{wsql}|{params!r}"
+    hit = _TERM_COUNT_CACHE.get(ck)
+    if hit and _t.time() - hit[0] < _TERM_COUNT_TTL:
+        return hit[1]
+
+    # Recompute off the request thread and hand back whatever we have — stale chips, or
+    # none on the very first load. A grouping offered as a convenience is not worth making
+    # the reviewer wait nine seconds for, and it is right again a few seconds later.
+    if not _TERM_COUNT_BUILDING.get(ck):
+        _TERM_COUNT_BUILDING[ck] = True
+        db = repo.db
+        threading.Thread(
+            target=_build_term_counts, args=(db, wsql, list(params), terms, ck),
+            daemon=True, name="review-term-counts",
+        ).start()
+    return hit[1] if hit else []
+
+
+def _build_term_counts(db, wsql: str, params: list, terms: dict, ck: str) -> None:
+    import time as _t
     from translator.validation.terminology import glossary_violations
-    counts: dict = {}
-    rows = repo.db.execute(
-        f"SELECT original, translation FROM strings WHERE {wsql} LIMIT 20000", params
-    ).fetchall()
-    for r in rows:
-        for en, ru in glossary_violations(r["original"] or "", r["translation"] or "", terms):
-            e = counts.setdefault(en, {"term": en, "expected": ru, "count": 0})
-            e["count"] += 1
-    return sorted(counts.values(), key=lambda x: -x["count"])[:30]
+    try:
+        counts: dict = {}
+        rows = db.execute(
+            f"SELECT original, translation FROM strings WHERE {wsql} LIMIT 20000", params
+        ).fetchall()
+        for r in rows:
+            for en, ru in glossary_violations(r["original"] or "", r["translation"] or "",
+                                              terms):
+                e = counts.setdefault(en, {"term": en, "expected": ru, "count": 0})
+                e["count"] += 1
+        _TERM_COUNT_CACHE[ck] = (_t.time(),
+                                 sorted(counts.values(), key=lambda x: -x["count"])[:30])
+    except Exception as exc:
+        log.warning("review: term counts failed: %s", exc)
+    finally:
+        _TERM_COUNT_BUILDING.pop(ck, None)
 
 
 @bp.route("/review/reject", methods=["POST"])
@@ -1747,6 +1790,7 @@ def review_reject():
             stats and stats.invalidate(m)
         except Exception:
             pass
+    _invalidate_term_counts()
     log.info("review: %d string(s) sent back for re-translation", len(ids))
     return jsonify({"ok": True, "rejected": len(ids)})
 
@@ -1784,6 +1828,7 @@ def review_edit():
         stats and stats.invalidate(row["mod_name"])
     except Exception:
         pass
+    _invalidate_term_counts()
     return jsonify({"ok": True})
 
 
@@ -1815,6 +1860,8 @@ def review_approve():
         for m in mods:
             try: stats.invalidate(m)
             except Exception: pass
+    if n:
+        _invalidate_term_counts()
     return jsonify({"ok": True, "approved": n})
 
 

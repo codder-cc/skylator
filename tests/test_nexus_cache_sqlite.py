@@ -12,6 +12,7 @@ def _fetcher(db_path, cache_dir):
     f = NexusFetcher.__new__(NexusFetcher)      # skip __init__ (needs get_config)
     f._db_path = Path(db_path)
     f._cache_dir = Path(cache_dir)
+    f._imported = True    # these tests exercise the read path, not the one-shot import
     return f
 
 

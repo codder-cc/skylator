@@ -116,8 +116,23 @@ class StatsManager:
         return result
 
     def get_global_stats(self) -> GlobalStats:
-        """Aggregate statistics across all mod_stats_cache rows."""
-        rows = self._db.execute("SELECT * FROM mod_stats_cache").fetchall()
+        """Aggregate statistics across every mod that has strings.
+
+        Deliberately NOT read from mod_stats_cache. That cache is filled lazily, one mod
+        at a time, by the post-job hook — so it holds only the mods something happened to
+        recently. Summing it and calling the result global made the dashboard report 1,432
+        strings out of 386,280 on the live database, because ten of a hundred and
+        fifty-five mods were cached. A single grouped scan over the indexed status column
+        is the honest answer and costs ~50 ms on that database.
+        """
+        rows = self._db.execute(
+            """SELECT mod_name,
+                      COUNT(*)                     AS total,
+                      SUM(status='translated')     AS translated,
+                      SUM(status='pending')        AS pending,
+                      SUM(status='needs_review')   AS needs_review
+               FROM strings GROUP BY mod_name"""
+        ).fetchall()
         if not rows:
             return GlobalStats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0)
 

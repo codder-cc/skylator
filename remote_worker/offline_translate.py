@@ -10,6 +10,7 @@ from the durable manifest with no lost or repeated work.
 from __future__ import annotations
 import asyncio
 import logging
+import time
 import re
 
 log = logging.getLogger(__name__)
@@ -183,6 +184,7 @@ class OfflineTranslateRunner:
                 if self._stop:
                     break
 
+                _t0 = time.monotonic()
                 try:
                     _p = prompt
                     _self = self   # don't close over `self` inside the executor lambda
@@ -196,6 +198,14 @@ class OfflineTranslateRunner:
                 except Exception as exc:
                     log.error("OfflineTranslateRunner[%s]: inference error: %s", self._aid[:8], exc)
                     raw = ""
+                # An offline package can be the ONLY thing an agent does for days, so without
+                # this its tok/s never updates and the master keeps splitting the next
+                # campaign evenly instead of by real speed.
+                try:
+                    from remote_server import _record_throughput
+                    _record_throughput(state, raw or "", time.monotonic() - _t0)
+                except Exception:
+                    pass
 
                 translations = parse_numbered_output(raw or "", len(batch))
 

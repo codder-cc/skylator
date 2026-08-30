@@ -743,20 +743,49 @@ async def _run_chat(job: JobRecord, state: ServerState,
     job.progress = 1
 
 
+def _completion_tokens(state: ServerState, output_text: str) -> int:
+    """Tokens produced by the last inference.
+
+    llamacpp reports exact counts; "completion" is a running total across the process, so
+    the per-call figure is "last_completion_tokens" — using the cumulative one inflated
+    tok/s further with every call. MLX gives no counts, so estimate (Cyrillic-aware).
+    """
+    if state.backend_type == "mlx":
+        return _estimate_tokens(output_text or "")
+    try:
+        from models.llamacpp_backend import get_token_stats
+        st = get_token_stats()
+        return int(st.get("last_completion_tokens") or 0) or _estimate_tokens(output_text or "")
+    except Exception:
+        return _estimate_tokens(output_text or "")
+
+
+def _record_throughput(state: ServerState, output_text: str, elapsed: float) -> int:
+    """Feed one finished inference into the agent's tok/s history. Returns the token count.
+
+    The master weights how much work each agent gets by exactly this number
+    (offline_backend.smart_partition) and sizes batches from it
+    (_compute_recommended_params), so EVERY production inference path has to report. Only
+    the legacy /translate job flow did, which left tps_avg pinned at 0.0 on agents doing
+    real work — so the fleet was split evenly no matter how fast each machine was.
+    """
+    try:
+        comp = _completion_tokens(state, output_text)
+        if elapsed > 0 and comp > 0:
+            state.tps_history.append(round(comp / elapsed, 2))
+        return comp
+    except Exception:
+        return 0
+
+
 def _record_tps(state: ServerState, job: JobRecord, elapsed: float) -> None:
     try:
-        if state.backend_type == "mlx":
-            # [FIX #5] Use Cyrillic-aware token estimation instead of naive // 4
-            result_text = (job.result if isinstance(job.result, str) else
-                           " ".join(job.result) if isinstance(job.result, list) else "")
-            comp = _estimate_tokens(result_text)
-        else:
-            from models.llamacpp_backend import get_token_stats
-            comp = get_token_stats().get("completion", 0)
+        result_text = (job.result if isinstance(job.result, str) else
+                       " ".join(job.result) if isinstance(job.result, list) else "")
+        comp = _record_throughput(state, result_text, elapsed)
         job.tokens_gen = comp
         if elapsed > 0 and comp > 0:
             job.tokens_per_sec = round(comp / elapsed, 2)
-            state.tps_history.append(job.tokens_per_sec)
     except Exception:
         pass
 
@@ -1604,7 +1633,9 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                     lambda: state.backend._infer(prompt, params=params),
                 )
                 elapsed = time.time() - t0
-                log.info("Pull worker: chunk %s done in %.1fs", chunk_id[:8], elapsed)
+                _record_throughput(state, result or "", elapsed)
+                log.info("Pull worker: chunk %s done in %.1fs (%.1f tok/s avg)",
+                         chunk_id[:8], elapsed, state.tps_avg)
             except Exception as exc:
                 log.error("Pull worker: inference error for chunk %s: %s", chunk_id[:8], exc)
                 result = "\x00infer_error\x00"

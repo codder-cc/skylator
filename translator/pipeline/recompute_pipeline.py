@@ -43,7 +43,7 @@ class RecomputePipeline:
                     r for r in rows
                     if not any(r["key"].startswith(p) for p in ("mcm:", "bsa-mcm:", "swf:"))
                 ]
-                n_changed = n_review = 0
+                n_changed = n_review = n_archived = 0
                 for r in esp_rows:
                     orig  = r.get("original", "") or ""
                     trans = r.get("translation", "") or ""
@@ -52,6 +52,22 @@ class RecomputePipeline:
                         if (trans == orig and r.get("quality_score") == 100
                                 and r.get("status") == "translated"):
                             continue
+                        # We are about to replace a real translation with the English
+                        # original. That is right for the common case — an editor ID like
+                        # HairMaleElf09 that a model translated by mistake — but the same
+                        # heuristic also catches all-caps UI labels ("ALTERATION" →
+                        # "ИЗМЕНЕНИЕ"), where the translation is correct and would be lost.
+                        # repo.upsert keeps no history, so archive it first: the string
+                        # history view can then show and restore it.
+                        if trans and trans != orig and r.get("id") is not None:
+                            try:
+                                repo.insert_history(
+                                    r["id"], trans, r.get("status") or "translated",
+                                    r.get("quality_score"), "recompute-discarded", None, None)
+                                n_archived += 1
+                            except Exception as exc:
+                                log.warning("recompute: could not archive %s/%s: %s",
+                                            _mod, r.get("key"), exc)
                     else:
                         new_trans = trans
                         if not trans:
@@ -78,8 +94,10 @@ class RecomputePipeline:
                         n_changed += 1
                 if n_changed:
                     updated += 1
+                    _arch = f", {n_archived} prior translation(s) archived to history" if n_archived else ""
                     job.add_log(
-                        f"Updated {_mod}: {n_changed} strings recomputed, {n_review} needs_review"
+                        f"Updated {_mod}: {n_changed} strings recomputed, "
+                        f"{n_review} needs_review{_arch}"
                     )
                 else:
                     skipped += 1

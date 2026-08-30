@@ -1948,6 +1948,7 @@ def workers_offline_results(label: str):
     done           = bool(data.get("done", False))
     batch_max_seq  = int(data.get("batch_max_seq") or 0)  # agent's durable seq high-water for this batch
     had_error      = False
+    dup_filled     = 0
     failed_seqs: list[int] = []
 
     if not offline_job_id:
@@ -2018,6 +2019,17 @@ def workers_offline_results(label: str):
                 )
                 mods_touched.add(mod_name)
                 saved_count += 1
+                # Fill identical still-pending strings from this one result (see
+                # StringRepo.apply_to_pending_duplicates): 42% of a real backlog is
+                # repeated text, and re-translating it is pure waste.
+                try:
+                    _n = repo.apply_to_pending_duplicates(
+                        r.get("string_hash") or "", translation,
+                        status or "translated", quality)
+                    if _n:
+                        dup_filled += _n
+                except Exception:
+                    pass
                 # Durable per-string delivery tracking (host manifest, Phase 3).
                 sid = r.get("string_id")
                 if astore is not None and sid is not None:
@@ -2113,6 +2125,9 @@ def workers_offline_results(label: str):
     if done:
         all_done = registry.finish_offline_job(offline_job_id)
         registry.delete_offline_package(offline_job_id)
+        if dup_filled:
+            log.info("offline-results: %s filled %d duplicate string(s) from %d result(s)",
+                     offline_job_id[:8], dup_filled, saved_count)
         log.info("offline-results: %s done (saved=%d, all_workers_done=%s)",
                  offline_job_id[:8], saved_count, all_done)
 

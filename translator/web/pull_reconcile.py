@@ -29,7 +29,7 @@ def apply_pulled_results(string_mgr, astore, agent_label: str, results: list[dic
     is unit-testable without HTTP. Returns (saved, rejected, max_seq, mods_touched)."""
     from translator.jobs.assignment_store import verify_result_hash
 
-    saved = rejected = 0
+    saved = rejected = dup_filled = 0
     max_seq = 0
     mods: set[str] = set()
     for r in results:
@@ -56,6 +56,18 @@ def apply_pulled_results(string_mgr, astore, agent_label: str, results: list[dic
             merge=True,
         )
         mods.add(mod)
+        # The same source text repeats across a collection — "Chest" 912 times in the
+        # live one. Fill every still-pending twin with this result instead of paying an
+        # agent to translate it again. Never touches a row that already has a
+        # translation, so nothing can be overwritten.
+        try:
+            n_dup = string_mgr._repo.apply_to_pending_duplicates(
+                r.get("string_hash") or "", translation,
+                r.get("status") or "translated", r.get("quality_score"))
+            if n_dup:
+                dup_filled += n_dup
+        except Exception:
+            pass
         sid = r.get("string_id")
         aid = r.get("assignment_id")
         if astore is not None and sid is not None and aid:
@@ -64,6 +76,9 @@ def apply_pulled_results(string_mgr, astore, agent_label: str, results: list[dic
             except Exception:
                 pass
         saved += 1
+    if dup_filled:
+        log.info("pull: %d duplicate string(s) filled from %d delivered result(s)",
+                 dup_filled, saved)
     return saved, rejected, max_seq, mods
 
 

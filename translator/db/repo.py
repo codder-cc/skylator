@@ -410,6 +410,35 @@ class StringRepo:
             self.db.commit()
         return cur.rowcount
 
+    def apply_to_pending_duplicates(self, string_hash: str, translation: str,
+                                    status: str, quality_score: Optional[int],
+                                    exclude_id: Optional[int] = None) -> int:
+        """Fill every still-pending string with the same source text. Returns rows filled.
+
+        42% of a real backlog is repeated text — "Chest" appears 912 times across the
+        collection, "Cancel" 302. Translating each occurrence separately is the single
+        largest waste in a campaign. string_hash is SHA256 of the original, and it is
+        indexed, so this is a cheap keyed update.
+
+        Only rows with no translation are touched: this can never overwrite existing
+        work, and it never revisits a string a human or a better model already handled.
+        """
+        if not string_hash or not translation:
+            return 0
+        sql = """UPDATE strings
+                    SET translation=?, status=?, quality_score=?, updated_at=?,
+                        source=COALESCE(source,'duplicate')
+                  WHERE string_hash=?
+                    AND (translation IS NULL OR translation='')"""
+        params = [translation, status, quality_score, time.time(), string_hash]
+        if exclude_id is not None:
+            sql += " AND id != ?"
+            params.append(exclude_id)
+        with _write_lock:
+            cur = self.db.execute(sql, tuple(params))
+            self.db.commit()
+        return cur.rowcount
+
     # ── Checkpoints (diff-based recovery) ───────────────────────────────────
 
     def create_checkpoint(self, mod_name: str, esp_name: Optional[str] = None) -> str:

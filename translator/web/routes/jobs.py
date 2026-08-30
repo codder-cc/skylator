@@ -23,7 +23,15 @@ def job_list():
     result = []
     for j in jm.list_jobs(limit=200):
         try:
-            result.append(j.to_dict())
+            d = j.to_dict()
+            # A list is a list. Every job carries up to 10,000 per-string results for the
+            # live feed, and shipping them all made this endpoint 14 MB on the live host —
+            # re-fetched by the Jobs page. The detail endpoint still serves the full
+            # history, and the live feed arrives over SSE, which was always bounded.
+            d["string_update_count"] = len(d.get("string_updates") or [])
+            d["string_updates"]      = []
+            d["log_lines"]           = (d.get("log_lines") or [])[-40:]
+            result.append(d)
         except Exception as exc:
             log.warning("Failed to serialize job %s: %s", j.id, exc)
     return jsonify(result)

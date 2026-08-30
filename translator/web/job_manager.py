@@ -16,6 +16,11 @@ from typing import Any, Callable, Optional
 
 log = logging.getLogger(__name__)
 
+# How much of a job's live feed survives to disk. The feed exists for the UI of a running
+# job; on reload it is history nobody reads, and it dominated the persisted file.
+_PERSIST_STRING_TAIL = 200
+_PERSIST_LOG_TAIL    = 500
+
 
 class JobStatus(str, Enum):
     PENDING             = "pending"
@@ -540,7 +545,14 @@ class JobManager:
             data: dict = {}
             for j in all_jobs:
                 d = j.to_dict()
-                # Strip bulky lists from old finished jobs to keep the file small
+                # The live feed is display data for a running job, capped at 10,000 entries
+                # in memory — about 5 MB each. Writing all of it made cache/jobs.json 15 MB,
+                # rewritten in full on every job state change, which with incremental
+                # feeding is constant. Nobody replays ten thousand past translations after a
+                # restart, so only a short tail is kept.
+                d["string_updates"] = (d.get("string_updates") or [])[-_PERSIST_STRING_TAIL:]
+                d["log_lines"]      = (d.get("log_lines") or [])[-_PERSIST_LOG_TAIL:]
+                # Old finished jobs keep nothing but their outcome.
                 if (j.finished_at or j.created_at) < cutoff:
                     d["log_lines"]      = []
                     d["string_updates"] = []

@@ -574,7 +574,6 @@ class JobManager:
 
     def _persist_to_db(self) -> None:
         records = self._trimmed_records()
-        keep = [j.id for j, _ in records]
         rows = [(
             j.id, j.name, j.job_type, j.status.value, j.created_at, j.started_at,
             j.finished_at, j.result, j.error,
@@ -590,9 +589,14 @@ class JobManager:
                    result=excluded.result, error=excluded.error, payload=excluded.payload""",
             rows,
         )
-        if keep:
-            ph = ",".join("?" * len(keep))
-            self._db.execute(f"DELETE FROM jobs WHERE id NOT IN ({ph})", tuple(keep))
+        # Prune by age, never by "not currently in memory". Deleting whatever the running
+        # process does not hold makes every restart a chance to destroy history: one start
+        # with an empty or partly-restored set wipes the table. Keeping the newest 500 rows
+        # bounds the table without ever depending on what this process happens to know.
+        self._db.execute(
+            """DELETE FROM jobs WHERE id NOT IN (
+                   SELECT id FROM jobs ORDER BY created_at DESC LIMIT 500)"""
+        )
         self._db.commit()
 
     def _persist(self):

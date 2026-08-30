@@ -109,3 +109,29 @@ def test_a_legacy_json_file_is_imported_once(jm, db, tmp_path):
     assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1
     assert not legacy.exists()
     assert legacy.with_suffix(".json.imported").exists()
+
+
+def test_a_restart_with_no_jobs_in_memory_does_not_wipe_history(jm, db):
+    """Pruning must never key off what this process happens to hold. A start that
+    restores nothing — a bad payload, a fresh singleton — would otherwise erase the
+    table on its first persist."""
+    jm.set_db(db)
+    _mk(jm, "Older")
+    jm._persist()
+    assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1
+
+    import threading
+    amnesiac = JobManager.__new__(JobManager)
+    amnesiac._jobs, amnesiac._persist_path, amnesiac._app = {}, None, None
+    amnesiac._lock, amnesiac._db = threading.Lock(), db
+    amnesiac._persist()
+    assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1
+
+
+def test_the_table_stays_bounded(jm, db):
+    jm.set_db(db)
+    for i in range(520):
+        job = _mk(jm, f"J{i}")
+        job.created_at = 1000.0 + i
+    jm._persist()
+    assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] <= 500

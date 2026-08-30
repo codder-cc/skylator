@@ -629,8 +629,12 @@ class ModScanner:
             info.cached_at            = None
             # Recompute status — use pending_strings so mods with only untranslatable
             # strings remaining are correctly marked "done".
-            has_esp = bool(info.esp_files)
-            if not has_esp:
+            # "no_strings" means the mod has nothing translatable — not merely no ESP.
+            # A mod whose content is MCM or BSA-packed still has work and progress to show;
+            # keying this off esp_files alone reported such a mod as empty even when it was
+            # fully translated, hiding finished work from the mod list.
+            has_content = bool(info.esp_files or info.mcm_loose or info.bsa_files)
+            if not has_content:
                 info.status = "no_strings"
             elif info.total_strings == 0:
                 info.status = "partial" if n_trans > 0 else "unknown"

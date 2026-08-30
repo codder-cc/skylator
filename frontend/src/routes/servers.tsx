@@ -815,8 +815,10 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange,
                   {oj.tps > 0 && isActive && (
                     <span className="text-text-muted">{oj.tps.toFixed(1)} tok/s</span>
                   )}
-                  {oj.host_job_id && !isDone && (
-                    <DispatchBackButton hostJobId={oj.host_job_id} />
+                  {!isDone && (
+                    oj.host_job_id
+                      ? <DispatchBackButton hostJobId={oj.host_job_id} />
+                      : <DirectCancelButton workerLabel={worker.label} offlineJobId={oj.offline_job_id} />
                   )}
                 </div>
                 {oj.current_text && isActive && (
@@ -1037,6 +1039,33 @@ function HostOtaCard() {
   )
 }
 
+// ── Direct cancel (no host job) ───────────────────────────────────────────────
+function DirectCancelButton({ workerLabel, offlineJobId }: { workerLabel: string; offlineJobId: string }) {
+  const qc  = useQueryClient()
+  const mut = useMutation({
+    mutationFn: () => workersApi.cancelOfflineJob(workerLabel, offlineJobId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.workers() })
+    },
+  })
+  if (mut.isError) {
+    return (
+      <span className="ml-auto text-[9px] text-red-400/70">Cancel failed</span>
+    )
+  }
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); mut.mutate() }}
+      disabled={mut.isPending || mut.isSuccess}
+      title="Cancel this offline job on the worker"
+      className="ml-auto flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-medium bg-red-500/15 text-red-400 border border-red-500/25 hover:bg-red-500/25 disabled:opacity-40 transition-colors"
+    >
+      {mut.isPending ? <RefreshCw size={8} className="animate-spin" /> : '✕'}
+      {mut.isSuccess ? 'Cancelled' : 'Cancel'}
+    </button>
+  )
+}
+
 // ── Dispatch Back (cancel offline job) button ─────────────────────────────────
 function DispatchBackButton({ hostJobId }: { hostJobId: string }) {
   const qc  = useQueryClient()
@@ -1047,6 +1076,13 @@ function DispatchBackButton({ hostJobId }: { hostJobId: string }) {
       qc.invalidateQueries({ queryKey: QK.jobs() })
     },
   })
+  if (mut.isError) {
+    return (
+      <span className="ml-auto text-[9px] text-red-400/70" title={String((mut.error as Error)?.message ?? 'Error')}>
+        Cancel failed
+      </span>
+    )
+  }
   return (
     <button
       onClick={(e) => { e.stopPropagation(); mut.mutate() }}

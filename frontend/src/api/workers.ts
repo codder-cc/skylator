@@ -102,4 +102,11 @@ export const workersApi = {
   // Gap 4 — fleet observability: per-assignment funnel + liveness tiers + aggregate.
   assignments: () =>
     apiFetch<AssignmentsOverview>('/api/assignments'),
+
+  // Cancel an offline job directly on a worker — works when the host job is gone.
+  cancelOfflineJob: (label: string, offlineJobId: string) =>
+    apiPost<{ ok: boolean; ack: boolean }>(
+      `/api/workers/${encodeURIComponent(label)}/cancel-offline`,
+      { offline_job_id: offlineJobId },
+    ),
 }

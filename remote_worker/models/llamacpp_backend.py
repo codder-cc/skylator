@@ -133,8 +133,15 @@ class LlamaCppBackend(BaseBackend):
 
         return results
 
-    def _infer(self, prompt: str, params=None) -> str:
-        """Raw inference on a pre-built prompt (pull-mode)."""
+    def _infer(self, prompt: str, params=None, stop_check=None) -> str:
+        """Raw inference on a pre-built prompt (pull-mode).
+
+        stop_check: optional callable () -> bool, for signature parity with the MLX
+        backend.  llama.cpp generation is not interruptible here, so it is honoured
+        before the call only — the caller's batch-boundary check does the rest.
+        """
+        if stop_check is not None and stop_check():
+            return ""
         return self._chat(prompt, params)
 
     # ── internals ─────────────────────────────────────────────────────────────

@@ -1420,6 +1420,49 @@ def workers_unregister(label: str):
     return jsonify({"ok": True})
 
 
+@bp.route("/workers/<label>/cancel-offline", methods=["POST"])
+def workers_cancel_offline(label: str):
+    """Directly cancel an offline job on a worker without needing the host job.
+
+    Works even when the host job has been deleted or the host was restarted
+    (losing the in-memory registry).  Sends cancel_offline_job to the worker
+    and cleans up any registry / persisted package entries.
+    """
+    import uuid as _uuid
+    registry = current_app.config.get("WORKER_REGISTRY")
+    if not registry:
+        return jsonify({"error": "No registry"}), 503
+
+    data           = request.get_json(silent=True) or {}
+    offline_job_id = data.get("offline_job_id", "")
+    if not offline_job_id:
+        return jsonify({"error": "offline_job_id required"}), 400
+
+    # Send cancel signal to the worker if it is actively running this job
+    worker = registry.get(label)
+    active_ids = {x.get("offline_job_id") for x in (worker.offline_jobs if worker else [])}
+    ack = None
+    if offline_job_id in active_ids:
+        cid = str(_uuid.uuid4())
+        registry.enqueue_chunk(label, {
+            "chunk_id":       cid,
+            "type":           "cancel_offline_job",
+            "offline_job_id": offline_job_id,
+        })
+        ack = registry.collect_result(cid, timeout=15)
+        log.info("cancel-offline: sent cancel to %s for %s, ack=%s",
+                 label, offline_job_id[:8], bool(ack))
+
+    # Clean up host-side tracking
+    oj_rec = registry.get_offline_job(offline_job_id)
+    if oj_rec and oj_rec.get("chunk_id"):
+        registry.cancel_queued_chunk(oj_rec["chunk_id"])
+    registry.delete_offline_package(offline_job_id)
+    registry.finish_offline_job(offline_job_id)
+
+    return jsonify({"ok": True, "ack": bool(ack)})
+
+
 @bp.route("/workers/<label>/chunk", methods=["GET"])
 def workers_get_chunk(label: str):
     """Pull-mode: remote polls for next inference chunk.

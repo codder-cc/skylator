@@ -180,8 +180,18 @@ def create_job():
 
 @bp.route("/<job_id>/cancel", methods=["POST"])
 def cancel_job(job_id: str):
-    jm = current_app.config["JOB_MANAGER"]
+    jm       = current_app.config["JOB_MANAGER"]
+    registry = current_app.config.get("WORKER_REGISTRY")
+    job      = jm.get_job(job_id)
     jm.cancel(job_id)
+    # Clean up any offline packages queued/pending for this job
+    if job and registry:
+        for offline_job_id in (job.params.get("offline_job_ids") or []):
+            oj_rec = registry.get_offline_job(offline_job_id)
+            if oj_rec and oj_rec.get("chunk_id"):
+                registry.cancel_queued_chunk(oj_rec["chunk_id"])
+            registry.delete_offline_package(offline_job_id)
+            registry.finish_offline_job(offline_job_id)
     return jsonify({"ok": True})
 
 
@@ -355,8 +365,38 @@ def dispatch_back(job_id: str):
 
     job = jm.get_job(job_id)
     if not job:
+        # Job was deleted (e.g. cleared after cancel) but registry may still
+        # have orphaned entries referencing this host_job_id.  Clean them up.
+        if registry:
+            cleaned = 0
+            for ojid, rec in registry._offline_jobs_snapshot():
+                if rec.get("host_job_id") != job_id:
+                    continue
+                label  = rec.get("worker_label", "")
+                worker = registry.get(label) if label else None
+                active_ids = {
+                    x.get("offline_job_id")
+                    for x in (worker.offline_jobs if worker else [])
+                }
+                if ojid in active_ids:
+                    cid = str(_uuid.uuid4())
+                    registry.enqueue_chunk(label, {
+                        "chunk_id": cid,
+                        "type": "cancel_offline_job",
+                        "offline_job_id": ojid,
+                    })
+                    registry.collect_result(cid, timeout=10)
+                if rec.get("chunk_id"):
+                    registry.cancel_queued_chunk(rec["chunk_id"])
+                registry.delete_offline_package(ojid)
+                registry.finish_offline_job(ojid)
+                cleaned += 1
+            log.info("dispatch-back: cleaned %d orphaned registry entries for deleted job %s",
+                     cleaned, job_id[:8])
+            return jsonify({"ok": True, "cleaned_orphaned": cleaned})
         return jsonify({"error": "Job not found"}), 404
-    if job.status != JobStatus.OFFLINE_DISPATCHED:
+
+    if job.status not in (JobStatus.OFFLINE_DISPATCHED, JobStatus.CANCELLED, JobStatus.DONE):
         return jsonify({"error": "Job is not offline_dispatched"}), 400
 
     offline_job_ids = job.params.get("offline_job_ids") or []

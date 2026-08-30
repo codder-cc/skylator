@@ -246,8 +246,12 @@ class MlxBackend(BaseBackend):
             gen_kwargs["num_draft_tokens"] = self._num_draft_tokens
         return mlx_lm.generate(self._model, self._tokenizer, prompt=formatted, **gen_kwargs)
 
-    def _infer(self, prompt: str, params=None) -> str:
-        """Raw inference on a pre-built prompt (pull-mode)."""
+    def _infer(self, prompt: str, params=None, stop_check=None) -> str:
+        """Raw inference on a pre-built prompt (pull-mode).
+
+        stop_check: optional callable () -> bool.  When it returns True the
+        generation is aborted between tokens (within ~1 token latency).
+        """
         if not self.is_loaded:
             self.load()
         import mlx_lm
@@ -265,5 +269,23 @@ class MlxBackend(BaseBackend):
         if self._draft_model is not None:
             gen_kwargs["draft_model"]      = self._draft_model
             gen_kwargs["num_draft_tokens"] = self._num_draft_tokens
+
+        if stop_check is not None and hasattr(mlx_lm, "stream_generate"):
+            # stream_generate yields one segment at a time, so we can abort between
+            # tokens instead of waiting out the whole batch.  It takes the same kwargs
+            # as generate() minus `verbose`, which it does not accept.
+            stream_kwargs = {k: v for k, v in gen_kwargs.items() if k != "verbose"}
+            # response.text is the NEXT segment, not the text so far — accumulate it.
+            segments: list[str] = []
+            for response in mlx_lm.stream_generate(
+                self._model, self._tokenizer, prompt=prompt, **stream_kwargs
+            ):
+                segments.append(response.text or "")
+                if stop_check():
+                    log.info("MlxBackend._infer: stop requested — aborting after %d chars",
+                             sum(len(x) for x in segments))
+                    return ""
+            return "".join(segments).strip()
+
         raw = mlx_lm.generate(self._model, self._tokenizer, prompt=prompt, **gen_kwargs)
         return raw.strip()

@@ -38,7 +38,7 @@ _META = {"context": "ctx", "src_lang": "English", "tgt_lang": "Russian",
 
 class _GoodBackend:
     is_loaded = True
-    def _infer(self, prompt, params=None):
+    def _infer(self, prompt, params=None, stop_check=None):
         return "\n".join(f"{i}. перевод_{i}" for i in range(1, 51))
 
 
@@ -46,7 +46,7 @@ class _CrashBackend:
     is_loaded = True
     def __init__(self, store, runner, crash_at):
         self._s, self._r, self._at = store, runner, crash_at
-    def _infer(self, prompt, params=None):
+    def _infer(self, prompt, params=None, stop_check=None):
         if self._s.max_seq() >= self._at:
             self._r.cancel()
             return ""

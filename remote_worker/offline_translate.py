@@ -180,11 +180,18 @@ class OfflineTranslateRunner:
                 )
                 self.current_text = originals[0] if originals else ""
 
+                if self._stop:
+                    break
+
                 try:
                     _p = prompt
+                    _self = self   # don't close over `self` inside the executor lambda
                     raw = await loop.run_in_executor(
                         None,
-                        lambda p=_p: state.backend._infer(p, params=infer_params),
+                        lambda p=_p: state.backend._infer(
+                            p, params=infer_params,
+                            stop_check=lambda: _self._stop,
+                        ),
                     )
                 except Exception as exc:
                     log.error("OfflineTranslateRunner[%s]: inference error: %s", self._aid[:8], exc)

@@ -77,7 +77,7 @@ class _GoodBackend:
     """Returns 50 numbered Russian lines regardless of prompt; the parser slices to
     the batch size, so every string gets a non-empty translation."""
     is_loaded = True
-    def _infer(self, prompt, params=None):
+    def _infer(self, prompt, params=None, stop_check=None):
         return "\n".join(f"{i}. перевод_{i}" for i in range(1, 51))
 
 
@@ -87,7 +87,7 @@ class _CrashBackend:
     is_loaded = True
     def __init__(self, store, runner, crash_at):
         self._store, self._runner, self._crash_at = store, runner, crash_at
-    def _infer(self, prompt, params=None):
+    def _infer(self, prompt, params=None, stop_check=None):
         if self._store.max_seq() >= self._crash_at:
             self._runner.cancel()
             return ""

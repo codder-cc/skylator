@@ -42,7 +42,37 @@ def test_campaign_endpoint(fakedb):
         fakedb.insert_string("ModA", "e", f"k{i}", original="A medium length English string here",
                              status="pending")
     fakedb.commit()
+    # No agents registered → no measured throughput → the honest answer is "unknown".
+    # This used to return a number derived from a 0.1 tok/s floor, which reads as a
+    # concrete multi-year estimate for a backlog that a real fleet clears in days.
     j = app.test_client().get("/api/campaign/estimate").get_json()
     assert j["pending"] == 50
-    assert j["eta_seconds"] > 0
-    assert "eta_human" in j and "agents" in j
+    assert j["eta_seconds"] is None
+    assert "unknown" in j["eta_human"].lower()
+    assert j["agents"] == 0
+
+
+def test_campaign_endpoint_with_a_reporting_agent(fakedb):
+    """With real throughput on the fleet the estimate becomes a number again."""
+    from translator.web.worker_registry import WorkerInfo
+    import time
+
+    app = Flask(__name__)
+    app.register_blueprint(bp)
+    app.config["STRING_REPO"] = StringRepo(fakedb)
+    reg = WorkerRegistry()
+    reg.register(WorkerInfo(label="agent-A", url="http://x:8765"))
+    w = reg.get("agent-A")
+    w.last_seen = time.time()
+    w.stats = {"tps_avg": 12.0}
+    app.config["WORKER_REGISTRY"] = reg
+
+    for i in range(50):
+        fakedb.insert_string("ModA", "e", f"k{i}",
+                             original="A medium length English string here", status="pending")
+    fakedb.commit()
+
+    j = app.test_client().get("/api/campaign/estimate").get_json()
+    assert j["agents"] == 1
+    assert j["fleet_tps"] == 12.0
+    assert isinstance(j["eta_seconds"], int) and j["eta_seconds"] > 0

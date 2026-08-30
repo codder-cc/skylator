@@ -33,15 +33,22 @@ def estimate_campaign(pending: int, avg_chars: float, fleet_tps: float) -> dict:
     tok_in  = max(avg_chars, 1.0) / 3.5
     tok_per_string = tok_in + tok_in * 1.2 + 20.0          # input + output + overhead
     total_tokens   = pending * tok_per_string
-    tps = max(fleet_tps, 0.1)
-    eta = total_tokens / tps
-    return {
+    out = {
         "pending": pending,
         "avg_chars": round(avg_chars, 1),
-        "fleet_tps": round(tps, 1),
+        "fleet_tps": round(fleet_tps, 1),
         "tokens_per_string_est": round(tok_per_string, 1),
         "total_tokens_est": round(total_tokens),
-        "eta_seconds": round(eta),
-        "eta_human": _fmt_duration(eta),
         "approx": True,
     }
+    # No agent has measured throughput yet (fresh fleet, or every agent just restarted).
+    # Dividing by a floor turned a 195-day job into an eight-year one; an invented number
+    # is worse than admitting we cannot say yet.
+    if fleet_tps <= 0:
+        out["eta_seconds"] = None
+        out["eta_human"]   = "unknown — no throughput measured yet"
+        return out
+    eta = total_tokens / fleet_tps
+    out["eta_seconds"] = round(eta)
+    out["eta_human"]   = _fmt_duration(eta)
+    return out

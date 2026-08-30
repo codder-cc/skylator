@@ -1034,10 +1034,25 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
             # Build offline_jobs field for heartbeat
             if state.offline_job:
                 runner = state.offline_job_runner
+                _aid   = state.offline_job.get("offline_job_id", "")
+                # Read progress from the durable manifest, not from the dispatched chunk.
+                # _produce_assignment replaces the chunk with just its id (a 273k-string
+                # package is not worth holding in memory), so the old
+                # len(chunk["strings"]) was always 0 and the UI had no denominator —
+                # an offline job showed "981 done" of nothing. The store also knows the
+                # right numbers after a crash-resume, which the chunk never did.
+                _total = 0
+                _done  = runner.done_count if runner else 0
+                if state.result_store is not None and _aid:
+                    try:
+                        _total, _store_done = state.result_store.assignment_progress(_aid)
+                        _done = max(_done, _store_done)
+                    except Exception:
+                        pass
                 offline_jobs_payload = [{
-                    "offline_job_id": state.offline_job.get("offline_job_id", ""),
-                    "total":          len(state.offline_job.get("strings") or []),
-                    "done":           runner.done_count if runner else 0,
+                    "offline_job_id": _aid,
+                    "total":          _total,
+                    "done":           _done,
                     "tps":            state.tps_last,
                     "current_text":   runner.current_text if runner else "",
                 }]

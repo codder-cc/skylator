@@ -1617,6 +1617,16 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                     if state.offline_job_runner:
                         state.offline_job_runner.cancel()
                     log.info("Pull worker: offline job %s cancelled", offline_job_id[:8])
+                # Stopping the runner only ends this process's work on it. The assignment
+                # stays 'open' in the durable store, and the resume path picks up every
+                # open assignment on launch — so the next restart resurrected a job the
+                # operator had cancelled, and it started translating it all over again.
+                if state.result_store is not None and offline_job_id:
+                    try:
+                        state.result_store.set_assignment_state(offline_job_id, "cancelled")
+                    except Exception as exc:
+                        log.warning("cancel: could not mark %s cancelled in the store: %s",
+                                    offline_job_id[:8], exc)
                 await _post_result(state.http_client, base, label, chunk_id,
                                    json.dumps({"ok": True}))
                 continue

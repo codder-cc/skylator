@@ -83,6 +83,15 @@ def test_empty_inputs_do_nothing(repo):
     assert _get(repo, "ModA", "a")[0] == ""
 
 
+def test_filled_rows_are_marked_as_copies(repo):
+    """Provenance matters: a translation that came from a twin is not model output, and
+    the source breakdown and review queue need to be able to tell them apart."""
+    _add(repo, "ModA", "src", "Chest")
+    repo.apply_to_pending_duplicates(_sha256_hash("Chest"), "Сундук", "translated", 100)
+    src = repo.db.execute("SELECT source FROM strings WHERE key='src'").fetchone()["source"]
+    assert src == "duplicate"
+
+
 def test_needs_review_status_propagates_too(repo):
     """A doubtful translation must not arrive at its twins looking confident."""
     _add(repo, "ModA", "a", "Chest")

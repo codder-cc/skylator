@@ -427,7 +427,7 @@ class StringRepo:
             return 0
         sql = """UPDATE strings
                     SET translation=?, status=?, quality_score=?, updated_at=?,
-                        source=COALESCE(source,'duplicate')
+                        source='duplicate'   -- provenance: filled from a twin, not inferred
                   WHERE string_hash=?
                     AND (translation IS NULL OR translation='')"""
         params = [translation, status, quality_score, time.time(), string_hash]

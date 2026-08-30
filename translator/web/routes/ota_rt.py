@@ -96,8 +96,25 @@ def update():
     # ── 3. Schedule restart ──────────────────────────────────────────────────
     def _restart():
         time.sleep(1)
-        log.info("OTA restart: os.execv %s %s", sys.executable, sys.argv)
+        log.info("OTA restart: relaunching %s %s", sys.executable, sys.argv)
         try:
+            if os.name == "nt":
+                # os.execv on Windows is not the POSIX image replacement: it spawns a
+                # replacement and kills the caller. Called from this background thread it
+                # raced the listening socket — the port stayed bound by a process that
+                # never served, and the master had to be killed by hand. Spawn a detached
+                # relauncher that waits for us to die and free the port, then exit.
+                import subprocess
+                relaunch = (
+                    "import os, sys, time; time.sleep(4); "
+                    f"os.execv({sys.executable!r}, {[sys.executable] + sys.argv!r})"
+                )
+                subprocess.Popen(
+                    [sys.executable, "-c", relaunch],
+                    creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+                    close_fds=True,
+                )
+                os._exit(0)          # release the socket now; the relauncher takes over
             os.execv(sys.executable, [sys.executable] + sys.argv)
         except Exception as exc:
             log.error("OTA restart failed: %s", exc)

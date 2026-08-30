@@ -17,15 +17,19 @@ import { useMachines } from '@/hooks/useMachines'
 import type { ModInfo, Job } from '@/types'
 import { JOB_ACTIVE_STATUSES } from '@/lib/constants'
 
-type SortBy = 'status' | 'name' | 'pct' | 'pending'
+type SortBy = 'status' | 'name' | 'pct' | 'pending' | 'total' | 'translated' | 'review' | 'validation'
 
 export const Route = createFileRoute('/mods/')({
-  validateSearch: (search: Record<string, unknown>) => ({
-    status:  (search.status  as string)  || 'all',
-    q:       (search.q       as string)  || '',
-    sort_by: (search.sort_by as SortBy)  || 'status',
-    page:    Number(search.page)         || 0,
-  }),
+  validateSearch: (search: Record<string, unknown>) => {
+    const validSorts: SortBy[] = ['status', 'name', 'pct', 'pending', 'total', 'translated', 'review', 'validation']
+    const sortRaw = search.sort_by as string
+    return {
+      status:  (search.status as string) || 'all',
+      q:       (search.q      as string) || '',
+      sort_by: (validSorts.includes(sortRaw as SortBy) ? sortRaw : 'status') as SortBy,
+      page:    Number(search.page) || 0,
+    }
+  },
   component: ModsPage,
 })
 
@@ -40,10 +44,14 @@ const STATUS_TABS = [
 ] as const
 
 const SORT_OPTIONS: { value: SortBy; label: string }[] = [
-  { value: 'status',  label: 'Status' },
-  { value: 'name',    label: 'Name' },
-  { value: 'pct',     label: '% Done' },
-  { value: 'pending', label: 'Pending strings' },
+  { value: 'status',     label: 'Status' },
+  { value: 'name',       label: 'Name' },
+  { value: 'pct',        label: '% Done' },
+  { value: 'pending',    label: 'Pending strings' },
+  { value: 'total',      label: 'Total strings' },
+  { value: 'translated', label: 'Translated' },
+  { value: 'review',     label: 'Needs review' },
+  { value: 'validation', label: 'Validation issues' },
 ]
 
 const STATUS_SORT_ORDER: Record<string, number> = {
@@ -66,6 +74,26 @@ function sortMods(mods: ModInfo[], sortBy: SortBy): ModInfo[] {
         const aPending = (a.total_strings ?? 0) - (a.translated_strings ?? 0)
         const bPending = (b.total_strings ?? 0) - (b.translated_strings ?? 0)
         if (bPending !== aPending) return bPending - aPending
+        return a.folder_name.localeCompare(b.folder_name)
+      }
+      case 'total': {
+        const diff = (b.total_strings ?? 0) - (a.total_strings ?? 0)
+        if (diff !== 0) return diff
+        return a.folder_name.localeCompare(b.folder_name)
+      }
+      case 'translated': {
+        const diff = (b.translated_strings ?? 0) - (a.translated_strings ?? 0)
+        if (diff !== 0) return diff
+        return a.folder_name.localeCompare(b.folder_name)
+      }
+      case 'review': {
+        const diff = (b.needs_review_strings ?? 0) - (a.needs_review_strings ?? 0)
+        if (diff !== 0) return diff
+        return a.folder_name.localeCompare(b.folder_name)
+      }
+      case 'validation': {
+        const diff = (b.validation_issues_count ?? 0) - (a.validation_issues_count ?? 0)
+        if (diff !== 0) return diff
         return a.folder_name.localeCompare(b.folder_name)
       }
       default: { // status
@@ -786,7 +814,7 @@ function ModsPage() {
                 className="fixed inset-0 z-40"
                 onClick={() => setShowSortMenu(false)}
               />
-              <div className="absolute right-0 mt-1 w-44 bg-bg-card border border-border-default rounded-lg shadow-lg z-50 py-1 overflow-hidden">
+              <div className="absolute right-0 mt-1 w-48 bg-bg-card border border-border-default rounded-lg shadow-lg z-50 py-1 overflow-hidden">
                 {SORT_OPTIONS.map((opt) => (
                   <button
                     key={opt.value}

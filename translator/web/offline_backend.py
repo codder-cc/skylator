@@ -160,6 +160,10 @@ def _make_remote_strings(bucket: list[dict], default_mod: str):
             "esp":         s.get("esp") or s.get("esp_name") or "",
             "mod_name":    s.get("mod_name") or default_mod,
             "original":    original,
+            # Four characters that tell the model what it is looking at: WEAP is an item
+            # name, INFO a spoken line, MGEF a spell description. Register and grammar
+            # differ per record type, and the agent had no way to know which it had.
+            "rec_type":    s.get("rec_type") or "",
             "string_hash": h,          # agent stores this → master/agent hashes always match
         })
         if sid is not None:

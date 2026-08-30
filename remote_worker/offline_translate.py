@@ -68,6 +68,37 @@ _BATCH_MAX_ITEMS     = 32     # numbered-output parsing stays reliable to about 
 _SHORT_STRING_CHARS  = 28
 
 
+# What each ESP record type actually is, in the words a translator would use. One line of
+# prompt that tells the model whether it is naming an object or writing a spoken line — the
+# register and grammar differ, and without it a batch of item names reads to the model
+# exactly like a batch of dialogue. The type was already stored per string; it simply was
+# never sent to the agent.
+_REC_TYPE_HINT = {
+    "WEAP": "weapon names", "ARMO": "armour names", "ALCH": "potion names",
+    "INGR": "ingredient names", "MISC": "item names", "BOOK": "book titles or text",
+    "AMMO": "ammunition names", "KEYM": "key names", "SLGM": "soul gem names",
+    "NPC_": "character names", "FACT": "faction names", "RACE": "race names",
+    "CELL": "place names", "WRLD": "region names", "LCTN": "location names",
+    "QUST": "quest names", "INFO": "spoken dialogue", "DIAL": "dialogue topics",
+    "MGEF": "magic effect descriptions", "SPEL": "spell names",
+    "PERK": "perk names or descriptions", "MESG": "on-screen messages",
+    "ACTI": "activator names", "CONT": "container names", "DOOR": "door names",
+    "FLOR": "plant names", "FURN": "furniture names", "SHOU": "shout names",
+}
+
+
+def rec_type_hint(batch: list) -> str:
+    """One line describing what this batch is, when the batch is homogeneous.
+
+    A mixed batch gets nothing: a wrong hint is worse than no hint.
+    """
+    kinds = {(b.get("rec_type") or "").strip() for b in batch}
+    kinds.discard("")
+    if len(kinds) != 1:
+        return ""
+    return _REC_TYPE_HINT.get(next(iter(kinds)), "")
+
+
 def plan_batch(pending: list, start: int, cap: int) -> int:
     """How many of `pending` starting at `start` to send in one call.
 
@@ -206,6 +237,9 @@ class OfflineTranslateRunner:
                     batch_ctx = ""
                 else:
                     batch_ctx = context
+                hint = rec_type_hint(batch)
+                if hint:
+                    batch_ctx = ("These strings are " + hint + ".\n" + batch_ctx).strip()
                 full_context = (batch_ctx + "\n" + tm_block).strip() if tm_block else batch_ctx
 
                 prompt = build_prompt(

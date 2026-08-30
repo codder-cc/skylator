@@ -138,37 +138,3 @@ def resolve_gguf(repo_id: str, local_dir_name: str, gguf_filename: str) -> str:
     except Exception as e:
         raise RuntimeError(f"Failed to download {gguf_filename} from {repo_id}: {e}") from e
 
-
-def load_causal_lm(path: str, model_cfg):
-    """
-    Load a causal LM + tokenizer, handling GPTQ and CPU offload.
-    Returns (tokenizer, model).
-    """
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
-    log.info(f"Loading tokenizer from {path} ...")
-    tok = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
-
-    is_gptq = "gptq" in path.lower() or "gptq" in model_cfg.repo_id.lower()
-    kwargs = {"trust_remote_code": True}
-
-    if model_cfg.cpu_offload and model_cfg.max_memory:
-        # CPU offload for large models (e.g. 32B)
-        kwargs["device_map"]  = "auto"
-        kwargs["max_memory"]  = model_cfg.max_memory
-        kwargs["torch_dtype"] = torch.float16
-        log.info(f"CPU offload enabled: max_memory={model_cfg.max_memory}")
-    elif is_gptq:
-        # GPTQ pre-quantized: just map to GPU, dtype=float16
-        kwargs["device_map"]  = model_cfg.device
-        kwargs["torch_dtype"] = torch.float16
-    else:
-        kwargs["device_map"]  = model_cfg.device
-        kwargs["torch_dtype"] = torch.bfloat16
-
-    log.info(f"Loading model from {path} ...")
-    model = AutoModelForCausalLM.from_pretrained(path, **kwargs)
-    model.eval()
-    log.info("Model loaded.")
-    return tok, model

@@ -65,12 +65,6 @@ class ModelConfig:
     max_memory:         dict  = field(default_factory=dict)
 
 
-@dataclass
-class ConsensusConfig:
-    similarity_threshold:  float = 0.82
-    arbiter_uses_model_b:  bool  = True
-    long_string_chars:     int   = 250
-
 
 @dataclass
 class EnsembleConfig:
@@ -82,7 +76,6 @@ class EnsembleConfig:
     backend_type:          str  = "llamacpp"
     # kept for backward compat but unused in llama-cpp path
     model_a:               Optional[ModelConfig] = None
-    consensus:             Optional[ConsensusConfig] = None
 
 
 @dataclass
@@ -216,7 +209,6 @@ def load_config(config_file: Path = _CONFIG_FILE) -> TranslatorConfig:
     ens = raw["ensemble"]
     lite_raw = ens.get("model_b_lite")
     model_a_raw = ens.get("model_a")
-    con_raw = ens.get("consensus", {})
     ensemble = EnsembleConfig(
         model_b              = _model_cfg(ens["model_b"]),
         model_b_lite         = _model_cfg(lite_raw) if lite_raw else None,
@@ -224,11 +216,6 @@ def load_config(config_file: Path = _CONFIG_FILE) -> TranslatorConfig:
         adaptive_threshold   = ens.get("adaptive_threshold", 200),
         backend_type         = ens.get("backend_type", "llamacpp"),
         model_a              = _model_cfg(model_a_raw) if model_a_raw else None,
-        consensus            = ConsensusConfig(
-            similarity_threshold = con_raw.get("similarity_threshold", 0.82),
-            arbiter_uses_model_b = con_raw.get("arbiter_uses_model_b", True),
-            long_string_chars    = con_raw.get("long_string_chars", 250),
-        ) if con_raw else None,
     )
 
     ctx = raw.get("context", {})

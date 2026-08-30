@@ -148,39 +148,6 @@ class TranslationMemory:
         return len(self._pairs)
 
 
-def build_tm_block(
-    pairs: dict[str, str],
-    current_texts: list[str],
-    max_entries: int = 10,
-) -> str:
-    """
-    Stateless helper: build a TM block from a plain dict snapshot.
-    Used by translate-one (single-string) and tests.
-    For bulk jobs use TranslationMemory which avoids per-chunk O(N) scans.
-    """
-    if not pairs:
-        return ""
-
-    query_words: set[str] = set()
-    for t in current_texts:
-        query_words.update(w.lower() for w in t.split() if len(w) > 2)
-
-    relevant: list[tuple[str, str, int]] = []
-    for orig, trans in pairs.items():
-        if len(orig) > _TM_MAX_ENTRY_CHARS or len(trans) > _TM_MAX_ENTRY_CHARS:
-            continue
-        score = len(set(w.lower() for w in orig.split()) & query_words)
-        if score > 0:
-            relevant.append((orig, trans, score))
-
-    if not relevant:
-        return ""
-
-    relevant.sort(key=lambda x: -x[2])
-    lines = [f"  {orig} → {trans}" for orig, trans, _ in relevant[:max_entries]]
-    return "Reference translations (for consistency):\n" + "\n".join(lines)
-
-
 def enrich_context(
     context: str,
     tm_block: str,

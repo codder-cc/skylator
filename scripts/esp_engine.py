@@ -1002,29 +1002,6 @@ def cmd_translate(esp_path: Path, out_path: Path, mod_folder: Path = None,
     _update_caches(esp_path, strings, mod_folder)
 
 
-def cmd_apply_from_trans(esp_path: Path, out_path: Path = None, mod_folder: Path = None):
-    """
-    Apply translations from .trans.json to ESP binary (no AI translation).
-    Used for the separate "Apply & Write ESP" pipeline step.
-    """
-    if out_path is None:
-        out_path = esp_path
-    json_path = esp_path.with_suffix('.trans.json')
-    if not json_path.exists():
-        log.warning("No .trans.json for %s — run translate step first", esp_path.name)
-        return 0
-
-    strings = json.loads(json_path.read_text('utf-8'))
-    trans_map = _build_trans_map(strings)
-    log.info("Applying %d translations to %s ...", len(trans_map), esp_path.name)
-    _backup_esp(esp_path, out_path)
-    rewrite_esp(esp_path, trans_map, out_path)
-    done = sum(1 for s in strings if s.get('translation'))
-    log.info("Applied %d/%d translations to %s", done, len(strings), esp_path.name)
-    _update_caches(esp_path, strings, mod_folder)
-    return done
-
-
 def _is_localized(esp_path: Path) -> bool:
     try:
         return bool(u32(esp_path.read_bytes(), 8) & 0x80)

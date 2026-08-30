@@ -168,6 +168,7 @@ function LoadModelDialog({ worker, onClose }: LoadModelDialogProps) {
       await fn(worker.label, body as Parameters<typeof workersApi.loadModel>[1])
       setLoadStatus('success')
       qc.invalidateQueries({ queryKey: QK.workers() })
+      qc.invalidateQueries({ queryKey: QK.modelDefaults() })
       setTimeout(onClose, 1200)
     } catch (e: unknown) {
       setLoadStatus('error')
@@ -598,7 +599,29 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange,
 
   const unloadMut = useMutation({
     mutationFn: () => workersApi.unloadModel(worker.label),
-    onSuccess: () => qc.invalidateQueries({ queryKey: QK.workers() }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.workers() })
+      qc.invalidateQueries({ queryKey: QK.modelDefaults() })   // unload suspends the default
+    },
+  })
+
+  // Durable per-agent default model (auto-restored when the agent comes up empty).
+  // One shared query across all rows — TanStack dedupes by key.
+  const { data: defaultsData } = useQuery({
+    queryKey: QK.modelDefaults(),
+    queryFn: workersApi.getModelDefaults,
+    refetchInterval: 30_000,
+  })
+  const modelDefault = defaultsData?.defaults?.[worker.label]
+  const defaultName = modelDefault
+    ? (modelDefault.spec.gguf_filename
+       || modelDefault.spec.repo_id?.split('/').pop()
+       || modelDefault.spec.model_path?.split(/[\\/]/).pop()
+       || '?')
+    : null
+  const clearDefaultMut = useMutation({
+    mutationFn: () => workersApi.clearModelDefault(worker.label),
+    onSuccess: () => qc.invalidateQueries({ queryKey: QK.modelDefaults() }),
   })
   const otaMut = useMutation({
     mutationFn: () => workersApi.requestOtaUpdate(worker.label),
@@ -712,6 +735,27 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange,
               {worker.backend_type || 'llamacpp'}
             </span>
           </div>
+          {modelDefault && (
+            <div
+              className="flex items-center gap-1 text-[10px] text-text-muted"
+              title={modelDefault.suspended
+                ? 'Default model (paused by unload — the next explicit load re-arms auto-reload)'
+                : 'Default model — reloaded automatically when this machine comes up empty'}
+            >
+              <span className="shrink-0">default:</span>
+              <span className="truncate">{defaultName}</span>
+              {modelDefault.suspended && (
+                <span className="shrink-0 px-1 rounded text-[9px] bg-warning/20 text-warning">paused</span>
+              )}
+              <button
+                onClick={() => clearDefaultMut.mutate()}
+                className="shrink-0 hover:text-danger"
+                title="Forget default (no auto-reload)"
+              >
+                <X size={10} />
+              </button>
+            </div>
+          )}
           {worker.current_task && (
             <div className="text-[10px] text-text-muted truncate" title={worker.current_task}>
               ↳ {worker.current_task}

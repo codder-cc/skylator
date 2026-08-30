@@ -197,9 +197,12 @@ def create_app(config_path: Path | None = None) -> Flask:
     app.config["WORKER_REGISTRY"] = _registry
     app.config["SETUP_REPORTS"]   = []   # in-memory list of remote setup reports
 
-    # Declarative desired-model state + heartbeat reconciliation (self-healing model loads)
+    # Declarative desired-model state + heartbeat reconciliation (self-healing model loads).
+    # Per-agent default models persist next to the other caches (NOT in translations.db,
+    # which is deleted to force re-imports) so they survive host restarts.
     from translator.web.model_state import ModelStateManager
-    _model_state = ModelStateManager(_registry)
+    _model_state = ModelStateManager(
+        _registry, defaults_path=_offline_pkg_dir.parent / "agent_model_defaults.json")
     app.config["MODEL_STATE"] = _model_state
 
     # Work ledger (strangler #1) — single append-only source of truth, populated by the

@@ -1397,7 +1397,7 @@ def workers_heartbeat():
     model_state = current_app.config.get("MODEL_STATE")
     if model_state is not None:
         try:
-            model_state.reconcile(label)
+            model_state.reconcile(label, hf_token=current_app.config.get("HF_TOKEN", "") or "")
         except Exception:
             pass
 
@@ -1749,6 +1749,7 @@ def models_dispatch():
         model["hf_token"] = current_app.config.get("HF_TOKEN", "") or ""
     model["load"] = bool(data.get("load", True))
 
+    model_state = current_app.config.get("MODEL_STATE")
     out = []
     for label in targets:
         if registry.get(label) is None:
@@ -1757,6 +1758,11 @@ def models_dispatch():
         cid = str(uuid.uuid4())
         registry.enqueue_chunk(label, {"type": "load_model", "chunk_id": cid,
                                        "payload": dict(model)})
+        if model_state is not None and model["load"]:
+            try:
+                model_state.set_default(label, model)
+            except Exception as exc:
+                log.warning("model defaults: failed to record default for %s: %s", label, exc)
         out.append({"label": label, "ok": True, "chunk_id": cid})
     log.info("models/dispatch: %s → %d target(s) (load=%s)",
              model.get("gguf_filename") or model.get("repo_id"), len(out), model["load"])
@@ -2356,6 +2362,17 @@ def _do_model_load(label: str, payload: dict):
     if not payload.get("hf_token"):
         payload["hf_token"] = current_app.config.get("HF_TOKEN", "") or ""
 
+    # An explicit load is the user assigning this agent its model: record it as the durable
+    # per-agent default so the agent converges back to it after reboots / host restarts
+    # (token and transport keys are stripped before persisting). Download-only staging
+    # (load=False) expresses no preference.
+    model_state = current_app.config.get("MODEL_STATE")
+    if model_state is not None and payload.get("load", True):
+        try:
+            model_state.set_default(label, payload)
+        except Exception as exc:
+            log.warning("model defaults: failed to record default for %s: %s", label, exc)
+
     # ── Explicit local path (user clicked cached badge) — forward directly ────
     if model_path:
         log.info("Model load with explicit path '%s' for worker %s — forwarding directly",
@@ -2471,6 +2488,16 @@ def workers_model_unload(label: str):
     if not worker:
         return jsonify({"error": f"Worker '{label}' not found"}), 404
 
+    # The user wants this machine empty — suspend the default so the heartbeat
+    # reconciler doesn't immediately reload it. The next explicit load re-arms it.
+    model_state = current_app.config.get("MODEL_STATE")
+    if model_state is not None:
+        try:
+            model_state.clear(label)
+            model_state.suspend_default(label)
+        except Exception:
+            pass
+
     chunk_id = str(uuid.uuid4())
     registry.enqueue_chunk(label, {
         "type":     "unload_model",
@@ -2519,6 +2546,29 @@ def workers_list_models(label: str):
 
     # Always use heartbeat cache — no reverse TCP to worker needed
     return jsonify({"models": worker.models, "source": "heartbeat"})
+
+
+@bp.route("/workers/model-defaults", methods=["GET"])
+def workers_model_defaults():
+    """Durable per-agent default models (auto-restored when an agent comes up empty)."""
+    model_state = current_app.config.get("MODEL_STATE")
+    return jsonify({"defaults": model_state.get_all_defaults() if model_state else {}})
+
+
+@bp.route("/workers/<label>/model/default", methods=["POST", "DELETE"])
+def workers_model_default(label: str):
+    """POST — set/re-arm an agent's default model without loading it now (body = model
+    spec, same shape as /model/load). DELETE — forget the default entirely."""
+    model_state = current_app.config.get("MODEL_STATE")
+    if model_state is None:
+        return jsonify({"ok": False, "error": "model state not initialized"}), 500
+    if request.method == "DELETE":
+        return jsonify({"ok": model_state.clear_default(label)})
+    spec = request.get_json() or {}
+    if not (spec.get("repo_id") or spec.get("gguf_filename") or spec.get("model_path")):
+        return jsonify({"ok": False, "error": "repo_id, gguf_filename or model_path required"}), 400
+    model_state.set_default(label, spec)
+    return jsonify({"ok": True, "default": model_state.get_default(label)})
 
 
 @bp.route("/remote/config", methods=["POST"])

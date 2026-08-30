@@ -14,6 +14,19 @@ interface ModelLoadBody {
   [key: string]: unknown
 }
 
+export interface ModelDefault {
+  spec: {
+    repo_id?: string
+    gguf_filename?: string
+    model_path?: string
+    backend_type?: string
+    n_ctx?: number
+    [key: string]: unknown
+  }
+  suspended: boolean
+  updated_at: number
+}
+
 interface LanServer {
   url: string
   label: string
@@ -46,6 +59,16 @@ export const workersApi = {
   unloadModel: (label: string) =>
     apiPost<{ ok: boolean }>(
       `/api/workers/${encodeURIComponent(label)}/model/unload`,
+    ),
+
+  // Durable per-agent default models — auto-restored when an agent comes up empty.
+  getModelDefaults: () =>
+    apiFetch<{ defaults: Record<string, ModelDefault> }>('/api/workers/model-defaults'),
+
+  clearModelDefault: (label: string) =>
+    apiFetch<{ ok: boolean }>(
+      `/api/workers/${encodeURIComponent(label)}/model/default`,
+      { method: 'DELETE' },
     ),
 
   benchmark: (label: string) =>

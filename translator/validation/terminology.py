@@ -90,6 +90,26 @@ _FILENAME_RE = re.compile(r"\.(esp|esm|esl|bsa|txt|json|swf|pex|dds|nif)\b", re.
 # sword made of it is "Железный", and "Здоровье" becomes "здоровья". Matching the entry
 # verbatim reports those as violations and sends correct work to a human, so the
 # comparison is on the stem.
+# Enforcement is deliberately narrower than reporting, because a false positive costs a
+# person a review item for work that was fine. Measured against the live collection, two
+# shapes produce nearly all of the noise:
+#
+#   * multi-word terms — "Тёмное Братство" becomes "Тёмного Братства", and matching a
+#     phrase across inflected words is not something a prefix rule can do;
+#   * short terms whose stem itself changes — "Замок" becomes "замка", "Еда" becomes
+#     "едой". A prefix long enough to be specific no longer matches the inflected form.
+#
+# What is left is exactly what this is for: transliterated proper nouns and long nouns,
+# where the first five characters survive declension. Skyrim, Whiterun, Solitude, Магикка.
+# Everything else still appears in the on-demand report, which a person reads.
+_MIN_ENFORCED_TERM = 6
+_PREFIX_CHARS      = 5
+
+
+def _is_enforceable(ru: str) -> bool:
+    t = (ru or "").strip()
+    return len(t) >= _MIN_ENFORCED_TERM and " " not in t and "-" not in t
+
 _RU_ENDINGS = ("ого", "ому", "ыми", "ими", "ая", "ое", "ые", "ый", "ий", "ой", "ом",
                "ах", "ям", "ев", "ов", "а", "я", "о", "е", "ы", "и", "у", "ю", "ь", "й")
 
@@ -101,12 +121,14 @@ def _stem(term: str) -> str:
     short name stays exact rather than shrinking into something that matches half the text.
     """
     t = (term or "").lower().strip()
-    if len(t) <= 4 or " " in t:
-        return t                      # "Нирн" stays exact — a shorter stem matches anything
-    for end in _RU_ENDINGS:
-        if t.endswith(end) and len(t) - len(end) >= 4:
-            return t[: -len(end)]
-    return t
+    if " " in t:
+        return t                      # multi-word terms are matched whole (report only)
+    # A prefix, not a suffix-stripping rule. Russian inflection changes the tail in ways a
+    # fixed ending list does not cover — "Торговец" becomes "торговца", "Еда" becomes
+    # "едой" — and each miss reports correct work as a violation. Dropping the last two
+    # characters covers the common cases; the floor of four keeps a prefix specific enough
+    # not to match unrelated words.
+    return t[:max(_PREFIX_CHARS, len(t) - 2)]
 
 
 _TOKEN_RE = re.compile(r"<[^>]*>|\{[^}]*\}|\[[A-Za-z][^\]]*\]|%\w+")
@@ -142,6 +164,8 @@ def glossary_violations(original: str, translation: str, terms: dict) -> list[tu
     out = []
     for en, ru in terms.items():
         if not en or not ru:
+            continue
+        if not _is_enforceable(ru):
             continue
         if not _contains_word(original, en):
             continue

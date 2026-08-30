@@ -85,10 +85,22 @@ def test_untranslated_passthrough_is_left_to_the_quality_score():
     assert glossary_violations("Skyrim", "Skyrim", TERMS) == []
 
 
-def test_short_names_are_matched_exactly():
-    """A four-letter term must not be stemmed into something that matches anything."""
-    assert glossary_violations("Nirn", "Мундус", TERMS) == [("Nirn", "Нирн")]
-    assert glossary_violations("Nirn", "Нирн", TERMS) == []
+def test_very_short_terms_are_not_enforced():
+    """"Нирн" is four letters. Under inflection a correct translation may not contain the
+    term verbatim, and a four-letter prefix matches unrelated words, so there is not enough
+    signal to block a string on. Such terms still surface in the on-demand report, which a
+    person reads, rather than costing one a review item automatically."""
+    from translator.validation.terminology import _MIN_ENFORCED_TERM
+    assert len("Нирн") < _MIN_ENFORCED_TERM
+    assert glossary_violations("Nirn", "Мундус", TERMS) == []
+
+
+def test_inflected_forms_of_longer_terms_are_accepted():
+    """The regression this rule exists for: "Торговец" becomes "торговца"."""
+    terms = {"Merchant": "Торговец"}
+    assert glossary_violations("Melvin's Merchant Faction", "Фракция торговца Мелвина",
+                               terms) == []
+    assert glossary_violations("Merchant Faction", "Фракция воина", terms)         == [("Merchant", "Торговец")]
 
 
 def test_empty_inputs_are_safe():
@@ -170,3 +182,29 @@ def test_audit_reports_the_terms_and_examples(mgr):
     r = audit_stored(m._repo, TERMS, apply=False)
     assert r["by_term"].get("Skyrim") == 1
     assert r["examples"][0]["terms"] == ["Skyrim→Скайрим"]
+
+
+# ── precision: enforcement is narrower than reporting, on purpose ─────────────
+
+def test_multi_word_terms_are_not_enforced():
+    """"Тёмное Братство" becomes "Тёмного Братства" — a phrase inflected across words is
+    not something a prefix rule can match, and flagging it costs a person a review item
+    for a correct translation."""
+    terms = {"Dark Brotherhood": "Тёмное Братство"}
+    assert glossary_violations("Dark Brotherhood Sanctuary",
+                               "Святилище Тёмного Братства", terms) == []
+
+
+def test_terms_whose_stem_changes_are_not_enforced():
+    """"Замок" becomes "замка" — the vowel drops, so no prefix both matches the inflected
+    form and stays specific enough to mean anything."""
+    terms = {"Keep": "Замок"}
+    assert glossary_violations("Mistveil Keep Barracks",
+                               "Казармы замка Миствэйл", terms) == []
+
+
+def test_transliterated_proper_nouns_are_enforced():
+    """These are what the rule is for: the first five characters survive declension."""
+    terms = {"Whiterun": "Вайтран", "Solitude": "Солитьюд"}
+    assert glossary_violations("Whiterun", "Утёс", terms) == [("Whiterun", "Вайтран")]
+    assert glossary_violations("Whiterun Guard", "Стражник Вайтрана", terms) == []

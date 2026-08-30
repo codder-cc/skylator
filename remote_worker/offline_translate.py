@@ -66,6 +66,8 @@ _BATCH_MAX_ITEMS     = 32     # numbered-output parsing stays reliable to about 
 # Below this, a string is a name or a UI label: the mod description explains nothing
 # about "Iron Sword" and costs ~680 characters of prompt on every call.
 _SHORT_STRING_CHARS  = 28
+# How much of the string in flight to show the operator.
+_PREVIEW_CHARS       = 160
 
 
 # What each ESP record type actually is, in the words a translator would use. One line of
@@ -252,7 +254,10 @@ class OfflineTranslateRunner:
                     terminology     = terminology,
                     preserve_tokens = preserve_tokens,
                 )
-                self.current_text = originals[0] if originals else ""
+                # A preview for the UI, not data. Untruncated, a single book chapter put
+                # 12.6 KB on every heartbeat and made up 88% of the /api/workers payload —
+                # sent again on every UI poll and every real-time push, twice per worker.
+                self.current_text = (originals[0][:_PREVIEW_CHARS] if originals else "")
 
                 if self._stop:
                     break

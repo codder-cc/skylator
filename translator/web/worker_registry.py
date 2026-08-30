@@ -33,7 +33,7 @@ class WorkerInfo:
     backend_type: str = ""        # llamacpp | mlx
     capabilities: list = field(default_factory=list)
     last_seen:    float = 0.0     # time.time() of last heartbeat
-    current_task: str = ""        # current string key (for UI)
+    current_task: str = ""        # current string preview (for UI) — truncated, see PREVIEW_CHARS
     models:       list = field(default_factory=list)  # cached model files (pushed via heartbeat)
     stats:        dict = field(default_factory=dict)  # tps_avg, tps_last, queue_depth, jobs_completed
     hardware:     dict = field(default_factory=dict)  # ram_total_mb, vram_total_mb, cpu_name, etc.
@@ -84,6 +84,9 @@ class WorkerRegistry:
     """
 
     HEARTBEAT_TTL = 45.0   # seconds without heartbeat before considered dead
+    # The string in flight is a preview. An agent on older code can still send a whole book
+    # chapter; clamp on arrival so one long string cannot dominate every workers payload.
+    PREVIEW_CHARS = 160
 
     def __init__(self, persist_dir: Path | None = None) -> None:
         self._lock:    threading.Lock        = threading.Lock()
@@ -214,6 +217,11 @@ class WorkerRegistry:
             # Build set of offline_job_ids currently reported by this worker
             reported_ids: set[str] = set()
             if offline_jobs is not None:
+                # Clamp the in-flight preview here too — w.offline_jobs is serialised
+                # straight into every /api/workers response and every real-time push.
+                for oj in offline_jobs:
+                    if oj.get("current_text"):
+                        oj["current_text"] = oj["current_text"][:WorkerRegistry.PREVIEW_CHARS]
                 w.offline_jobs = offline_jobs
                 for oj in offline_jobs:
                     ojid = oj.get("offline_job_id")
@@ -224,7 +232,7 @@ class WorkerRegistry:
                         rec = self._offline_jobs[ojid]
                         rec["done"]         = oj.get("done", 0)
                         rec["tps"]          = oj.get("tps", 0.0)
-                        rec["current_text"] = oj.get("current_text", "")
+                        rec["current_text"] = (oj.get("current_text") or "")[:WorkerRegistry.PREVIEW_CHARS]
                         if rec.get("worker_state") != "done":
                             rec["worker_state"] = "running"
 
@@ -258,7 +266,7 @@ class WorkerRegistry:
                 # Operations UI shows live activity (the offline path doesn't call update_task).
                 cur = next((oj.get("current_text") for oj in offline_jobs if oj.get("current_text")), "")
                 if cur:
-                    w.current_task = cur
+                    w.current_task = (cur or '')[:WorkerRegistry.PREVIEW_CHARS]
         self._publish()
         return True, lost_job_ids
 
@@ -277,7 +285,7 @@ class WorkerRegistry:
         with self._lock:
             w = self._workers.get(label)
             if w:
-                w.current_task = task
+                w.current_task = (task or '')[:WorkerRegistry.PREVIEW_CHARS]
         self._publish()
 
     # ── Query ─────────────────────────────────────────────────────────────────

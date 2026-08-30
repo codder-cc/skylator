@@ -234,7 +234,15 @@ def jobs():
     result = []
     for j in jm.list_jobs(limit=100):
         try:
-            result.append(j.to_dict())
+            d = j.to_dict()
+            # This is the endpoint the Jobs page actually calls. A job carries up to 10,000
+            # per-string results for the live feed, so serialising them here made the
+            # response 14 MB. A list needs summaries: the count, and enough log to show the
+            # last thing that happened. /api/jobs/<id> still returns everything.
+            d["string_update_count"] = len(d.get("string_updates") or [])
+            d["string_updates"]      = []
+            d["log_lines"]           = (d.get("log_lines") or [])[-40:]
+            result.append(d)
         except Exception as exc:
             import logging as _logging
             _logging.getLogger(__name__).warning("Failed to serialize job %s: %s", j.id, exc)

@@ -71,3 +71,38 @@ def test_in_memory_feed_is_untouched_by_persisting(jm, tmp_path):
     _fill(jm, job, n=1000)
     jm._persist()
     assert len(job.string_updates) == 1000
+
+
+# ── both list endpoints, because there are two and only one was fixed at first ──
+
+def _app_with(jm):
+    from flask import Flask
+    from translator.web.routes.api import bp as api_bp
+    from translator.web.routes.jobs import bp as jobs_bp
+    app = Flask(__name__)
+    app.register_blueprint(api_bp)
+    app.register_blueprint(jobs_bp)
+    app.config["JOB_MANAGER"] = jm
+    return app
+
+
+@pytest.mark.parametrize("url", ["/api/jobs", "/jobs/"])
+def test_neither_job_list_ships_the_live_feed(jm, url):
+    job = jm.create(name="J", job_type="translate_strings", params={}, fn=lambda j: None)
+    _fill(jm, job, n=2000)
+    client = _app_with(jm).test_client()
+
+    body = client.get(url, headers={"Accept": "application/json"}).get_json()
+    assert body, url
+    entry = next(j for j in body if j["id"] == job.id)
+    assert entry["string_updates"] == []
+    assert entry["string_update_count"] == 2000
+    assert len(entry["log_lines"]) <= 40
+
+
+def test_job_detail_still_returns_the_full_history(jm):
+    job = jm.create(name="J", job_type="translate_strings", params={}, fn=lambda j: None)
+    _fill(jm, job, n=1200)
+    client = _app_with(jm).test_client()
+    d = client.get(f"/api/jobs/{job.id}").get_json()
+    assert len(d["string_updates"]) == 1200

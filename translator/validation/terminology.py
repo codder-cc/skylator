@@ -177,14 +177,19 @@ def glossary_violations(original: str, translation: str, terms: dict) -> list[tu
 
 def audit_stored(repo, terms: dict, mod_name: str | None = None,
                  apply: bool = False, limit: int | None = None) -> dict:
-    """Re-check translations already stored, and optionally send the bad ones to review.
+    """Re-validate translations already stored, and optionally send the bad ones to review.
 
-    Enforcement at the write gate only protects what is written from now on. Everything
-    saved before it existed was never checked — on the live collection that is a hundred
-    thousand strings, several thousand of which break a glossary term. This walks them.
+    The write gate only protects what is written from now on. Everything saved before a
+    check existed was never subjected to it — on the live collection that is a hundred
+    thousand strings, several thousand of which break a glossary term and several hundred
+    more of which have markup rewritten into look-alike characters that renders as junk
+    in-game.
 
-    apply=False reports without touching anything, which is the safe default: the report
-    is worth reading before several thousand strings move into someone's review queue.
+    Every rule is re-run, through the same compute_string_status the write gate uses, so an
+    audit and a fresh save cannot disagree.
+
+    apply=False reports without touching anything, which is the safe default: the report is
+    worth reading before thousands of strings move into someone's review queue.
     """
     sql = ("SELECT id, mod_name, original, translation FROM strings "
            "WHERE status='translated' AND translation != ''")
@@ -195,24 +200,39 @@ def audit_stored(repo, terms: dict, mod_name: str | None = None,
     if limit:
         sql += f" LIMIT {int(limit)}"
 
+    from translator.validation.quality import compute_string_status
+
     checked = 0
     by_term: dict[str, int] = {}
     by_mod: dict[str, int] = {}
+    by_kind: dict[str, int] = {}
     offenders: list[int] = []
     examples: list[dict] = []
     for r in repo.db.execute(sql, params).fetchall():
         checked += 1
-        bad = glossary_violations(r["original"] or "", r["translation"] or "", terms)
-        if not bad:
+        original    = r["original"] or ""
+        translation = r["translation"] or ""
+        # Re-run every rule, not only the glossary: a dropped game token or markup rewritten
+        # with look-alike brackets renders as junk in-game, and both were stored as finished
+        # work before the checks existed. compute_string_status is the same judgement the
+        # write gate applies, so a re-audit and a fresh save agree by construction.
+        _qs, _tok_ok, issues, status = compute_string_status(original, translation, terms)
+        if status == "translated":
             continue
         offenders.append(r["id"])
         by_mod[r["mod_name"]] = by_mod.get(r["mod_name"], 0) + 1
-        for en, _ru in bad:
+        if not issues:
+            # No named problem — the quality score alone put it here.
+            by_kind["low_score"] = by_kind.get("low_score", 0) + 1
+        for issue in issues:
+            kind = "glossary" if issue.startswith("glossary:") else (
+                   "markup" if "markup" in issue or "angle brackets" in issue else "token")
+            by_kind[kind] = by_kind.get(kind, 0) + 1
+        for en, _ru in glossary_violations(original, translation, terms):
             by_term[en] = by_term.get(en, 0) + 1
         if len(examples) < 20:
-            examples.append({"mod": r["mod_name"], "original": r["original"][:120],
-                             "translation": r["translation"][:120],
-                             "terms": [f"{en}→{ru}" for en, ru in bad[:3]]})
+            examples.append({"mod": r["mod_name"], "original": original[:120],
+                             "translation": translation[:120], "issues": issues[:3]})
 
     moved = 0
     if apply and offenders:
@@ -228,6 +248,7 @@ def audit_stored(repo, terms: dict, mod_name: str | None = None,
         "checked": checked,
         "violations": len(offenders),
         "moved_to_review": moved,
+        "by_kind": dict(sorted(by_kind.items(), key=lambda kv: -kv[1])),
         "by_term": dict(sorted(by_term.items(), key=lambda kv: -kv[1])[:25]),
         "by_mod": dict(sorted(by_mod.items(), key=lambda kv: -kv[1])[:25]),
         "examples": examples,

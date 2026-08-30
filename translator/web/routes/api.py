@@ -1680,6 +1680,9 @@ def _review_reasons(original: str, translation: str, qs, terms: dict) -> list:
     tok_ok, tok_issues = validate_tokens(original, translation)
     if not tok_ok:
         issues.append({"kind": "tokens", "detail": "; ".join(tok_issues)[:200]})
+    from translator.validation.quality import markup_violations
+    for m in markup_violations(original, translation):
+        issues.append({"kind": "markup", "detail": m})
     for en, ru in glossary_violations(original, translation, terms):
         issues.append({"kind": "glossary", "term": en, "expected": ru,
                        "detail": f"{en} should be {ru}"})

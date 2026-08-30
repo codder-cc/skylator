@@ -18,7 +18,13 @@ _FORMAT_TAG_RE = re.compile(
 
 _INLINE_TOKEN_RE = re.compile(
     r'<[^>]+>'                                      # <Alias=...>, <mag>, <Global=...>, <10>
-    r'|%[-+0 #]*\d*\.?\d*[diouxXeEfFgGcsSp%]'     # printf: %.0f, %d, %s, %%
+    # No space in the flag class. C allows "% d", but game text almost never uses it,
+    # while "increased by 50% for <dur>" is everywhere — and that matched as the token
+    # "% f", so a translation writing "на 50% на" was reported as having dropped it.
+    r'|%[-+0#]*\d*\.?\d*[diouxXeEfFgGcsSp%]'      # printf: %.0f, %d, %s, %%
+    # Bethesda's positional placeholders. The agent's own token pattern has had them
+    # all along; the host validator did not, so a translation dropping %1 passed.
+    r'|%\d+'                                       # %1, %2 — positional arguments
     r'|\[PageBreak\]|\[CRLF\]'                      # bracket tokens
     r'|\$\S+',                                      # MCM $-prefix tokens: $AMOT, $sKey, etc.
     re.IGNORECASE,
@@ -67,7 +73,9 @@ def validate_tokens(original: str, translation: str) -> tuple[bool, list[str]]:
         if trans_counts.get(tok, 0) < cnt
     ]
     if issues:
-        log.warning("validate_tokens: %s", '; '.join(issues))
+        # Debug, not warning: this runs per string, and a bulk re-audit of a hundred
+        # thousand of them turned the console into a wall of text.
+        log.debug("validate_tokens: %s", '; '.join(issues))
     return len(issues) == 0, issues
 
 
@@ -126,6 +134,41 @@ def quality_score(original: str, translation: str) -> int:
     return max(0, min(100, score))
 
 
+# Book and UI text carries real markup — <p align="center">, <font face='...'>, <br>.
+# It is not in the game-token pattern above (those are <Alias=…>, %1 and friends), so
+# nothing checked it, and a model that rewrites <p> as ⟨p⟩ produced text that renders as
+# literal junk in-game. Found on the live collection: 236 strings with the angle brackets
+# swapped for Unicode look-alikes, 23 of them already marked translated.
+#
+# ⟨NL⟩ is this project's own newline token and is expected in a translation.
+_MARKUP_TAG_RE   = re.compile(r"</?[A-Za-z][A-Za-z0-9]{0,12}(?:\s[^<>]{0,80})?/?>")
+_LOOKALIKE_RE    = re.compile(r"[⟨〈]")
+_PROJECT_TOKEN   = "⟨NL⟩"
+
+
+def markup_violations(original: str, translation: str) -> list[str]:
+    """Structural damage to markup that must survive translation verbatim.
+
+    Returns a list of human-readable problems; empty when the markup is intact.
+    """
+    if not original or not translation:
+        return []
+    issues = []
+
+    stripped = translation.replace(_PROJECT_TOKEN, "")
+    if _LOOKALIKE_RE.search(stripped) and not _LOOKALIKE_RE.search(original):
+        issues.append("angle brackets replaced with look-alike characters (⟨ ⟩)")
+
+    src_tags = _MARKUP_TAG_RE.findall(original)
+    if src_tags:
+        dst_tags = set(_MARKUP_TAG_RE.findall(translation))
+        missing = [t for t in dict.fromkeys(src_tags) if t not in dst_tags]
+        if missing:
+            issues.append("markup lost: " + ", ".join(missing[:3]))
+
+    return issues
+
+
 def compute_string_status(original: str, translation: str,
                           terms: dict | None = None) -> tuple[int, bool, list[str], str]:
     """Single source of truth: returns (quality_score, tok_ok, issues, status).
@@ -144,6 +187,8 @@ def compute_string_status(original: str, translation: str,
     tok_ok, tok_issues = validate_tokens(original, translation)
     qs = quality_score(original, translation)
     issues = list(tok_issues)
+    markup_bad = markup_violations(original, translation)
+    issues.extend(markup_bad)
     glossary_ok = True
     if terms:
         from translator.validation.terminology import glossary_violations
@@ -151,7 +196,8 @@ def compute_string_status(original: str, translation: str,
         if bad:
             glossary_ok = False
             issues.extend(f"glossary: {en} should be {ru}" for en, ru in bad[:5])
-    status = "translated" if (tok_ok and glossary_ok and qs > 70) else "needs_review"
+    status = ("translated" if (tok_ok and glossary_ok and not markup_bad and qs > 70)
+              else "needs_review")
     return qs, tok_ok, issues, status
 
 

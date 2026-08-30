@@ -146,6 +146,11 @@ class StringManager:
             # finished. A term the glossary fixes is not a stylistic choice, so the string
             # goes to review instead of being accepted.
             if original and computed_status == "translated":
+                from translator.validation.quality import markup_violations
+                broken = markup_violations(original, translation)
+                if broken:
+                    computed_status = "needs_review"
+                    log.debug("markup: %s/%s → review (%s)", mod_name, key, broken[0])
                 terms = self._glossary()
                 if terms:
                     from translator.validation.terminology import glossary_violations

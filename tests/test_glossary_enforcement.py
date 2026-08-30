@@ -181,7 +181,8 @@ def test_audit_reports_the_terms_and_examples(mgr):
     db.commit()
     r = audit_stored(m._repo, TERMS, apply=False)
     assert r["by_term"].get("Skyrim") == 1
-    assert r["examples"][0]["terms"] == ["Skyrim→Скайрим"]
+    assert r["by_kind"].get("glossary") == 1
+    assert any("Skyrim" in i for i in r["examples"][0]["issues"])
 
 
 # ── precision: enforcement is narrower than reporting, on purpose ─────────────

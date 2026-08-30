@@ -14,6 +14,9 @@ const skipHtml = (req: IncomingMessage) => {
 const flask = { target: 'http://127.0.0.1:5000', changeOrigin: true }
 
 export default defineConfig({
+  // Flask serves the built SPA under /app/ (see translator/web/app.py), so assets must be
+  // requested as /app/assets/... — with the default base they 404 at the root.
+  base: '/app/',
   plugins: [
     react(),
     TanStackRouterVite(),

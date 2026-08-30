@@ -25,6 +25,10 @@ def create_app(config_path: Path | None = None) -> Flask:
     # constant). SKYLATOR_TOKEN gates agent/admin/OTA endpoints AND the agent socket hub.
     app.secret_key = os.environ.get("SKYLATOR_SECRET_KEY") or secrets.token_hex(32)
     app.config["API_TOKEN"] = os.environ.get("SKYLATOR_TOKEN", "")
+    # Flask defaults to unlimited, and the single-mod upload reads the whole body into
+    # memory before touching it — one oversized POST could take the host down.
+    app.config["MAX_CONTENT_LENGTH"] = int(
+        os.environ.get("SKYLATOR_MAX_UPLOAD_MB", "512")) * 1024 * 1024
 
     # ── Load translator config ──────────────────────────────────────────────
     ROOT = Path(__file__).parent.parent.parent

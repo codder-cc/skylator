@@ -16,8 +16,41 @@ log = logging.getLogger(__name__)
 ESP_EXTS = {".esp", ".esm", ".esl"}
 
 
+# A session owns an extracted mod folder under temp/ and a __single__<uuid> mod in the DB.
+# Nothing ever removed them: last_access was recorded and never read, so every upload leaked
+# a folder and a few thousand rows for the lifetime of the host.
+SESSION_TTL = 24 * 3600
+
+
+def _purge_session(session_id: str, session: dict | None) -> None:
+    """Drop a session's extracted files and its rows. Safe to call twice."""
+    repo     = current_app.config.get("STRING_REPO")
+    mod_name = (session or {}).get("mod_name") or f"__single__{session_id}"
+    if repo:
+        try:
+            repo.db.execute("DELETE FROM strings WHERE mod_name=?", (mod_name,))
+            repo.db.commit()
+        except Exception as exc:
+            log.warning("single purge: DB cleanup failed for %s: %s", session_id, exc)
+    if session and session.get("dir"):
+        shutil.rmtree(session["dir"], ignore_errors=True)
+
+
+def _reap_stale_sessions(sessions: dict) -> int:
+    now = time.time()
+    stale = [sid for sid, s in sessions.items()
+             if now - (s.get("last_access") or 0) > SESSION_TTL]
+    for sid in stale:
+        _purge_session(sid, sessions.pop(sid, None))
+    if stale:
+        log.info("single mode: reaped %d session(s) idle over %dh", len(stale), SESSION_TTL // 3600)
+    return len(stale)
+
+
 def _sessions() -> dict:
-    return current_app.config.setdefault("SINGLE_MOD_SESSIONS", {})
+    sessions = current_app.config.setdefault("SINGLE_MOD_SESSIONS", {})
+    _reap_stale_sessions(sessions)
+    return sessions
 
 
 def _get_session(session_id: str) -> dict | None:
@@ -470,18 +503,5 @@ def download(session_id: str):
 @bp.route("/<session_id>", methods=["DELETE"])
 def delete_session(session_id: str):
     sessions = _sessions()
-    s        = sessions.pop(session_id, None)
-    repo     = current_app.config.get("STRING_REPO")
-    mod_name = s["mod_name"] if s else f"__single__{session_id}"
-
-    if repo:
-        try:
-            repo.db.execute("DELETE FROM strings WHERE mod_name=?", (mod_name,))
-            repo.db.commit()
-        except Exception as exc:
-            log.warning("single delete: DB cleanup failed: %s", exc)
-
-    if s:
-        shutil.rmtree(s["dir"], ignore_errors=True)
-
+    _purge_session(session_id, sessions.pop(session_id, None))
     return jsonify({"ok": True})

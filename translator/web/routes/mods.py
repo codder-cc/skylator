@@ -273,19 +273,6 @@ def mod_context(mod_name: str):
     return redirect(f"/api/mods/{mod_name}/context")
 
 
-def _load_validation(mod_name: str, app) -> dict:
-    """Load saved validation results for a mod."""
-    cfg = app.config.get("TRANSLATOR_CFG")
-    if cfg is None:
-        return {}
-    try:
-        result_path = cfg.paths.translation_cache.parent / f"{mod_name}_validation.json"
-        if result_path.exists():
-            return json.loads(result_path.read_text(encoding="utf-8"))
-    except Exception:
-        pass
-    return {}
-
 
 def _load_nexus_cache(mod, app) -> dict:
     """Load cached Nexus data for a mod (individual {mod_id}.json file).

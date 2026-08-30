@@ -789,20 +789,63 @@ class ModScanner:
             return {}
 
     def _load_counts_cache(self) -> dict:
-        if not self._counts_cache_path.exists():
-            return {}
+        """Per-ESP {size, count, untranslatable}, keyed by "<mod>/<relative esp path>".
+
+        Stored in SQLite (esp_counts). It used to be cache/_string_counts.json — 3,882
+        entries rewritten in full whenever a scan touched any one of them. A file left
+        over from before the move is imported once and set aside.
+        """
+        db = getattr(getattr(self, "_repo", None), "db", None)
+        if db is None:
+            if not self._counts_cache_path.exists():
+                return {}
+            try:
+                return json.loads(self._counts_cache_path.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
         try:
-            return json.loads(self._counts_cache_path.read_text(encoding="utf-8"))
-        except Exception:
+            rows = db.execute(
+                "SELECT esp_key, size, count, untranslatable FROM esp_counts").fetchall()
+            if not rows and self._counts_cache_path.exists():
+                legacy = json.loads(self._counts_cache_path.read_text(encoding="utf-8"))
+                if legacy:
+                    self._save_counts_cache(legacy)
+                    self._counts_cache_path.replace(
+                        self._counts_cache_path.with_suffix(".json.imported"))
+                    log.info("Imported %d ESP count(s) into SQLite and set the file aside",
+                             len(legacy))
+                    return legacy
+            return {r["esp_key"]: {"size": r["size"], "count": r["count"],
+                                   "untranslatable": r["untranslatable"]} for r in rows}
+        except Exception as exc:
+            log.warning("esp_counts read failed, falling back to the file: %s", exc)
             return {}
 
     def _save_counts_cache(self, data: dict) -> None:
+        db = getattr(getattr(self, "_repo", None), "db", None)
+        if db is None:
+            try:
+                self._counts_cache_path.write_text(
+                    json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+            except Exception as exc:
+                log.warning(f"Could not save string counts cache: {exc}")
+            return
         try:
-            self._counts_cache_path.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            import time as _time
+            now = _time.time()
+            db.executemany(
+                """INSERT INTO esp_counts (esp_key, size, count, untranslatable, updated_at)
+                   VALUES (?,?,?,?,?)
+                   ON CONFLICT(esp_key) DO UPDATE SET
+                       size=excluded.size, count=excluded.count,
+                       untranslatable=excluded.untranslatable, updated_at=excluded.updated_at""",
+                [(k, v.get("size"), v.get("count"), v.get("untranslatable"), now)
+                 for k, v in data.items()],
             )
+            db.commit()
         except Exception as exc:
-            log.warning(f"Could not save string counts cache: {exc}")
+            log.warning("Could not save ESP counts: %s", exc)
 
     def _count_esp_strings(self, esp_path: Path) -> tuple[int, int]:
         """Parse ESP and return (total, untranslatable) string counts."""

@@ -97,19 +97,21 @@ class ValidatePipeline:
                 log.info("Validation result saved to DB for %s: %d issues", mod_name, issues_count)
             except Exception as exc:
                 log.warning("Could not save validation result to DB: %s", exc)
+        # The issue list behind mod_stats_cache.validation_issues_count. It used to be a
+        # <mod>_validation.json beside the database, one file per mod; SQLite is the store
+        # now, and a file left from before is still read by the loader as a fallback.
         try:
-            result_data = {
-                "timestamp":    time.time(),
-                "mod_name":     mod_name,
-                "checked":      checked,
-                "issues_count": issues_count,
-                "issues":       issues[:200],
-                "ok":           issues_count == 0,
-            }
-            out_path = self._cfg.paths.translation_cache.parent / f"{mod_name}_validation.json"
-            out_path.write_text(
-                json.dumps(result_data, ensure_ascii=False, indent=2), encoding="utf-8"
+            self._repo.db.execute(
+                """INSERT INTO validation_results
+                       (mod_name, checked, issues_count, issues, created_at)
+                   VALUES (?,?,?,?,?)
+                   ON CONFLICT(mod_name) DO UPDATE SET
+                       checked=excluded.checked, issues_count=excluded.issues_count,
+                       issues=excluded.issues, created_at=excluded.created_at""",
+                (mod_name, checked, issues_count,
+                 json.dumps(issues[:200], ensure_ascii=False), time.time()),
             )
-            log.info("Validation results saved to %s", out_path.name)
+            self._repo.db.commit()
+            log.info("Validation results saved for %s: %d issue(s)", mod_name, issues_count)
         except Exception as exc:
-            log.warning("Could not save validation results to JSON: %s", exc)
+            log.warning("Could not save validation results: %s", exc)

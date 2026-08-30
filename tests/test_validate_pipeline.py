@@ -33,6 +33,9 @@ class _Cfg:
         pass
 
 
+_LAST_REPO = [None]
+
+
 @pytest.fixture
 def run(tmp_path, monkeypatch):
     monkeypatch.setattr("translator.web.job_manager.JobManager", _JM)
@@ -49,6 +52,7 @@ def run(tmp_path, monkeypatch):
                 db.execute("UPDATE strings SET translation=? WHERE original=?",
                            (r["translation"], r["text"]))
         db.commit()
+        _LAST_REPO[0] = repo
         job = _Job()
         ValidatePipeline(cfg, repo).run(job, "Mod")
         return job, "\n".join(job.logs)
@@ -127,9 +131,19 @@ def test_asset_strings_are_out_of_scope(tmp_path, monkeypatch):
 
 
 def test_results_are_persisted_for_the_detail_view(run, tmp_path):
-    run([_row("Iron Sword", "Железный\x00меч")])
-    out = tmp_path / "cache" / "Mod_validation.json"
-    assert out.is_file()
-    data = json.loads(out.read_text(encoding="utf-8"))
+    """Stored in SQLite now, and read back through the loader the routes use."""
+    from flask import Flask
+    from translator.web.routes.utils import load_validation
+
+    job, _ = run([_row("Iron Sword", "Железный\x00меч")])
+
+    # the fixture's repo is the one the pipeline wrote through
+    import translator.web.routes.utils as u
+    app = Flask(__name__)
+    app.config["STRING_REPO"] = _LAST_REPO[0]
+    app.config["TRANSLATOR_CFG"] = None
+    with app.app_context():
+        data = load_validation("Mod", app)
     assert data["ok"] is False and data["issues_count"] >= 1
     assert data["mod_name"] == "Mod"
+    assert not (tmp_path / "cache" / "Mod_validation.json").exists()

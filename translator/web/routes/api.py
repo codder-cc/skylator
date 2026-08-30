@@ -529,16 +529,11 @@ def mod_validation(mod_name: str):
     cfg = current_app.config.get("TRANSLATOR_CFG")
     if not cfg:
         return jsonify({"ok": False, "error": "No config"})
-    import json
-    from pathlib import Path
-    result_path = cfg.paths.translation_cache.parent / f"{mod_name}_validation.json"
-    if not result_path.exists():
+    from translator.web.routes.utils import load_validation
+    data = load_validation(mod_name, current_app)
+    if not data:
         return jsonify({"ok": False, "error": "No validation data — run validate step first"})
-    try:
-        data = json.loads(result_path.read_text(encoding="utf-8"))
-        return jsonify({"ok": True, **data})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)})
+    return jsonify({"ok": True, **data})
 
 
 @bp.route("/models/status")

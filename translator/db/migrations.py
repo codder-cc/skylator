@@ -242,6 +242,31 @@ MIGRATION_STEPS: list[tuple[int, str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_jobs_status  ON jobs(status)",
         ],
     ),
+    (
+        16,
+        "Fold the scanner's per-ESP counts and validation issues into SQLite (#7 one-store)",
+        [
+            # cache/_string_counts.json held 3,882 {size, count} entries keyed by ESP path
+            # and was rewritten whole whenever a scan touched any of them. Size is the
+            # invalidation key: a plugin whose byte size is unchanged keeps its counts.
+            """CREATE TABLE IF NOT EXISTS esp_counts (
+                esp_key        TEXT PRIMARY KEY,   -- "<mod folder>/<relative esp path>"
+                size           INTEGER,
+                count          INTEGER,
+                untranslatable INTEGER,
+                updated_at     REAL
+            )""",
+            # The issue list behind mod_stats_cache.validation_issues_count, which until now
+            # lived in a per-mod <mod>_validation.json beside the database.
+            """CREATE TABLE IF NOT EXISTS validation_results (
+                mod_name     TEXT PRIMARY KEY,
+                checked      INTEGER,
+                issues_count INTEGER,
+                issues       TEXT,      -- JSON array, capped
+                created_at   REAL
+            )""",
+        ],
+    ),
 ]
 
 

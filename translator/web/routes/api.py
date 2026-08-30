@@ -1472,7 +1472,28 @@ def workers_cancel_offline(label: str):
     registry.delete_offline_package(offline_job_id)
     registry.finish_offline_job(offline_job_id)
 
-    return jsonify({"ok": True, "ack": bool(ack)})
+    # The durable assignment outlives the in-memory registry, and every consumer of it —
+    # auto-feed's unassigned query, the reaper, re-dispatch — treats "leased" as work this
+    # agent still owns. Leaving it there after a cancel strands the remaining strings: they
+    # are neither being translated nor available to hand to anyone else. "orphaned" is the
+    # state the re-dispatch path already understands as "give this work back to the pool".
+    reassignable = 0
+    repo = current_app.config.get("STRING_REPO")
+    if repo is not None:
+        try:
+            from translator.jobs.assignment_store import AssignmentStore
+            _store = AssignmentStore(repo.db)
+            _a = _store.get_assignment(offline_job_id)
+            if _a and _a["state"] not in ("complete", "failed", "orphaned"):
+                reassignable = len(_store.undelivered_string_ids(offline_job_id))
+                _store.set_state(offline_job_id, "orphaned")
+                log.info("cancel-offline: assignment %s marked orphaned — %d string(s) "
+                         "returned to the pool", offline_job_id[:8], reassignable)
+        except Exception as exc:
+            log.warning("cancel-offline: could not release assignment %s: %s",
+                        offline_job_id[:8], exc)
+
+    return jsonify({"ok": True, "ack": bool(ack), "returned_to_pool": reassignable})
 
 
 @bp.route("/workers/<label>/chunk", methods=["GET"])

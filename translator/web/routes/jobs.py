@@ -1285,13 +1285,14 @@ def _create_scan_job(jm, scanner, mod_name: str | None = None,
         # untranslatable ones) appear in the strings page.
         if repo and cfg:
             from scripts.esp_engine import extract_all_strings, needs_translation, quality_score as _qs
-            _scanner = current_app.config.get("SCANNER")  # local alias — don't shadow outer `scanner`
             if mod_name:
                 _mp = get_mod_path(mod_name)
                 target_folders = [_mp] if _mp and _mp.is_dir() else []
             else:
                 # Scan all mods across all mods_dirs
-                target_folders = _scanner.scan_all() if _scanner else []
+                # `scanner` is the app's SCANNER (both callers pass current_app.config["SCANNER"]);
+                # re-reading it from current_app here ran in the job thread, with no app context.
+                target_folders = scanner.scan_all() if scanner else []
                 target_folders = [Path(m.folder_path) for m in target_folders]
             n_bootstrapped = 0
             for folder in target_folders:

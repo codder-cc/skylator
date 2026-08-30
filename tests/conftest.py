@@ -271,5 +271,6 @@ def jm():
         manager._jobs = {}
         manager._lock = threading.Lock()
         manager._persist_path = None
+        manager._app  = None   # no Flask app in unit tests — _wrapped falls back to nullcontext
         manager._center = _SyncCenter()
         yield manager

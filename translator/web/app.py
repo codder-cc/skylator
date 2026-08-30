@@ -179,6 +179,7 @@ def create_app(config_path: Path | None = None) -> Flask:
     # ── Init job manager ────────────────────────────────────────────────────
     from translator.web.job_manager import JobManager, JobStatus
     jm = JobManager.get()
+    jm.set_app(app)   # job threads need an app context (current_app in job fns)
     jobs_file = ROOT / "cache/jobs.json"
     jm.set_persist_path(jobs_file)
     app.config["JOB_MANAGER"] = jm

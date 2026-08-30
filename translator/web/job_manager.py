@@ -8,6 +8,7 @@ import logging
 import threading
 import time
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -142,6 +143,7 @@ class JobManager:
         self._jobs:    dict[str, Job] = {}
         self._lock     = threading.Lock()
         self._persist_path: Optional[Path] = None
+        self._app      = None   # Flask app, for the job thread's app context (see _wrapped)
 
         # Lazy-import to avoid circular dependency at module load time
         from translator.jobs.job_center import JobCenter
@@ -149,6 +151,10 @@ class JobManager:
 
         # Load persisted jobs
         self._load_persisted()
+
+    def set_app(self, app) -> None:
+        """Register the Flask app so job functions run inside an app context."""
+        self._app = app
 
     def set_persist_path(self, path: Path):
         self._persist_path = path
@@ -168,21 +174,27 @@ class JobManager:
         # tries to set DONE/FAILED, but its check is idempotent for the cases
         # we handle below.
         def _wrapped(j: Job):
-            try:
-                fn(j)
-            except Exception as exc:
-                if j.status == JobStatus.RUNNING:
-                    j.status      = JobStatus.FAILED
-                    j.error       = str(exc)
-                    j.finished_at = j.finished_at or time.time()
-                    j.add_log(f"ERROR: {exc}")
-                log.exception("Job FAILED: %s — %s", j.name, exc)
-                # Don't re-raise — _notify/_persist must still run
-            else:
-                if j.status == JobStatus.RUNNING:
-                    j.status      = JobStatus.DONE
-                    j.finished_at = j.finished_at or time.time()
-                # Don't overwrite PAUSED with DONE — job was paused mid-run
+            # Job functions run on a JobCenter worker thread, where the app context of the
+            # request that enqueued them is long gone. Push one, so a job that reaches for
+            # current_app — directly, or through a helper like get_mod_path() — still works
+            # instead of dying with "Working outside of application context".
+            ctx = self._app.app_context() if self._app is not None else nullcontext()
+            with ctx:
+                try:
+                    fn(j)
+                except Exception as exc:
+                    if j.status == JobStatus.RUNNING:
+                        j.status      = JobStatus.FAILED
+                        j.error       = str(exc)
+                        j.finished_at = j.finished_at or time.time()
+                        j.add_log(f"ERROR: {exc}")
+                    log.exception("Job FAILED: %s — %s", j.name, exc)
+                    # Don't re-raise — _notify/_persist must still run
+                else:
+                    if j.status == JobStatus.RUNNING:
+                        j.status      = JobStatus.DONE
+                        j.finished_at = j.finished_at or time.time()
+                    # Don't overwrite PAUSED with DONE — job was paused mid-run
             self._persist()   # save terminal status to disk before notifying
             self._notify(j)   # SSE broadcast — clients see correct done/failed
 

@@ -6,4 +6,5 @@ httpx>=0.27.0
 pyyaml>=6.0
 huggingface_hub>=0.22.0
 psutil>=5.9.0       # RAM/CPU hardware info for the host UI
+truststore>=0.9.0   # verify TLS against the OS trust store (AV/proxy TLS interception)
 zeroconf>=0.131.0   # optional: mDNS LAN discovery (safe to remove if not needed)

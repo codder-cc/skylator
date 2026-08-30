@@ -40,6 +40,8 @@ def create_backup():
     label    = data.get("label", "manual")
 
     backup_dir = cfg.paths.backup_dir
+    if backup_dir is None:
+        return jsonify({"error": "paths.backup_dir is not set in config.yaml"}), 400
     backup_dir.mkdir(parents=True, exist_ok=True)
 
     ts = time.strftime("%Y%m%d_%H%M%S")
@@ -218,6 +220,8 @@ def snapshot_trans_json():
         return jsonify({"error": "Mod not found"}), 404
 
     backup_dir = cfg.paths.backup_dir
+    if backup_dir is None:
+        return jsonify({"error": "paths.backup_dir is not set in config.yaml"}), 400
     backup_dir.mkdir(parents=True, exist_ok=True)
 
     ts = time.strftime("%Y%m%d_%H%M%S")
@@ -249,7 +253,7 @@ def list_trans_snapshots():
 
     mod_name = request.args.get("mod_name", "")
     backup_dir = cfg.paths.backup_dir
-    if not backup_dir.is_dir():
+    if backup_dir is None or not backup_dir.is_dir():
         return jsonify({"snapshots": []})
 
     snapshots = []
@@ -324,7 +328,7 @@ def _list_backups(app) -> list[dict]:
         return []
 
     backup_dir = cfg.paths.backup_dir
-    if not backup_dir.is_dir():
+    if backup_dir is None or not backup_dir.is_dir():
         return []
 
     backups = []

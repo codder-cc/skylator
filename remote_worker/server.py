@@ -23,6 +23,16 @@ _HERE = Path(__file__).parent.resolve()
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+# Verify TLS against the OS trust store rather than certifi's bundle — same reason as the
+# master (web_server.py): on a Windows agent an antivirus or corporate proxy terminates TLS
+# with a root CA that is installed system-wide but absent from certifi, and every agent-side
+# HuggingFace download then fails with CERTIFICATE_VERIFY_FAILED. Verification stays on.
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass   # optional dependency; certifi's bundle is used as before
+
 
 def _setup_logging(level_name: str = "INFO") -> None:
     level   = getattr(logging, level_name.upper(), logging.INFO)

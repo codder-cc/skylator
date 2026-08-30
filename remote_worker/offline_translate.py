@@ -205,7 +205,11 @@ class OfflineTranslateRunner:
                     if not translation:
                         continue   # leave manifest done=0 → retried next pass / next run
                     qs     = _inline_quality_score(original, translation)
-                    status = "translated"
+                    # Same gate as scripts/esp_engine.py:631 — anything the scorer is not
+                    # confident about goes to review instead of silently counting as done.
+                    # Untranslated passthrough scores 30 here; it used to be stored as
+                    # "translated", so English text landed in the DB as finished work.
+                    status = "translated" if qs > 70 else "needs_review"
                     # DURABILITY POINT — commit before any network delivery happens.
                     seq = self._store.write_result(
                         assignment_id = self._aid,

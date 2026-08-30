@@ -17,6 +17,34 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 
+def _place_translations(result: list, entries: list) -> list:
+    """Write translations into an MCM pair list, addressing by KEY first.
+
+    entries: [(line_idx, mcm_key, translation), ...] where line_idx is the row's position
+    in the ENGLISH file. The destination is the RUSSIAN file, which is a different file and
+    routinely a different shape — a shipped community translation reorders rows, and mod
+    updates add or drop settings. Writing by position alone silently landed every
+    translation on a neighbouring setting and scrambled the whole menu in-game.
+
+    Position is still honoured when it agrees with the key, and used as the last resort for
+    rows that carry no key at all.
+    """
+    by_key = {}
+    for i, (k, _) in enumerate(result):
+        by_key.setdefault(k, i)
+
+    for line_idx, mcm_key, translation in entries:
+        if mcm_key and mcm_key in by_key:
+            i = by_key[mcm_key]
+            result[i] = (result[i][0], translation)
+        elif not mcm_key and 0 <= line_idx < len(result):
+            result[line_idx] = (result[line_idx][0], translation)
+        # a key we cannot find is skipped: the setting is gone from this file, and guessing
+        # a slot for it is what caused the scrambling in the first place
+    return result
+
+
+
 def apply_mcm_from_db(repo, mod_name: str, mod_dir: Path, job=None) -> int:
     """Generate *_russian.txt files for loose MCM strings from SQLite.
 
@@ -55,15 +83,7 @@ def apply_mcm_from_db(repo, mod_name: str, mod_dir: Path, job=None) -> int:
             except Exception:
                 ru_pairs = list(en_pairs)
 
-            result = list(ru_pairs)
-            for line_idx, mcm_key, translation in entries:
-                if line_idx < len(result):
-                    result[line_idx] = (result[line_idx][0], translation)
-                elif mcm_key:
-                    for i, (k, _) in enumerate(result):
-                        if k == mcm_key:
-                            result[i] = (k, translation)
-                            break
+            result = _place_translations(list(ru_pairs), entries)
 
             mcm_write(ru_path, result, bom)
             written += 1
@@ -114,15 +134,7 @@ def apply_bsa_mcm_from_db(repo, mod_name: str, bsa_cache, job=None) -> int:
             except Exception:
                 ru_pairs = list(en_pairs)
 
-            result = list(ru_pairs)
-            for line_idx, mcm_key, translation in entries:
-                if line_idx < len(result):
-                    result[line_idx] = (result[line_idx][0], translation)
-                elif mcm_key:
-                    for i, (k, _) in enumerate(result):
-                        if k == mcm_key:
-                            result[i] = (k, translation)
-                            break
+            result = _place_translations(list(ru_pairs), entries)
 
             mcm_write(ru_path, result, bom)
             written += 1

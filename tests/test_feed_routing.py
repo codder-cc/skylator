@@ -67,5 +67,12 @@ def test_untranslatable_is_not_work(repo):
     assert next_unassigned_batch(repo, 10) == []
 
 
+def test_batch_carries_the_record_type(repo):
+    """The agent's prompt hint needs it; selecting only id/key/original silently
+    disabled the hint for everything auto-feed handed out."""
+    batch = next_unassigned_batch(repo, 1, prefer="short")
+    assert "rec_type" in batch[0]
+
+
 def test_limit_is_respected(repo):
     assert len(next_unassigned_batch(repo, 2, prefer="long")) == 2

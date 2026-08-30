@@ -44,7 +44,7 @@ def next_unassigned_batch(repo, limit: int = DEFAULT_FEED_BATCH, exclude_ids=(),
     # Over-fetch a little so we can drop the excluded ids and still fill the batch.
     rows = repo.db.execute(
         f"""
-        SELECT s.id, s.mod_name, s.esp_name AS esp, s.key, s.original
+        SELECT s.id, s.mod_name, s.esp_name AS esp, s.key, s.original, s.rec_type
         FROM strings s
         WHERE s.status = 'pending'
           AND COALESCE(s.source,'') != 'untranslatable'

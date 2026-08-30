@@ -375,6 +375,22 @@ class WorkerRegistry:
                     chunk = json.loads(pkg_file.read_text(encoding="utf-8"))
                     q.put(chunk)
                     count += 1
+                    # Re-serving a package means we must also be able to ACCEPT its results.
+                    # The offline-job index is in-memory only, so without this the agent
+                    # translates the package and every delivery comes back 404 "unknown
+                    # offline_job_id" — hours of work thrown away, retried forever. The
+                    # durable-assignment recovery in offline-results only covers packages
+                    # dispatched since the work ledger existed; the package itself has
+                    # always carried everything needed, so re-register straight from it.
+                    ojid = chunk.get("offline_job_id")
+                    if ojid and ojid not in self._offline_jobs:
+                        self.register_offline_job(
+                            ojid,
+                            chunk.get("host_job_id", ""),
+                            label,
+                            len(chunk.get("strings") or []),
+                            chunk.get("chunk_id", ""),
+                        )
                 except Exception as exc:
                     log.warning("Could not restore offline package %s: %s", pkg_file.name, exc)
         if count:

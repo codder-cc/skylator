@@ -83,7 +83,6 @@ class ContextConfig:
     max_desc_chars:            int  = 200
     summarize_threshold_chars: int  = 400
     use_neural_summarizer:     bool = True
-    use_esp_record_context:    bool = True
     max_related_records:       int  = 3
 
 
@@ -223,7 +222,6 @@ def load_config(config_file: Path = _CONFIG_FILE) -> TranslatorConfig:
         max_desc_chars            = ctx.get("max_desc_chars", 200),
         summarize_threshold_chars = ctx.get("summarize_threshold_chars", 400),
         use_neural_summarizer     = ctx.get("use_neural_summarizer", True),
-        use_esp_record_context    = ctx.get("use_esp_record_context", True),
         max_related_records       = ctx.get("max_related_records", 3),
     )
 

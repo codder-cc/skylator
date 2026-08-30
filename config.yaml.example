@@ -61,12 +61,6 @@ ensemble:
     cpu_offload:        false
     max_memory:
       "cuda:0":  "14GiB"
-      cpu:       "28GiB"
-
-  consensus:
-    similarity_threshold:  0.82
-    arbiter_uses_model_b:  true
-    long_string_chars:     250
 
   use_translation_cache:   true
 
@@ -75,7 +69,6 @@ context:
   max_desc_chars:           200
   summarize_threshold_chars: 400
   use_neural_summarizer:    true
-  use_esp_record_context:   true
   max_related_records:      3
 
 # ── Translation Behavior ──────────────────────────────────────────────────────

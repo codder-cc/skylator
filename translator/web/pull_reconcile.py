@@ -51,6 +51,9 @@ def apply_pulled_results(string_mgr, astore, agent_label: str, results: list[dic
             mod_name=mod, esp_name=esp, key=key, translation=translation,
             original=original, source="remote_agent", machine_label=agent_label,
             quality_score=r.get("quality_score"), status=r.get("status"),
+            # Arrival order is not ours to control: an agent presumed dead can return
+            # with work that was reassigned meanwhile. Keep the better of the two.
+            merge=True,
         )
         mods.add(mod)
         sid = r.get("string_id")

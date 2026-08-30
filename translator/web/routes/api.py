@@ -2000,6 +2000,9 @@ def workers_offline_results(label: str):
                     translation=translation, original=original,
                     source="ai", machine_label=label, job_id=host_job_id,
                     quality_score=quality, status=status,
+                    # Same reason as the pull path: a returning agent's older result
+                    # must not overwrite a better one produced after reassignment.
+                    merge=True,
                 )
                 mods_touched.add(mod_name)
                 saved_count += 1

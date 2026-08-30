@@ -81,6 +81,7 @@ class StringManager:
         job_id: str = "",
         quality_score: Optional[int] = None,
         status: Optional[str] = None,
+        merge: bool = False,
     ) -> SaveResult:
         """Single write entry point for ALL string types.
 
@@ -90,6 +91,12 @@ class StringManager:
             1. strings UPSERT
             2. string_history INSERT
             3. job_strings UPDATE (if job_id provided)
+
+        merge=True — keep whichever translation is better instead of overwriting.
+        Set it for deliveries from agents, where arrival order is not controlled: an
+        agent presumed dead can come back a week later with work that was meanwhile
+        reassigned, and both deliveries are legitimate. Leave it False for manual
+        edits and resets, which must win unconditionally.
         """
         from translator.validation.quality import compute_string_status
 
@@ -114,6 +121,32 @@ class StringManager:
         else:
             computed_qs = None
             computed_status = "pending"
+
+        # ── Merge against what is already stored (agent deliveries only) ────────
+        if merge and translation:
+            existing = self._repo.db.execute(
+                "SELECT id, translation, quality_score, status FROM strings "
+                "WHERE mod_name=? AND esp_name=? AND key=?",
+                (mod_name, esp_name, key),
+            ).fetchone()
+            prev = (existing["translation"] or "").strip() if existing else ""
+            if prev and prev != translation.strip():
+                from translator.validation.quality import pick_better
+                best = pick_better(original, prev, translation)
+                if best["chose"] == "a":
+                    # What we already have wins. Leave the row untouched and report it, so a
+                    # late delivery from a returning agent cannot undo better work.
+                    log.info("merge: kept stored translation for %s/%s — incoming from %s scored lower",
+                             mod_name, key, machine_label or source)
+                    return SaveResult(
+                        quality_score = existing["quality_score"],
+                        status        = existing["status"] or "translated",
+                        string_id     = existing["id"],
+                        was_inserted  = False,
+                    )
+                translation     = best["translation"]
+                computed_qs     = best["quality_score"]
+                computed_status = best["status"]
 
         string_hash = _sha256_hash(original) if original else None
         norm_hash = _norm_hash(original)

@@ -61,9 +61,49 @@ class NexusFetcher:
         # #7 one-store: prefer the SQLite nexus_cache table (the single store). We use the
         # app's DB file directly when it exists; otherwise fall back to per-file JSON (CLI).
         self._db_path = cfg.paths.translation_cache.parent / "translations.db"
+        self._imported = False   # one-shot legacy import, see _import_legacy_cache()
+
+    def _import_legacy_cache(self) -> int:
+        """Move per-file descriptions into the nexus_cache table, once.
+
+        Migration 14 created the table but left the data where it was, so the store had
+        moved and the contents had not: three rows in the table beside 133 files still
+        being served by the fallback below. Descriptions are expensive — each is an API
+        call and an LLM summary — so they are imported rather than re-fetched.
+        """
+        if not self._db_path.exists() or not self._cache_dir.is_dir():
+            return 0
+        import sqlite3
+        conn = sqlite3.connect(str(self._db_path))
+        try:
+            if conn.execute("SELECT COUNT(*) FROM nexus_cache").fetchone()[0] > 3:
+                return 0
+            rows = []
+            for f in self._cache_dir.glob("*.json"):
+                try:
+                    d = json.loads(f.read_text(encoding="utf-8"))
+                    rows.append((int(f.stem), d.get("name") or "",
+                                 d.get("summary") or "", d.get("_fetched_at") or 0))
+                except Exception:
+                    continue
+            if rows:
+                conn.executemany(
+                    "INSERT INTO nexus_cache (mod_id, name, summary, fetched_at) "
+                    "VALUES (?,?,?,?) ON CONFLICT(mod_id) DO NOTHING", rows)
+                conn.commit()
+                log.info("Imported %d Nexus description(s) into SQLite", len(rows))
+            return len(rows)
+        except Exception as exc:
+            log.warning("Nexus cache import failed: %s", exc)
+            return 0
+        finally:
+            conn.close()
 
     def _cache_get(self, mod_id: int):
         """Return (summary, age_days) from SQLite (preferred) or the legacy JSON file."""
+        if not self._imported:
+            self._imported = True
+            self._import_legacy_cache()
         if self._db_path.exists():
             try:
                 import sqlite3

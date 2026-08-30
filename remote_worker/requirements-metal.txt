@@ -7,4 +7,4 @@
 # Option B — mlx-lm (MLX native, fastest on Apple Silicon, requires MLX-format model):
 #   Set backend_type: mlx in server_config.yaml
 -r requirements.txt
-mlx-lm>=0.17.0
+mlx-lm>=0.31.1   # qwen3_5_moe (Qwen3.5 MoE) support

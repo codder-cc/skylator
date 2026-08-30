@@ -94,6 +94,30 @@ class TranslationDB:
         )
         conn.commit()
 
+    def get_setting(self, key: str, default=None):
+        """Operator switches that must survive a restart. Anything the operator turned on
+        and then walked away from belongs here, not in app.config: a master that restarts
+        overnight otherwise comes back with the fleet quietly stopped."""
+        import json as _json
+        row = self.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        if not row:
+            return default
+        try:
+            return _json.loads(row[0])
+        except Exception:
+            return default
+
+    def set_setting(self, key: str, value) -> None:
+        import json as _json, time as _t
+        conn = self._connect()
+        conn.execute(
+            "INSERT INTO settings(key, value, updated_at) VALUES(?,?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+            "updated_at=excluded.updated_at",
+            (key, _json.dumps(value), _t.time()),
+        )
+        conn.commit()
+
     def get_mod_priorities(self) -> dict:
         """{folder_name: priority} for all mods with a row (default 0 elsewhere)."""
         return {r[0]: (r[1] or 0)

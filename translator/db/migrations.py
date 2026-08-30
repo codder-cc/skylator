@@ -267,6 +267,20 @@ MIGRATION_STEPS: list[tuple[int, str, list[str]]] = [
             )""",
         ],
     ),
+    (
+        17,
+        "Persist operator switches across restarts (auto-feed)",
+        [
+            # Auto-feed lived only in app.config, so every master restart silently stopped
+            # the fleet — including a crash at 3 a.m. on a run left going overnight. The
+            # machines stay connected and idle, which looks like working from the outside.
+            """CREATE TABLE IF NOT EXISTS settings (
+                key        TEXT PRIMARY KEY,
+                value      TEXT,        -- JSON
+                updated_at REAL
+            )""",
+        ],
+    ),
 ]
 
 

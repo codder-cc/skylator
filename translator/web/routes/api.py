@@ -2110,6 +2110,7 @@ def auto_feed_start():
     state["enabled"] = True
     if data.get("batch_size"):
         state["batch_size"] = int(data["batch_size"])
+    _persist_auto_feed(state)
     log.info("Auto-feed ENABLED (batch_size=%d)", state["batch_size"])
     return jsonify({"ok": True, "enabled": True, "batch_size": state["batch_size"]})
 
@@ -2118,8 +2119,22 @@ def auto_feed_start():
 def auto_feed_stop():
     state = current_app.config.setdefault("AUTO_FEED", {"enabled": False, "batch_size": 50})
     state["enabled"] = False
+    _persist_auto_feed(state)
     log.info("Auto-feed DISABLED")
     return jsonify({"ok": True, "enabled": False})
+
+
+def _persist_auto_feed(state: dict) -> None:
+    """Survive a restart. Turning the fleet on is an operator decision that outlives the
+    process it was made in — losing it means the machines sit idle until someone notices."""
+    repo = current_app.config.get("STRING_REPO")
+    if repo is None:
+        return
+    try:
+        repo.db.set_setting("auto_feed", {"enabled": bool(state.get("enabled")),
+                                          "batch_size": int(state.get("batch_size") or 50)})
+    except Exception as exc:
+        log.warning("could not persist auto-feed setting: %s", exc)
 
 
 @bp.route("/admin/rebuild-from-agents", methods=["POST"])

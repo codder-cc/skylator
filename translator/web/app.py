@@ -342,7 +342,21 @@ def create_app(config_path: Path | None = None) -> Flask:
     _threading.Thread(target=_bg_reap_assignments, daemon=True, name="assignment-reaper").start()
 
     # ── Autonomous work top-up feeder (Gap 1) ────────────────────────────────
-    app.config["AUTO_FEED"] = {"enabled": False, "batch_size": 50}
+    # Restore the switch rather than defaulting it off. A master that restarts overnight —
+    # a crash, a deploy — used to come back with the fleet stopped, and a stopped agent is
+    # indistinguishable from a working one until someone checks the counts in the morning.
+    _feed = {"enabled": False, "batch_size": 50}
+    try:
+        saved = _db.get_setting("auto_feed")
+        if isinstance(saved, dict):
+            _feed.update({"enabled": bool(saved.get("enabled")),
+                          "batch_size": int(saved.get("batch_size") or 50)})
+            if _feed["enabled"]:
+                log.info("Auto-feed restored ON from the last session (batch=%d)",
+                         _feed["batch_size"])
+    except Exception as exc:
+        log.warning("could not restore auto-feed setting: %s", exc)
+    app.config["AUTO_FEED"] = _feed
     from translator.web.auto_feed import feed_loop
     _threading.Thread(target=feed_loop, args=(app,), daemon=True, name="auto-feed").start()
 

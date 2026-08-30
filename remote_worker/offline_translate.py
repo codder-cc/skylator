@@ -55,6 +55,37 @@ def _inline_quality_score(original: str, translation: str) -> int:
 
 MAX_PASSES = 2   # initial pass + one retry for strings that failed inference
 
+# Batching is a throughput decision, not a constant. Every call pays a fixed cost —
+# system prompt, instructions, glossary, mod context — that dwarfs a short string:
+# measured on the live backlog, a batch of four 20-character item names carried 42
+# tokens of text inside a 1519-token prompt, 2.8% payload. Filling each call to a
+# text budget instead of a fixed count amortises that cost over far more strings
+# when they are short, while long prose still goes one or two at a time.
+_BATCH_PAYLOAD_CHARS = 2000   # target characters of source text per call
+_BATCH_MAX_ITEMS     = 32     # numbered-output parsing stays reliable to about here
+# Below this, a string is a name or a UI label: the mod description explains nothing
+# about "Iron Sword" and costs ~680 characters of prompt on every call.
+_SHORT_STRING_CHARS  = 28
+
+
+def plan_batch(pending: list, start: int, cap: int) -> int:
+    """How many of `pending` starting at `start` to send in one call.
+
+    Returns a count >= 1. Greedy: keep adding while the accumulated source text fits
+    the payload budget and the item cap. A single string longer than the budget still
+    goes alone rather than being dropped.
+    """
+    n = 0
+    chars = 0
+    limit = max(1, min(cap, _BATCH_MAX_ITEMS))
+    while start + n < len(pending) and n < limit:
+        length = len(pending[start + n].get("original") or "")
+        if n and chars + length > _BATCH_PAYLOAD_CHARS:
+            break
+        chars += length
+        n += 1
+    return max(1, n)
+
 
 class OfflineTranslateRunner:
     """
@@ -113,7 +144,9 @@ class OfflineTranslateRunner:
         tm_pairs: dict  = meta.get("tm_pairs") or {}
         thinking        = raw_params.get("thinking", False)
         system_prompt   = raw_params.get("system_prompt")
-        batch_size      = int(raw_params.get("batch_size") or 4)
+        # The configured size is now an upper bound; plan_batch decides the real one from
+        # the text at hand. Was a hard 4 for everything, short names included.
+        batch_size_cap  = int(raw_params.get("batch_size") or _BATCH_MAX_ITEMS)
         infer_params    = InferenceParams.from_dict(raw_params)
 
         passes = 0
@@ -127,8 +160,8 @@ class OfflineTranslateRunner:
                             self._aid[:8], len(pending), MAX_PASSES)
                 break
 
-            log.info("OfflineTranslateRunner[%s]: pass %d, %d pending, batch_size=%d",
-                     self._aid[:8], passes, len(pending), batch_size)
+            log.info("OfflineTranslateRunner[%s]: pass %d, %d pending, batch cap=%d",
+                     self._aid[:8], passes, len(pending), batch_size_cap)
 
             i = 0
             while i < len(pending) and not self._stop:
@@ -140,7 +173,7 @@ class OfflineTranslateRunner:
                     await asyncio.sleep(2.0)
                     continue
 
-                batch     = pending[i: i + batch_size]
+                batch     = pending[i: i + plan_batch(pending, i, batch_size_cap)]
                 # Never mix mods in one batch (from 2c9c1e4): truncate the batch to the leading
                 # run that shares the first item's mod, so every prompt gets its mod's context.
                 if mods_context and batch:
@@ -161,10 +194,16 @@ class OfflineTranslateRunner:
                                 tm_lines.append(entry)
                 tm_block = ("Translation memory:\n" + "\n".join(tm_lines) + "\n") if tm_lines else ""
 
-                # Per-mod context for multi-mod packages
-                if mods_context:
+                # Per-mod context for multi-mod packages. Skipped when every string in the
+                # batch is a short name or label — a mod description says nothing useful
+                # about "Iron Sword" and is pure prompt cost on every call. Terminology and
+                # the translation memory stay: those are exactly what short names need.
+                all_short = all(len(o) <= _SHORT_STRING_CHARS for o in originals)
+                if mods_context and not all_short:
                     batch_mod = batch[0].get("mod_name") or "" if batch else ""
                     batch_ctx = mods_context.get(batch_mod) or context
+                elif all_short:
+                    batch_ctx = ""
                 else:
                     batch_ctx = context
                 full_context = (batch_ctx + "\n" + tm_block).strip() if tm_block else batch_ctx

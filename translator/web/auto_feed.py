@@ -22,13 +22,28 @@ DEFAULT_FEED_BATCH = 50
 FEED_INTERVAL = 20   # seconds between feeder sweeps
 
 
-def next_unassigned_batch(repo, limit: int = DEFAULT_FEED_BATCH, exclude_ids=()):
+def next_unassigned_batch(repo, limit: int = DEFAULT_FEED_BATCH, exclude_ids=(),
+                          prefer: str | None = None):
     """The next `limit` PENDING strings not already covered by an active assignment.
-    Returns dicts shaped for offline dispatch: {id, mod_name, esp, key, original}."""
+    Returns dicts shaped for offline dispatch: {id, mod_name, esp, key, original}.
+
+    prefer — "long" or "short": which end of the backlog to take from. The work is not
+    evenly distributed. On the live backlog 54.7% of strings are under 60 characters but
+    only 16.6% of the text, while the 1.2% over 300 characters carry 35.5% of it. Handing
+    a slow agent a passage costs the campaign far more than handing it a hundred item
+    names, so the fastest machine takes the long tail and the rest clear the short one.
+    Mods stay grouped within the batch either way, so each prompt still gets one context.
+    """
     exclude = set(exclude_ids or ())
+    if prefer == "long":
+        order = "LENGTH(s.original) DESC, s.mod_name, s.id"
+    elif prefer == "short":
+        order = "LENGTH(s.original) ASC, s.mod_name, s.id"
+    else:
+        order = "s.mod_name, s.id"
     # Over-fetch a little so we can drop the excluded ids and still fill the batch.
     rows = repo.db.execute(
-        """
+        f"""
         SELECT s.id, s.mod_name, s.esp_name AS esp, s.key, s.original
         FROM strings s
         WHERE s.status = 'pending'
@@ -40,7 +55,7 @@ def next_unassigned_batch(repo, limit: int = DEFAULT_FEED_BATCH, exclude_ids=())
               WHERE a.state IN ('queued','leased','in_progress','partially_delivered')
                 AND astr.delivered = 0
           )
-        ORDER BY s.mod_name, s.id
+        ORDER BY {order}
         LIMIT ?
         """,
         (limit + len(exclude),),
@@ -76,13 +91,18 @@ def feed_once(app, batch_size: int = DEFAULT_FEED_BATCH) -> int:
 
     claimed: set[int] = set()
     dispatched = 0
-    for w in registry.get_active():
+    # Rank by measured throughput so the quickest machine takes the expensive tail.
+    active = sorted(registry.get_active(),
+                    key=lambda x: float((x.stats or {}).get("tps_avg") or 0), reverse=True)
+    fastest = active[0].label if active else None
+    for w in active:
         # Skip workers that already have work in flight.
         busy = any(a["state"] in ACTIVE_STATES
                    for a in amgr.store.list_assignments(agent_id=w.label))
         if busy:
             continue
-        batch = next_unassigned_batch(repo, batch_size, exclude_ids=claimed)
+        prefer = "long" if w.label == fastest and len(active) > 1 else "short"
+        batch = next_unassigned_batch(repo, batch_size, exclude_ids=claimed, prefer=prefer)
         if not batch:
             break  # backlog drained — nothing left to hand out
         claimed.update(s["id"] for s in batch)
@@ -108,7 +128,9 @@ def feed_once(app, batch_size: int = DEFAULT_FEED_BATCH) -> int:
             fn=run,
         )
         dispatched += len(batch)
-        log.info("auto_feed: handed %d strings to idle worker %s", len(batch), w.label)
+        _chars = sum(len(b.get("original") or "") for b in batch)
+        log.info("auto_feed: handed %d %s strings (%d chars) to idle worker %s",
+                 len(batch), prefer, _chars, w.label)
     return dispatched
 
 

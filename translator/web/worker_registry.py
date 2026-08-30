@@ -45,6 +45,10 @@ class WorkerInfo:
     offline_jobs:   list  = field(default_factory=list)  # [{offline_job_id, total, done, tps, current_text}]
     health:         dict  = field(default_factory=dict)  # {disk_full, idle_starved, stalled, undelivered}
     download_progress: dict = field(default_factory=dict) # {model, stage, downloaded_mb, total_mb, pct}
+    # What the last reconnect handshake decided, so an agent returning after days of
+    # silence leaves a visible record instead of only a line in the log:
+    # {at, away_seconds, counts: {resume, reassigned, reconciled, unknown}, actions: {...}}
+    last_handshake: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -68,6 +72,7 @@ class WorkerInfo:
             "offline_jobs": self.offline_jobs,
             "health":       self.health,
             "download_progress": self.download_progress,
+            "last_handshake": self.last_handshake,
         }
 
 
@@ -142,6 +147,20 @@ class WorkerRegistry:
             return self._resend.pop(label, None)
 
     # ── Worker lifecycle ──────────────────────────────────────────────────────
+
+    def record_handshake(self, label: str, actions: dict, away_seconds: float) -> dict:
+        """Store what the reconnect handshake decided for `label`. Returns the summary."""
+        counts: dict[str, int] = {}
+        for act in (actions or {}).values():
+            counts[act] = counts.get(act, 0) + 1
+        summary = {"at": time.time(), "away_seconds": round(away_seconds, 1),
+                   "counts": counts, "actions": actions or {}}
+        with self._lock:
+            w = self._workers.get(label)
+            if w is not None:
+                w.last_handshake = summary
+        self._publish()
+        return summary
 
     def register(self, info: WorkerInfo) -> None:
         """Register or update a worker.  last_seen is set to now.

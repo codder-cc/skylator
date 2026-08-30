@@ -1245,6 +1245,9 @@ def workers_register():
     registry = current_app.config.get("WORKER_REGISTRY")
     if registry is None:
         return jsonify({"error": "Registry not initialized"}), 500
+    import time as _time
+    _prev = registry.get(label)
+    _prev_seen = getattr(_prev, "last_seen", 0.0) if _prev else 0.0
     info = WorkerInfo(
         label              = label,
         url                = url,
@@ -1279,6 +1282,15 @@ def workers_register():
             reconcile = AssignmentStore(repo.db).diff_handshake(label, digest)
         except Exception as exc:
             log.warning("register: handshake diff failed for %s: %s", label, exc)
+    # An agent can be gone for days and come back holding work. Record what the handshake
+    # decided — otherwise the one moment that explains the fleet's state is a log line that
+    # scrolls away. Surfaced on the worker as `last_handshake`.
+    if reconcile:
+        _away = max(0.0, _time.time() - (_prev_seen or _time.time()))
+        _summary = registry.record_handshake(label, reconcile, _away)
+        log.info("handshake %s: back after %.0fs holding %d assignment(s) — %s",
+                 label, _away, len(reconcile),
+                 ", ".join(f"{k}={v}" for k, v in sorted(_summary["counts"].items())))
     from translator.jobs.assignment_store import PROTOCOL_VERSION as _HOST_PROTO
     # Advertise the persistent-socket hub so the agent can dial it (fast path). Absent/None
     # → the agent stays on the durable HTTP pull path only.

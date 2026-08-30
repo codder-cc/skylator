@@ -106,3 +106,29 @@ def test_job_detail_still_returns_the_full_history(jm):
     client = _app_with(jm).test_client()
     d = client.get(f"/api/jobs/{job.id}").get_json()
     assert len(d["string_updates"]) == 1200
+
+
+def test_the_feed_stores_a_preview_not_the_whole_translation(jm):
+    """A translated book chapter runs to 12,000 characters; the UI row is one line."""
+    from translator.web.job_manager import _FEED_TEXT_CHARS
+    job = jm.create(name="J", job_type="translate_strings", params={}, fn=lambda j: None)
+    jm.add_string_update(job, "k", "m.esp", "П" * 12000, "translated")
+    assert len(job.string_updates[0]["translation"]) == _FEED_TEXT_CHARS
+
+
+def test_short_translations_are_stored_whole(jm):
+    job = jm.create(name="J", job_type="translate_strings", params={}, fn=lambda j: None)
+    jm.add_string_update(job, "k", "m.esp", "Железный меч", "translated")
+    assert job.string_updates[0]["translation"] == "Железный меч"
+
+
+def test_a_long_running_job_record_stays_bounded(jm, tmp_path):
+    """The property: neither the count nor the size of an entry can run away."""
+    import json
+    jm.set_persist_path(tmp_path / "jobs.json")
+    job = jm.create(name="J", job_type="translate_strings", params={}, fn=lambda j: None)
+    for i in range(2000):
+        jm.add_string_update(job, f"k{i}", "m.esp", "П" * 12000, "translated")
+    jm._persist()
+    size = (tmp_path / "jobs.json").stat().st_size
+    assert size < 300_000, f"one job record is {size/1e6:.2f} MB on disk"

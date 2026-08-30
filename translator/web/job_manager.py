@@ -19,6 +19,8 @@ log = logging.getLogger(__name__)
 # How much of a job's live feed survives to disk. The feed exists for the UI of a running
 # job; on reload it is history nobody reads, and it dominated the persisted file.
 _PERSIST_STRING_TAIL = 200
+# How much of each translation the live feed carries. The row in the UI is one line.
+_FEED_TEXT_CHARS     = 300
 _PERSIST_LOG_TAIL    = 500
 
 
@@ -471,11 +473,18 @@ class JobManager:
                           quality_score: int | None = None,
                           source: str | None = None,
                           machine_label: str | None = None):
-        """Append a per-string translation result and broadcast via SSE."""
+        """Append a per-string translation result and broadcast via SSE.
+
+        The translation is stored as a preview. This list is display data — a scrolling
+        feed of what just finished — and a translated book chapter runs to 12,000
+        characters. Two hundred of those made a single job record 4.9 MB even after the
+        list itself was capped. The full text is in the database, which is where anything
+        that needs it should read from.
+        """
         job.string_updates.append({
             "key":           key,
             "esp":           esp,
-            "translation":   translation,
+            "translation":   (translation or "")[:_FEED_TEXT_CHARS],
             "status":        status,
             "quality_score": quality_score,
             "source":        source,
@@ -561,7 +570,10 @@ class JobManager:
             # Atomic write: a crash mid-write can no longer truncate job history.
             import os as _os
             tmp = self._persist_path.with_suffix(self._persist_path.suffix + ".tmp")
-            tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            # ensure_ascii escapes every Cyrillic character to a six-byte sequence
+            # instead of two, inflating a file that is almost entirely Russian.
+            tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False),
+                           encoding="utf-8")
             _os.replace(tmp, self._persist_path)
         except Exception:
             pass

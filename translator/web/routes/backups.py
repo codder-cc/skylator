@@ -70,6 +70,8 @@ def restore_backup(backup_id: str):
     if cfg is None:
         return jsonify({"error": "No config"}), 500
 
+    if cfg.paths.backup_dir is None:
+        return jsonify({"error": "paths.backup_dir is not set in config.yaml"}), 400
     backup_path = safe_under(cfg.paths.backup_dir, backup_id)  # confine — no path traversal
     if not backup_path.exists():
         return jsonify({"error": "Backup not found"}), 404
@@ -90,12 +92,27 @@ def restore_backup(backup_id: str):
     # Directory backup → restore mod folder (restore to same dir it was backed up from)
     existing = get_mod_path(mod_name)
     dest = existing if existing else safe_under(cfg.paths.mods_dir, mod_name)
+    safety = None
     if dest.exists():
         # Keep current as safety backup
         safety = safe_under(cfg.paths.backup_dir, f"{mod_name}__before_restore__{int(time.time())}")
         shutil.copytree(str(dest), str(safety))
         shutil.rmtree(str(dest))
-    shutil.copytree(str(backup_path), str(dest))
+    try:
+        shutil.copytree(str(backup_path), str(dest))
+    except Exception as exc:
+        # The live folder is already gone at this point. Without this the mod simply
+        # disappears — a restore that fails must not be worse than not restoring at all.
+        log.error("restore %s failed: %s — rolling back", backup_id, exc)
+        if safety is not None and safety.is_dir() and not dest.exists():
+            try:
+                shutil.copytree(str(safety), str(dest))
+            except Exception as roll:
+                log.error("restore rollback ALSO failed for %s: %s — the previous state is "
+                          "kept at %s", mod_name, roll, safety)
+                return jsonify({"error": f"restore failed and could not roll back: {roll}",
+                                "previous_state_kept_at": str(safety)}), 500
+        return jsonify({"error": f"restore failed, original put back: {exc}"}), 500
     return jsonify({"ok": True, "restored_to": str(dest)})
 
 
@@ -105,6 +122,8 @@ def delete_backup(backup_id: str):
     if cfg is None:
         return jsonify({"error": "No config"}), 500
 
+    if cfg.paths.backup_dir is None:
+        return jsonify({"error": "paths.backup_dir is not set in config.yaml"}), 400
     backup_path = safe_under(cfg.paths.backup_dir, backup_id)  # confine — no path traversal
     if not backup_path.exists():
         return jsonify({"error": "Not found"}), 404

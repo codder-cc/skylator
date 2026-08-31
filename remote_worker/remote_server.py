@@ -1353,7 +1353,7 @@ _SCHEDULE_META_KEY = "schedule"
 
 def _apply_schedule(state: ServerState, raw) -> None:
     """Adopt a schedule handed down by the host, and remember it across restarts."""
-    from schedule import describe, normalize
+    from work_schedule import describe, normalize
     new = normalize(raw)
     if new == state.schedule:
         return
@@ -1373,7 +1373,7 @@ def _load_schedule(state: ServerState) -> None:
     Without this an agent restarting inside its off-hours would translate until the first
     poll succeeds — and all night if the host happens to be down.
     """
-    from schedule import describe, normalize
+    from work_schedule import describe, normalize
     store = state.result_store
     if store is None:
         return
@@ -1420,6 +1420,15 @@ def _load_model_spec(state: ServerState) -> None:
             state.model_spec = json.loads(raw)
     except Exception as exc:
         log.warning("could not restore model spec: %s", exc)
+
+
+def _schedule_permits_loading(state: ServerState) -> bool:
+    """May a model be put into memory right now? Failure to tell means yes."""
+    try:
+        from work_schedule import is_working
+        return is_working(getattr(state, "schedule", None))
+    except Exception:
+        return True
 
 
 async def _sleep_for_the_night(state: ServerState, loop) -> None:
@@ -1475,16 +1484,28 @@ async def _wake_up(state: ServerState, loop) -> bool:
 
 async def _sleep_controller(state: ServerState) -> None:
     """Follow the schedule: hold the model during working hours, let go outside them."""
-    from schedule import describe, is_working
+    from work_schedule import describe, is_working
     loop = asyncio.get_running_loop()
     _load_model_spec(state)
     while True:
         try:
             should_work = is_working(state.schedule)
-            if not should_work and not state.asleep:
-                log.info("Outside working hours (%s)", describe(state.schedule))
-                await _sleep_for_the_night(state, loop)
-            elif should_work and state.asleep:
+            if not should_work:
+                # The invariant is "off-hours means no model", checked every tick rather
+                # than only at the moment the window closes. Reacting to the transition
+                # alone is not enough: the host restores a model to any agent that is up
+                # without one, and between unloading and the heartbeat that says why,
+                # there is a gap it can push a load into. Seen in practice — the agent
+                # went to sleep, the model came straight back, and nothing unloaded it
+                # again because the transition had already happened.
+                if state.backend is not None:
+                    if not state.asleep:
+                        log.info("Outside working hours (%s)", describe(state.schedule))
+                    else:
+                        log.info("A model was loaded while off-hours — unloading again")
+                    await _sleep_for_the_night(state, loop)
+                state.asleep = True
+            elif state.asleep:
                 await _wake_up(state, loop)
         except Exception as exc:
             log.warning("sleep controller: %s", exc)
@@ -1545,6 +1566,17 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
             # ── Model load ────────────────────────────────────────────────────
             if chunk_type == "load_model":
                 payload = chunk.get("payload", {})
+                # Refuse rather than load-then-unload. The host cannot always know this
+                # agent is off-hours — its own view is a heartbeat behind — so the answer
+                # has to come from the side that owns the schedule. Downloads are still
+                # allowed: staging a file costs disk, not the memory being protected.
+                if payload.get("load", True) and not _schedule_permits_loading(state):
+                    from work_schedule import describe
+                    log.info("Declining a model load: %s", describe(state.schedule))
+                    await _post_result(state.http_client, base, label, chunk_id,
+                                       json.dumps({"ok": False, "declined": "off_hours",
+                                                   "error": "outside working hours"}))
+                    continue
                 log.info("Pull worker: loading model — %s",
                          payload.get("gguf_filename") or payload.get("model_path") or
                          payload.get("repo_id") or "?")

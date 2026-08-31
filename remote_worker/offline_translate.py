@@ -113,7 +113,7 @@ def _schedule_allows(state) -> bool:
     that finished its work, and nothing would say why.
     """
     try:
-        from schedule import is_working
+        from work_schedule import is_working
         return is_working(getattr(state, "schedule", None))
     except Exception:
         return True
@@ -233,7 +233,7 @@ class OfflineTranslateRunner:
                 if not _schedule_allows(state):
                     if not self._off_hours:
                         self._off_hours = True
-                        from schedule import describe
+                        from work_schedule import describe
                         log.info("OfflineTranslateRunner[%s]: outside working hours (%s) — "
                                  "holding %d strings", self._aid[:8],
                                  describe(getattr(state, "schedule", None)), len(pending) - i)

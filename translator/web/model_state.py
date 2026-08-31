@@ -178,6 +178,11 @@ class ModelStateManager:
         # give the machine back. Restoring one here would reload multiple GB onto a
         # machine someone else is using, and the agent would unload it again twenty
         # seconds later, forever.
+        #
+        # This check races the agent: between it unloading and the heartbeat that says it
+        # is asleep, this sees a model-less agent that is not yet marked. The agent
+        # declines the load for exactly that reason. Both halves are needed — this one
+        # stops the asking, and the agent's stops the loading.
         if getattr(w, "asleep", False):
             return None
         d = {"spec": dict(rec["spec"]), "job_id": DEFAULT_JOB_ID, "hf_token": hf_token,

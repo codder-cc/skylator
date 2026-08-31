@@ -1523,7 +1523,7 @@ def _all_schedules() -> dict:
 
 
 def agent_schedule(label: str) -> dict:
-    from remote_worker.schedule import default_schedule, normalize
+    from remote_worker.work_schedule import default_schedule, normalize
     got = _all_schedules().get(label)
     return normalize(got) if got is not None else default_schedule()
 
@@ -1557,7 +1557,7 @@ def worker_schedule(label: str):
     A window whose start is later than its end runs through midnight and belongs to the
     day it started on.
     """
-    from remote_worker.schedule import describe, is_working, next_change, normalize
+    from remote_worker.work_schedule import describe, is_working, next_change, normalize
     repo = current_app.config.get("STRING_REPO")
     if repo is None:
         return jsonify({"ok": False, "error": "not initialized"}), 500
@@ -1584,7 +1584,7 @@ def worker_schedule(label: str):
 @bp.route("/workers/schedules", methods=["GET"])
 def worker_schedules():
     """Every machine's schedule at once, for the machines page."""
-    from remote_worker.schedule import describe, is_working, next_change
+    from remote_worker.work_schedule import describe, is_working, next_change
     out = {}
     for label, sched in _all_schedules().items():
         nxt = next_change(sched)

@@ -11,7 +11,7 @@ import datetime as dt
 
 import pytest
 
-from remote_worker.schedule import (
+from remote_worker.work_schedule import (
     WEEKDAYS, default_schedule, describe, is_working, next_change, normalize,
 )
 

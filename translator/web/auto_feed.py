@@ -96,7 +96,7 @@ def feed_once(app, batch_size: int = DEFAULT_FEED_BATCH) -> int:
                     key=lambda x: float((x.stats or {}).get("tps_avg") or 0), reverse=True)
     fastest = active[0].label if active else None
     from translator.web.routes.api import agent_schedule
-    from remote_worker.schedule import is_working
+    from remote_worker.work_schedule import is_working
 
     for w in active:
         # Skip workers that already have work in flight.

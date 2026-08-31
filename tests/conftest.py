@@ -15,6 +15,14 @@ ROOT = Path(__file__).parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# The agent runs out of remote_worker/ and imports its own modules by bare name
+# (`from result_store import ...`). Tests that exercise agent code have to see the same
+# paths it does, or a bare import silently resolves to nothing and the test ends up
+# checking the except branch instead of the code.
+AGENT = ROOT / "remote_worker"
+if str(AGENT) not in sys.path:
+    sys.path.append(str(AGENT))
+
 
 # ── In-memory SQLite DB with full schema ────────────────────────────────────
 

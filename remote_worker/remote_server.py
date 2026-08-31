@@ -307,6 +307,14 @@ class ServerState:
         # on disk, so a pause survives losing the host — which is exactly when a machine
         # someone needs back would otherwise keep running.
         self.schedule: dict = {"mode": "always", "windows": []}
+        # Asleep: outside its hours, with the model unloaded. Not taking batches is not
+        # enough — a 4-bit 30B sits on ~18 GB of unified memory, and handing back a
+        # machine that still holds that is not handing it back.
+        self.asleep: bool = False
+        # The last model that loaded successfully, kept so the agent can put it back on
+        # its own at the end of a window. The host restores models too, but only while
+        # the host is up; this is what makes a window open on time regardless.
+        self.model_spec: dict | None = None
         self.agent_link = None           # AgentLink | None
         self.agent_hub_port: int | None = None  # advertised by the host in the register reply
 
@@ -1087,6 +1095,9 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
                     "offline_jobs": offline_jobs_payload,
                     "health":       health_payload,
                     "download_progress": state.download_progress or {},
+                    # Asleep is not idle and not broken: the machine was handed back on
+                    # purpose. Without saying so it looks like an agent that lost its model.
+                    "asleep":       state.asleep,
                     "stats": {
                         "tps_avg":        state.tps_avg,
                         "tps_last":       state.tps_last,
@@ -1375,6 +1386,111 @@ def _load_schedule(state: ServerState) -> None:
         log.warning("could not restore schedule: %s", exc)
 
 
+# ── Sleeping outside working hours ────────────────────────────────────────────
+
+_MODEL_SPEC_META_KEY = "model_spec"
+# How often the controller looks at the clock. A schedule is written in whole minutes,
+# so this only decides how promptly a boundary is noticed, and 20 s of latency on an
+# eight-hour window is nothing against the cost of checking more often.
+_SLEEP_CHECK_SEC = 20.0
+
+
+def _remember_model_spec(state: ServerState, payload: dict) -> None:
+    """Keep the spec of a model that loaded, so it can be put back after a sleep."""
+    spec = {k: v for k, v in (payload or {}).items()
+            if k not in ("transfer", "hf_token") and v is not None}
+    if not spec:
+        return
+    state.model_spec = spec
+    store = state.result_store
+    if store is not None:
+        try:
+            store.set_meta(_MODEL_SPEC_META_KEY, json.dumps(spec))
+        except Exception as exc:
+            log.warning("could not persist model spec: %s", exc)
+
+
+def _load_model_spec(state: ServerState) -> None:
+    store = state.result_store
+    if store is None:
+        return
+    try:
+        raw = store.get_meta(_MODEL_SPEC_META_KEY)
+        if raw:
+            state.model_spec = json.loads(raw)
+    except Exception as exc:
+        log.warning("could not restore model spec: %s", exc)
+
+
+async def _sleep_for_the_night(state: ServerState, loop) -> None:
+    """Drop the model and everything holding memory behind it."""
+    label = state.model_label or "model"
+    try:
+        if state.backend is not None:
+            # unload() → _do_unload() → mx.clear_cache()/del + gc.collect(), so the
+            # memory is genuinely returned rather than merely dereferenced.
+            await loop.run_in_executor(None, state.backend.unload)
+    except Exception as exc:
+        log.warning("sleep: unloading %s failed: %s", label, exc)
+    state.backend = None
+    state.model_label = ""
+    state.asleep = True
+    try:
+        state.refresh_free_memory()
+    except Exception:
+        pass
+    log.info("Asleep — %s unloaded, machine handed back", label)
+
+
+async def _wake_up(state: ServerState, loop) -> bool:
+    """Put the model back. False if there is nothing to put back or it would not load."""
+    spec = state.model_spec
+    if not spec:
+        # Nothing was ever loaded here, or the store lost it. Waking with no model is a
+        # valid state: the host restores a default to any agent that is up without one.
+        state.asleep = False
+        log.info("Awake — no remembered model, waiting for the host to send one")
+        return False
+    name = spec.get("gguf_filename") or spec.get("repo_id") or spec.get("model_path") or "model"
+    log.info("Waking up — reloading %s", name)
+    try:
+        req = ModelLoadRequest(**{k: v for k, v in spec.items()
+                                  if k in ModelLoadRequest.model_fields})
+        backend, bt = await loop.run_in_executor(None, lambda: _build_backend(req))
+        await loop.run_in_executor(None, backend.load)
+        state.backend      = backend
+        state.backend_type = bt
+        state.model_label  = name
+        state.asleep       = False
+        state.refresh_free_memory()
+        log.info("Awake — %s loaded via %s", name, bt)
+        return True
+    except Exception as exc:
+        # Stay marked awake: the host's model-default restore is the fallback, and it
+        # only fires for an agent that is up and has no model.
+        state.asleep = False
+        log.error("Waking up: could not reload %s (%s) — leaving it to the host", name, exc)
+        return False
+
+
+async def _sleep_controller(state: ServerState) -> None:
+    """Follow the schedule: hold the model during working hours, let go outside them."""
+    from schedule import describe, is_working
+    loop = asyncio.get_running_loop()
+    _load_model_spec(state)
+    while True:
+        try:
+            should_work = is_working(state.schedule)
+            if not should_work and not state.asleep:
+                log.info("Outside working hours (%s)", describe(state.schedule))
+                await _sleep_for_the_night(state, loop)
+            elif should_work and state.asleep:
+                await _wake_up(state, loop)
+        except Exception as exc:
+            log.warning("sleep controller: %s", exc)
+        await asyncio.sleep(_SLEEP_CHECK_SEC)
+
+
 # ── Pull-mode worker loop ──────────────────────────────────────────────────────
 
 async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
@@ -1467,6 +1583,7 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                         state.backend_type = bt
                         state.model_label  = req.gguf_filename or req.repo_id or req.model_path or "unknown"
                         state.refresh_free_memory()
+                        _remember_model_spec(state, payload)
                         log.info("Pull worker: model loaded — %s via %s", state.model_label, bt)
                         result_data = {"ok": True, "model": state.model_label}
                 except Exception as exc:
@@ -1825,6 +1942,9 @@ def create_server_app(
         # offline production).
         if state.result_store is not None:
             bg_tasks.append(asyncio.create_task(_watchdog_loop(state)))
+        # Follows the schedule whether or not a host is reachable — the whole point of a
+        # pause is that it holds when nobody can be asked.
+        bg_tasks.append(asyncio.create_task(_sleep_controller(state)))
         if host_url:
             bg_tasks.append(asyncio.create_task(
                 _register_and_heartbeat(host_url, mdns_host, mdns_port, caps, state)

@@ -45,6 +45,9 @@ class WorkerInfo:
     offline_jobs:   list  = field(default_factory=list)  # [{offline_job_id, total, done, tps, current_text}]
     health:         dict  = field(default_factory=dict)  # {disk_full, idle_starved, stalled, undelivered}
     download_progress: dict = field(default_factory=dict) # {model, stage, downloaded_mb, total_mb, pct}
+    # Outside its working hours with the model unloaded, on purpose. Distinct from
+    # idle (up, wants work) and from having lost a model (up, should have one).
+    asleep:         bool  = False
     # What the last reconnect handshake decided, so an agent returning after days of
     # silence leaves a visible record instead of only a line in the log:
     # {at, away_seconds, counts: {resume, reassigned, reconciled, unknown}, actions: {...}}
@@ -70,6 +73,7 @@ class WorkerInfo:
             "ota_steps":    self.ota_steps,
             "ota_restart_at": self.ota_restart_at,
             "offline_jobs": self.offline_jobs,
+            "asleep":       self.asleep,
             "health":       self.health,
             "download_progress": self.download_progress,
             "last_handshake": self.last_handshake,
@@ -191,7 +195,8 @@ class WorkerRegistry:
                   commit: str | None = None,
                   offline_jobs: list | None = None,
                   health: dict | None = None,
-                  download_progress: dict | None = None) -> tuple[bool, list[str]]:
+                  download_progress: dict | None = None,
+                  asleep: bool | None = None) -> tuple[bool, list[str]]:
         """Update last_seen and any pushed fields.
 
         Returns (found, lost_job_ids):
@@ -213,6 +218,7 @@ class WorkerRegistry:
             if commit       is not None: w.commit       = commit
             if health       is not None: w.health       = health
             if download_progress is not None: w.download_progress = download_progress
+            if asleep       is not None: w.asleep       = bool(asleep)
 
             # Build set of offline_job_ids currently reported by this worker
             reported_ids: set[str] = set()

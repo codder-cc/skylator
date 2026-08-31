@@ -748,6 +748,11 @@ function SchedulePanel({ worker }: { worker: WorkerInfo }) {
             {working ? 'stops' : 'starts'} {nextChange}
           </span>
         )}
+        {/* Saying the model is unloaded matters: otherwise a machine showing no model
+            during its off-hours reads as one that lost it. */}
+        {worker.asleep && (
+          <span className="text-[10px] text-text-muted/60">model unloaded</span>
+        )}
 
         <div className="ml-auto flex items-center gap-1">
           <button
@@ -993,7 +998,15 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange,
         {worker.health?.stalled && (
           <span className="px-1 rounded text-[9px] bg-warning/20 text-warning" title="Offline production appears stalled">stalled</span>
         )}
-        {worker.health?.idle_starved && (
+        {worker.asleep && (
+          <span
+            className="px-1 rounded text-[9px] bg-bg-card2 text-text-muted border border-border-subtle"
+            title="Outside its working hours — model unloaded, machine handed back"
+          >
+            asleep
+          </span>
+        )}
+        {worker.health?.idle_starved && !worker.asleep && (
           <span className="px-1 rounded text-[9px] bg-bg-card2 text-text-muted border border-border-subtle" title="Agent is up but has no work">idle</span>
         )}
         {(worker.health?.undelivered ?? 0) > 0 && (

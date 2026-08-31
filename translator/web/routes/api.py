@@ -1322,11 +1322,13 @@ def workers_heartbeat():
     hardware      = data.get("hardware")      # {ram_total_mb, vram_total_mb, cpu_name, …}
     commit        = data.get("commit")        # short git commit hash
     offline_jobs  = data.get("offline_jobs")  # [{offline_job_id, total, done, tps, current_text}]
+    asleep        = data.get("asleep")        # outside its working hours, model unloaded
     health        = data.get("health")        # {disk_full, idle_starved, stalled, undelivered}
     dl_progress   = data.get("download_progress")  # {model, stage, pct, ...}
     found, lost_job_ids = registry.heartbeat(
         label, models=models, model=model, backend_type=backend_type,
         stats=stats, hardware=hardware, commit=commit, offline_jobs=offline_jobs,
+        asleep=asleep,
         health=health, download_progress=dl_progress,
     )
     if not found:

@@ -179,6 +179,8 @@ export interface WorkerInfo {
     total_mb?: number
     pct?: number | null
   }
+  /** Outside its working hours with the model unloaded, on purpose. */
+  asleep?: boolean
 }
 
 export interface AssignmentRow {

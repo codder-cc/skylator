@@ -174,6 +174,12 @@ class ModelStateManager:
         w = self._registry.get(label)
         if w is None or getattr(w, "model", None):
             return None
+        # An agent outside its working hours has no model *on purpose* — it unloaded to
+        # give the machine back. Restoring one here would reload multiple GB onto a
+        # machine someone else is using, and the agent would unload it again twenty
+        # seconds later, forever.
+        if getattr(w, "asleep", False):
+            return None
         d = {"spec": dict(rec["spec"]), "job_id": DEFAULT_JOB_ID, "hf_token": hf_token,
              "in_flight_chunk": None, "issued_at": 0.0}
         self._desired[label] = d

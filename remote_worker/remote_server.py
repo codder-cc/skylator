@@ -303,6 +303,10 @@ class ServerState:
         self.stalled: bool = False       # watchdog: offline production appears stuck
         self.download_progress: dict = {}  # {model, stage, downloaded_mb, total_mb, pct} during a download
         # Persistent socket channel to the master (fast path over the pull substrate).
+        # When this machine is allowed to work. Sent by the host on every poll and kept
+        # on disk, so a pause survives losing the host — which is exactly when a machine
+        # someone needs back would otherwise keep running.
+        self.schedule: dict = {"mode": "always", "windows": []}
         self.agent_link = None           # AgentLink | None
         self.agent_hub_port: int | None = None  # advertised by the host in the register reply
 
@@ -1331,6 +1335,46 @@ async def _run_offline_job(
     await _produce_assignment(state, loop, aid, meta)
 
 
+# ── Working hours ─────────────────────────────────────────────────────────────
+
+_SCHEDULE_META_KEY = "schedule"
+
+
+def _apply_schedule(state: ServerState, raw) -> None:
+    """Adopt a schedule handed down by the host, and remember it across restarts."""
+    from schedule import describe, normalize
+    new = normalize(raw)
+    if new == state.schedule:
+        return
+    state.schedule = new
+    log.info("Working hours changed: %s", describe(new))
+    store = state.result_store
+    if store is not None:
+        try:
+            store.set_meta(_SCHEDULE_META_KEY, json.dumps(new))
+        except Exception as exc:
+            log.warning("could not persist schedule: %s", exc)
+
+
+def _load_schedule(state: ServerState) -> None:
+    """Restore the last known schedule at startup, before the host is reachable.
+
+    Without this an agent restarting inside its off-hours would translate until the first
+    poll succeeds — and all night if the host happens to be down.
+    """
+    from schedule import describe, normalize
+    store = state.result_store
+    if store is None:
+        return
+    try:
+        raw = store.get_meta(_SCHEDULE_META_KEY)
+        if raw:
+            state.schedule = normalize(json.loads(raw))
+            log.info("Working hours restored from disk: %s", describe(state.schedule))
+    except Exception as exc:
+        log.warning("could not restore schedule: %s", exc)
+
+
 # ── Pull-mode worker loop ──────────────────────────────────────────────────────
 
 async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
@@ -1366,6 +1410,8 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
             )
             r.raise_for_status()
             data  = r.json()
+            if "schedule" in data:
+                _apply_schedule(state, data.get("schedule"))
             chunk = data.get("chunk")
             if not chunk:
                 # Adaptive backoff so a host that returns immediately (misconfig/race)
@@ -1769,6 +1815,7 @@ def create_server_app(
         except Exception as exc:
             log.error("Failed to open ResultStore (%s) — offline durability disabled", exc)
             state.result_store = None
+        _load_schedule(state)
 
         if mdns_enabled:
             _register_mdns(mdns_host, mdns_port, state)

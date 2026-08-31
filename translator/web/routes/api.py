@@ -1501,20 +1501,95 @@ def workers_cancel_offline(label: str):
     return jsonify({"ok": True, "ack": bool(ack), "returned_to_pool": reassignable})
 
 
+# ── When each machine is allowed to work ─────────────────────────────────────
+# Stored under one settings key rather than per-agent rows: it is a handful of small
+# records read on every poll, and keeping it whole means a schedule survives an agent
+# that goes away and comes back under the same label.
+_SCHEDULES_KEY = "agent_schedules"
+
+
+def _all_schedules() -> dict:
+    repo = current_app.config.get("STRING_REPO")
+    if repo is None:
+        return {}
+    try:
+        got = repo.db.get_setting(_SCHEDULES_KEY)
+        return got if isinstance(got, dict) else {}
+    except Exception as exc:
+        log.warning("could not read agent schedules: %s", exc)
+        return {}
+
+
+def agent_schedule(label: str) -> dict:
+    from remote_worker.schedule import default_schedule, normalize
+    got = _all_schedules().get(label)
+    return normalize(got) if got is not None else default_schedule()
+
+
 @bp.route("/workers/<label>/chunk", methods=["GET"])
 def workers_get_chunk(label: str):
     """Pull-mode: remote polls for next inference chunk.
 
     Long-polls for up to `timeout` seconds (default 15).
-    Returns {"ok": true, "chunk": {...} | null}.
+    Returns {"ok": true, "chunk": {...} | null, "schedule": {...}}.
     chunk fields: chunk_id, prompt, params, count.
+
+    The schedule rides along on the poll the agent already makes, so a change reaches it
+    within one poll without a second endpoint or a push channel. The agent stores it and
+    enforces it itself — that is what keeps a pause honoured while the master is down.
     """
     registry = current_app.config.get("WORKER_REGISTRY")
     if registry is None:
         return jsonify({"ok": False, "error": "Registry not initialized"}), 500
     timeout = float(request.args.get("timeout", 15))
     chunk   = registry.dequeue_chunk(label, timeout=timeout)
-    return jsonify({"ok": True, "chunk": chunk})
+    return jsonify({"ok": True, "chunk": chunk, "schedule": agent_schedule(label)})
+
+
+@bp.route("/workers/<label>/schedule", methods=["GET", "POST"])
+def worker_schedule(label: str):
+    """Read or set when a machine may translate.
+
+    POST body is the schedule itself: {"mode": "always"|"paused"|"schedule",
+    "windows": [{"days": [0..6], "start": "18:00", "end": "09:00"}]}. Days are Mon=0.
+    A window whose start is later than its end runs through midnight and belongs to the
+    day it started on.
+    """
+    from remote_worker.schedule import describe, is_working, next_change, normalize
+    repo = current_app.config.get("STRING_REPO")
+    if repo is None:
+        return jsonify({"ok": False, "error": "not initialized"}), 500
+
+    if request.method == "POST":
+        sched = normalize(request.get_json(silent=True) or {})
+        table = _all_schedules()
+        table[label] = sched
+        try:
+            repo.db.set_setting(_SCHEDULES_KEY, table)
+        except Exception as exc:
+            log.warning("could not save schedule for %s: %s", label, exc)
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        log.info("Schedule for %s → %s", label, describe(sched))
+    else:
+        sched = agent_schedule(label)
+
+    nxt = next_change(sched)
+    return jsonify({"ok": True, "label": label, "schedule": sched,
+                    "working": is_working(sched), "summary": describe(sched),
+                    "next_change": nxt.isoformat() if nxt else None})
+
+
+@bp.route("/workers/schedules", methods=["GET"])
+def worker_schedules():
+    """Every machine's schedule at once, for the machines page."""
+    from remote_worker.schedule import describe, is_working, next_change
+    out = {}
+    for label, sched in _all_schedules().items():
+        nxt = next_change(sched)
+        out[label] = {"schedule": sched, "working": is_working(sched),
+                      "summary": describe(sched),
+                      "next_change": nxt.isoformat() if nxt else None}
+    return jsonify(out)
 
 
 @bp.route("/workers/<label>/result", methods=["POST"])

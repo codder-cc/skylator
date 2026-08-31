@@ -2,6 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState, useEffect, useRef } from 'react'
 import { workersApi } from '@/api/workers'
+import type { AgentSchedule, ScheduleWindow } from '@/api/workers'
 import { jobsApi } from '@/api/jobs'
 import { modelsApi } from '@/api/models'
 import { QK } from '@/lib/queryKeys'
@@ -35,6 +36,8 @@ import {
   Rocket,
   GitCommit,
   GitBranch,
+  Clock,
+  Pause,
 } from 'lucide-react'
 import { otaApi } from '@/api/ota'
 import { BenchmarkPanel } from '@/components/servers/BenchmarkPanel'
@@ -554,6 +557,335 @@ interface WorkerRowProps {
   assignedJobs?: Job[]
 }
 
+
+// -- Working hours -----------------------------------------------------------
+// A borrowed laptop is not a server. The fast Mac is someone's work machine by day, so
+// it can only have the night; another might need stopping outright for an afternoon.
+// Before this the only way to free a machine was to kill the agent, which stranded
+// whatever it was holding.
+//
+// Times are the machine's OWN clock. That is what lets a schedule survive the host going
+// down -- the agent enforces it by itself -- and "works evenings" means evenings where
+// the machine actually is.
+
+const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+
+const SCHEDULE_PRESETS: { label: string; hint: string; schedule: AgentSchedule }[] = [
+  {
+    label: 'Office hours',
+    hint: 'In use Mon-Fri 09:00-18:00. Free every other hour, weekends included.',
+    schedule: { mode: 'busy', windows: [{ days: [0, 1, 2, 3, 4], start: '09:00', end: '18:00' }] },
+  },
+  {
+    label: 'Weekday nights only',
+    hint: 'Mon-Fri 18:00 to 09:00, and nothing at the weekend.',
+    schedule: { mode: 'schedule', windows: [{ days: [0, 1, 2, 3, 4], start: '18:00', end: '09:00' }] },
+  },
+  {
+    label: 'Weekends only',
+    hint: 'Saturday and Sunday, around the clock.',
+    schedule: { mode: 'schedule', windows: [{ days: [5, 6], start: '00:00', end: '23:59' }] },
+  },
+]
+
+const MODE_BUTTONS: { mode: AgentSchedule['mode']; label: string; hint: string }[] = [
+  { mode: 'always', label: 'Always on', hint: 'Translate whenever there is work.' },
+  {
+    mode: 'busy',
+    label: 'Busy hours',
+    hint: 'The windows are when the machine is in use by someone else. It works the rest '
+      + 'of the time, weekends included.',
+  },
+  {
+    mode: 'schedule',
+    label: 'Only these hours',
+    hint: 'The windows are the only hours it may translate. Everything else is off.',
+  },
+  { mode: 'paused', label: 'Paused', hint: 'Stop after the current batch.' },
+]
+
+function WindowEditor({ win, onChange, onRemove }: {
+  win: ScheduleWindow
+  onChange: (w: ScheduleWindow) => void
+  onRemove: () => void
+}) {
+  const toggleDay = (d: number) =>
+    onChange({
+      ...win,
+      days: win.days.includes(d) ? win.days.filter((x) => x !== d) : [...win.days, d].sort(),
+    })
+
+  const crossesMidnight = win.start > win.end
+
+  return (
+    <div className="rounded border border-border-subtle bg-bg-base/40 p-2 space-y-2">
+      <div className="flex flex-wrap gap-1">
+        {DAY_NAMES.map((name, d) => (
+          <button
+            key={d}
+            onClick={() => toggleDay(d)}
+            className={cn(
+              'px-1.5 py-0.5 rounded text-[10px] font-medium border transition-colors',
+              win.days.includes(d)
+                ? 'bg-accent/20 text-accent border-accent/30'
+                : 'bg-bg-card2 text-text-muted border-border-subtle hover:text-text-main',
+            )}
+          >
+            {name}
+          </button>
+        ))}
+      </div>
+      <div className="flex items-center gap-2 text-[11px] text-text-muted">
+        <input
+          type="time"
+          value={win.start}
+          onChange={(e) => onChange({ ...win, start: e.target.value })}
+          className="bg-bg-card2 border border-border-subtle rounded px-1.5 py-0.5 text-text-main font-mono"
+        />
+        <span>to</span>
+        <input
+          type="time"
+          value={win.end}
+          onChange={(e) => onChange({ ...win, end: e.target.value })}
+          className="bg-bg-card2 border border-border-subtle rounded px-1.5 py-0.5 text-text-main font-mono"
+        />
+        {/* Crossing midnight is the normal case for a night window, and the one place the
+            rule is not obvious: the night belongs to the evening that began it. */}
+        {crossesMidnight && (
+          <span className="text-[10px] text-text-muted/70">overnight, ends next morning</span>
+        )}
+        <button
+          onClick={onRemove}
+          className="ml-auto text-[10px] text-text-muted hover:text-danger transition-colors"
+        >
+          remove
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function SchedulePanel({ worker }: { worker: WorkerInfo }) {
+  const qc = useQueryClient()
+  const [open, setOpen] = useState(false)
+
+  const { data: all } = useQuery({
+    queryKey: QK.workerSchedules(),
+    queryFn: workersApi.getSchedules,
+    refetchInterval: 30_000,
+  })
+  const state = all?.[worker.label]
+  const schedule: AgentSchedule = state?.schedule ?? { mode: 'always', windows: [] }
+
+  const [draft, setDraft] = useState<AgentSchedule | null>(null)
+  const editing = draft ?? schedule
+
+  const save = useMutation({
+    mutationFn: (s: AgentSchedule) => workersApi.setSchedule(worker.label, s),
+    onSuccess: () => {
+      setDraft(null)
+      qc.invalidateQueries({ queryKey: QK.workerSchedules() })
+    },
+  })
+
+  const paused = schedule.mode === 'paused'
+  const working = state?.working ?? true
+
+  // What Resume should go back to. A paused schedule keeps its windows but loses which
+  // way they were meant to be read, so remember the last non-paused mode we saw.
+  const priorModeRef = useRef<AgentSchedule['mode']>('busy')
+  useEffect(() => {
+    if (schedule.mode !== 'paused') priorModeRef.current = schedule.mode
+  }, [schedule.mode])
+  const priorMode = priorModeRef.current === 'always' ? 'busy' : priorModeRef.current
+
+  // Why a machine is not working matters: paused is a decision, outside-hours is the
+  // schedule doing its job, and neither should read as a fault.
+  const stateLabel = paused
+    ? 'paused'
+    : schedule.mode === 'always'
+      ? 'always on'
+      : working
+        ? 'working now'
+        // In busy mode the machine is stopped because someone else is on it, which is
+        // not the same statement as being outside its permitted hours.
+        : schedule.mode === 'busy' ? 'in use' : 'outside hours'
+
+  const nextChange = state?.next_change
+    ? new Date(state.next_change).toLocaleString(undefined, {
+        weekday: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    : null
+
+  return (
+    <div className="mt-2 pt-2 border-t border-border-subtle/60">
+      <div className="flex items-center gap-2 flex-wrap">
+        <Clock size={11} className="text-text-muted" />
+        <span
+          className={cn(
+            'px-1.5 py-0.5 rounded text-[10px] font-medium border',
+            paused
+              ? 'bg-warning/15 text-warning border-warning/30'
+              : working
+                ? 'bg-success/15 text-success border-success/30'
+                : 'bg-bg-card2 text-text-muted border-border-subtle',
+          )}
+        >
+          {stateLabel}
+        </span>
+        {(schedule.mode === 'schedule' || schedule.mode === 'busy') && (
+          <span className="text-[10px] text-text-muted font-mono">
+            {schedule.mode === 'busy' && 'busy '}
+            {schedule.windows
+              .map((w) => `${w.days.map((d) => DAY_NAMES[d]).join(',')} ${w.start}-${w.end}`)
+              .join(' | ')}
+          </span>
+        )}
+        {nextChange && (
+          <span className="text-[10px] text-text-muted/70">
+            {working ? 'stops' : 'starts'} {nextChange}
+          </span>
+        )}
+
+        <div className="ml-auto flex items-center gap-1">
+          <button
+            onClick={() =>
+              save.mutate(
+                paused
+                  ? // Un-pausing restores the hours that were set before, rather than
+                    // dropping the machine to always-on and quietly undoing them. Which
+                    // mode it goes back to is remembered so busy hours do not silently
+                    // invert into permitted hours.
+                    { ...schedule, mode: schedule.windows.length ? priorMode : 'always' }
+                  : { ...schedule, mode: 'paused' },
+              )
+            }
+            disabled={save.isPending}
+            title={
+              paused
+                ? 'Let this machine work again'
+                : 'Stop taking new work after the current batch finishes'
+            }
+            className={cn(
+              'flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border transition-colors disabled:opacity-40',
+              paused
+                ? 'bg-success/15 text-success border-success/30 hover:bg-success/25'
+                : 'bg-bg-card2 text-text-muted border-border-subtle hover:text-text-main',
+            )}
+          >
+            {paused ? <Play size={9} /> : <Pause size={9} />}
+            {paused ? 'Resume' : 'Pause'}
+          </button>
+          <button
+            onClick={() => setOpen((v) => !v)}
+            className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-bg-card2 text-text-muted border border-border-subtle hover:text-text-main transition-colors"
+          >
+            Hours
+          </button>
+        </div>
+      </div>
+
+      {open && (
+        <div className="mt-2 space-y-2">
+          <div className="flex gap-1">
+            {MODE_BUTTONS.map(({ mode, label, hint }) => (
+              <button
+                key={mode}
+                title={hint}
+                onClick={() => setDraft({ ...editing, mode })}
+                className={cn(
+                  'px-2 py-0.5 rounded text-[10px] font-medium border transition-colors',
+                  editing.mode === mode
+                    ? 'bg-accent/20 text-accent border-accent/30'
+                    : 'bg-bg-card2 text-text-muted border-border-subtle hover:text-text-main',
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {(editing.mode === 'schedule' || editing.mode === 'busy') && (
+            <>
+              <div className="flex flex-wrap gap-1">
+                {SCHEDULE_PRESETS.map((p) => (
+                  <button
+                    key={p.label}
+                    title={p.hint}
+                    onClick={() => setDraft({ ...p.schedule })}
+                    className="px-1.5 py-0.5 rounded text-[10px] bg-bg-card2 text-text-muted border border-border-subtle hover:text-text-main transition-colors"
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-text-muted/70">
+                {editing.mode === 'busy'
+                  ? 'Hours the machine is NOT available. It translates at every other hour.'
+                  : 'The only hours it may translate.'}
+              </p>
+              {editing.windows.map((w, i) => (
+                <WindowEditor
+                  key={i}
+                  win={w}
+                  onChange={(nw) =>
+                    setDraft({
+                      ...editing,
+                      windows: editing.windows.map((x, j) => (j === i ? nw : x)),
+                    })
+                  }
+                  onRemove={() =>
+                    setDraft({ ...editing, windows: editing.windows.filter((_, j) => j !== i) })
+                  }
+                />
+              ))}
+              <button
+                onClick={() =>
+                  setDraft({
+                    ...editing,
+                    windows: [
+                      ...editing.windows,
+                      editing.mode === 'busy'
+                        ? { days: [0, 1, 2, 3, 4], start: '09:00', end: '18:00' }
+                        : { days: [0, 1, 2, 3, 4], start: '18:00', end: '09:00' },
+                    ],
+                  })
+                }
+                className="text-[10px] text-accent hover:underline"
+              >
+                + add a window
+              </button>
+            </>
+          )}
+
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              onClick={() => save.mutate(editing)}
+              disabled={save.isPending || draft === null}
+              className="px-2 py-0.5 rounded text-[10px] font-medium bg-accent/15 text-accent border border-accent/20 hover:bg-accent/25 disabled:opacity-40 transition-colors"
+            >
+              {save.isPending ? 'Saving...' : 'Save'}
+            </button>
+            {draft !== null && (
+              <button
+                onClick={() => setDraft(null)}
+                className="text-[10px] text-text-muted hover:text-text-main transition-colors"
+              >
+                Cancel
+              </button>
+            )}
+            <span className="ml-auto text-[10px] text-text-muted/60">
+              this machine&apos;s local time
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange, assignedJobs = [] }: WorkerRowProps) {
   const qc = useQueryClient()
   const hw  = worker.hardware
@@ -669,6 +1001,8 @@ function WorkerRow({ worker, hostCommit, onLoad, onBenchmark, onOtaActiveChange,
         )}
         <span className="ml-auto text-[10px] text-text-muted whitespace-nowrap">{timeAgo(worker.last_seen)}</span>
       </div>
+
+      <SchedulePanel worker={worker} />
 
       {/* Live model-download progress (A5) */}
       {worker.download_progress?.stage === 'downloading' && (

@@ -27,6 +27,31 @@ export interface ModelDefault {
   updated_at: number
 }
 
+/** When a machine may translate. Days are Mon=0 … Sun=6; a window whose start is later
+ *  than its end runs through midnight and belongs to the day it started on. Times are
+ *  the machine's own local clock. */
+export interface ScheduleWindow {
+  days: number[]
+  start: string
+  end: string
+}
+
+export interface AgentSchedule {
+  /** always — work whenever there is work.
+   *  paused — stop after the current batch.
+   *  schedule — the windows are the ONLY hours it may work.
+   *  busy — the windows are hours it may NOT work; free the rest of the time. */
+  mode: 'always' | 'paused' | 'schedule' | 'busy'
+  windows: ScheduleWindow[]
+}
+
+export interface ScheduleState {
+  schedule: AgentSchedule
+  working: boolean
+  summary: string
+  next_change: string | null
+}
+
 interface LanServer {
   url: string
   label: string
@@ -102,6 +127,17 @@ export const workersApi = {
   // Gap 4 — fleet observability: per-assignment funnel + liveness tiers + aggregate.
   assignments: () =>
     apiFetch<AssignmentsOverview>('/api/assignments'),
+
+  // Working hours. The host stores them and hands them to the agent on its next poll;
+  // the agent is what actually enforces them, so a pause holds even if the host dies.
+  getSchedules: () =>
+    apiFetch<Record<string, ScheduleState>>('/api/workers/schedules'),
+
+  setSchedule: (label: string, schedule: AgentSchedule) =>
+    apiPost<ScheduleState>(
+      `/api/workers/${encodeURIComponent(label)}/schedule`,
+      schedule as unknown as Record<string, unknown>,
+    ),
 
   // Cancel an offline job directly on a worker — works when the host job is gone.
   cancelOfflineJob: (label: string, offlineJobId: string) =>

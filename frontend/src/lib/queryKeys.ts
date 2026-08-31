@@ -12,6 +12,7 @@ export const QK = {
   priorities:      () => ['mods', 'priorities'] as const,
   translatePlan:   (mod: string, profile: string) => ['translatePlan', mod, profile] as const,
   workers:         () => ['workers'] as const,
+  workerSchedules: () => ['workerSchedules'] as const,
   modelDefaults:   () => ['modelDefaults'] as const,
   servers:         () => ['servers'] as const,
   assignments:     () => ['assignments'] as const,

@@ -101,6 +101,24 @@ def rec_type_hint(batch: list) -> str:
     return _REC_TYPE_HINT.get(next(iter(kinds)), "")
 
 
+# How often a held runner looks up to see whether its window has opened. A minute is
+# well under the resolution of a schedule written in whole minutes, and costs nothing.
+_SCHEDULE_POLL_SEC = 30.0
+
+
+def _schedule_allows(state) -> bool:
+    """May this machine translate right now? Failure to tell means yes.
+
+    A machine that stops because the schedule module threw would look identical to one
+    that finished its work, and nothing would say why.
+    """
+    try:
+        from schedule import is_working
+        return is_working(getattr(state, "schedule", None))
+    except Exception:
+        return True
+
+
 def plan_batch(pending: list, start: int, cap: int) -> int:
     """How many of `pending` starting at `start` to send in one call.
 
@@ -152,6 +170,9 @@ class OfflineTranslateRunner:
         self.done_count  = 0
         self.current_text: str = ""
         self._stop       = False
+        # Held outside working hours — tracked only so the log says so once, not every
+        # thirty seconds for the eight hours a night window is closed.
+        self._off_hours  = False
 
     def cancel(self) -> None:
         self._stop = True
@@ -205,6 +226,23 @@ class OfflineTranslateRunner:
                 if state.backend is None:
                     await asyncio.sleep(2.0)
                     continue
+                # Outside its working hours the machine stops taking new batches. The gate
+                # sits here, between batches, so whatever was in flight finishes and lands
+                # in the store: pausing costs at most one batch of latency and never a
+                # translation. Resuming needs no state — pending_items() picks up the rest.
+                if not _schedule_allows(state):
+                    if not self._off_hours:
+                        self._off_hours = True
+                        from schedule import describe
+                        log.info("OfflineTranslateRunner[%s]: outside working hours (%s) — "
+                                 "holding %d strings", self._aid[:8],
+                                 describe(getattr(state, "schedule", None)), len(pending) - i)
+                    await asyncio.sleep(_SCHEDULE_POLL_SEC)
+                    continue
+                if self._off_hours:
+                    self._off_hours = False
+                    log.info("OfflineTranslateRunner[%s]: back inside working hours, resuming",
+                             self._aid[:8])
 
                 batch     = pending[i: i + plan_batch(pending, i, batch_size_cap)]
                 # Never mix mods in one batch (from 2c9c1e4): truncate the batch to the leading

@@ -1175,6 +1175,10 @@ def _row_to_result(r: dict) -> dict:
         "translation":   r["translation"],
         "status":        r["status"],
         "quality_score": r["quality_score"],
+        # When this was actually translated. A delivery can carry a whole night's work
+        # made while the master was switched off, and without this the master can only
+        # stamp all of it with the moment it heard about it.
+        "produced_at":   r["produced_at"],
     }
 
 

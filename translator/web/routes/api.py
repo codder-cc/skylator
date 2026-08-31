@@ -2338,6 +2338,7 @@ def workers_offline_results(label: str):
         translation = r.get("translation") or ""
         status      = r.get("status") or ("translated" if translation else "pending")
         quality     = r.get("quality_score")
+        produced_at = r.get("produced_at")
 
         if not translation or not key or not mod_name:
             continue
@@ -2358,6 +2359,10 @@ def workers_offline_results(label: str):
                     translation=translation, original=original,
                     source="ai", machine_label=label, job_id=host_job_id,
                     quality_score=quality, status=status,
+                    # When the agent actually made it. Everything in one delivery shares
+                    # an arrival time, so without this a night of work is indistinguishable
+                    # from a single second of it.
+                    produced_at=produced_at,
                     # Same reason as the pull path: a returning agent's older result
                     # must not overwrite a better one produced after reassignment.
                     merge=True,

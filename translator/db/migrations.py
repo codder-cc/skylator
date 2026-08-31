@@ -281,6 +281,28 @@ MIGRATION_STEPS: list[tuple[int, str, list[str]]] = [
             )""",
         ],
     ),
+    (
+        18,
+        "Index translated_at — asking what a machine did last night is now a query",
+        [
+            # The master is switched on when someone wants to look at the run and off
+            # again afterwards, and the agents translate the whole time it is away. Every
+            # string that arrives on reconnect therefore gets an updated_at of the moment
+            # the master came back — thousands of rows sharing one timestamp — which says
+            # nothing about when the work happened.
+            #
+            # The agents have always timestamped their own output (agent_results.
+            # produced_at) and never sent it — the delivery payload is built field by
+            # field and that one was not in the list. Carrying it end to end is what makes
+            # "did the Mac wake at 18:00 as it was told to?" a query rather than an
+            # inference from throughput.
+            # No new column: translated_at already means this. It was simply being
+            # filled with time.time() on the master, which for delivered work is the
+            # moment the master heard about it.
+            "CREATE INDEX IF NOT EXISTS idx_strings_translated_at "
+            "ON strings(translated_at)",
+        ],
+    ),
 ]
 
 

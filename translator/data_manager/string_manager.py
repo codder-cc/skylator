@@ -102,6 +102,7 @@ class StringManager:
         job_id: str = "",
         quality_score: Optional[int] = None,
         status: Optional[str] = None,
+        produced_at: Optional[float] = None,
         merge: bool = False,
     ) -> SaveResult:
         """Single write entry point for ALL string types.
@@ -191,7 +192,12 @@ class StringManager:
 
         string_hash = _sha256_hash(original) if original else None
         norm_hash = _norm_hash(original)
-        translated_at = time.time() if translation else None
+        # When the translation was MADE, not when this process heard about it. The master
+        # is run intermittently by design — switched on to look at the run, off again —
+        # and the agents translate the whole time it is away. Stamping arrival meant a
+        # night of work landed as thousands of rows sharing one second, so "what did that
+        # machine do while I was asleep" had no answer in the data at all.
+        translated_at = (produced_at or time.time()) if translation else None
 
         with _write_lock:
             # 1. strings UPSERT (does its own commit, but we're inside the lock)

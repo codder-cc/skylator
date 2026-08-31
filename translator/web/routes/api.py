@@ -2315,11 +2315,20 @@ def workers_offline_results(label: str):
                 log.warning("offline-results: assignment recovery failed for %s: %s",
                             offline_job_id[:8], exc)
         if oj is None:
-            log.warning("offline-results: unknown offline_job_id %s from %s", offline_job_id[:8], label)
-            return jsonify({"ok": False, "error": "unknown offline_job_id"}), 404
+            # The job record is gone — cancelled, or lost with an older database. The
+            # translations are not: each one is addressed by mod/esp/key and gated on a
+            # hash of its own source text, so an absent job record says nothing about
+            # whether the work is good. Refusing them lost real translations AND left
+            # the agent resending them every two seconds for as long as it ran: the 404
+            # raises on its side, so nothing is ever acked. Seen on the M1, sixteen
+            # strings, 0.5 Hz, indefinitely.
+            #
+            # So take the work and drop only the attribution.
+            log.info("offline-results: %s has no job record — accepting %d result(s) "
+                     "unattributed from %s", offline_job_id[:8], len(results), label)
 
-    host_job_id = oj["host_job_id"]
-    job = jm.get_job(host_job_id)
+    host_job_id = oj["host_job_id"] if oj else ""
+    job = jm.get_job(host_job_id) if host_job_id else None
 
     if repo is not None and cfg is not None:
         mods_dir   = cfg.paths.mods_dir if cfg else Path(".")

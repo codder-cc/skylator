@@ -315,6 +315,13 @@ class ServerState:
         # its own at the end of a window. The host restores models too, but only while
         # the host is up; this is what makes a window open on time regardless.
         self.model_spec: dict | None = None
+        # Putting the model back is one attempt at a window that opens once a day, so a
+        # single failure used to cost the whole window and then some: the agent cleared
+        # its asleep flag, stopped asking, and waited for a host that is switched off by
+        # design. Eighteen hours of a 90 tok/s machine, once, measured after the fact.
+        # These keep the attempt alive on a backoff instead.
+        self.wake_retry_at: float = 0.0   # time.monotonic() deadline; 0 = nothing owed
+        self.wake_failures: int = 0       # consecutive failed reloads, for the backoff
         self.agent_link = None           # AgentLink | None
         self.agent_hub_port: int | None = None  # advertised by the host in the register reply
 
@@ -1080,6 +1087,12 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
                         health_payload.get("open_assignments", 0) == 0
                         and state.offline_job is None)
                     health_payload["stalled"] = state.stalled
+                    # Inside its hours, holding work, and with nothing to run it on. Not
+                    # asleep (that is on purpose) and not stalled (production is not stuck,
+                    # it never started), so without its own flag this reads as a healthy
+                    # agent that simply happens to produce nothing.
+                    health_payload["awake_no_model"] = (
+                        not state.asleep and state.backend is None)
                 except Exception:
                     health_payload = {}
 
@@ -1397,6 +1410,11 @@ _MODEL_SPEC_META_KEY = "model_spec"
 # so this only decides how promptly a boundary is noticed, and 20 s of latency on an
 # eight-hour window is nothing against the cost of checking more often.
 _SLEEP_CHECK_SEC = 20.0
+# A window opens once a day, so the cost of not retrying a failed reload is measured in
+# hours; the cost of retrying is a load attempt. Back off so a genuinely broken model
+# does not thrash a machine someone is using, but never stop.
+_WAKE_RETRY_MIN = 30.0
+_WAKE_RETRY_MAX = 600.0
 
 
 def _remember_model_spec(state: ServerState, payload: dict) -> None:
@@ -1455,14 +1473,35 @@ async def _sleep_for_the_night(state: ServerState, loop) -> None:
     log.info("Asleep — %s unloaded, machine handed back", label)
 
 
+def _owe_another_wake(state: ServerState, reason: str, detail: str = "") -> None:
+    """Schedule another attempt, and say so once rather than every tick.
+
+    `asleep` stays False throughout: it means "off-hours on purpose, model handed back",
+    and the host skips its model-default restore for an agent that says so. An agent that
+    wants a model and cannot load one must not look like that, or it loses the fallback
+    as well as its own retry.
+    """
+    state.wake_failures += 1
+    delay = min(_WAKE_RETRY_MAX, _WAKE_RETRY_MIN * (2 ** (state.wake_failures - 1)))
+    state.wake_retry_at = time.monotonic() + delay
+    if state.wake_failures == 1:
+        log.warning("Awake without a model — %s%s; retrying in %.0fs",
+                    reason, f" ({detail})" if detail else "", delay)
+    else:
+        log.info("Still awake without a model — %s; attempt %d, next in %.0fs",
+                 reason, state.wake_failures, delay)
+
+
 async def _wake_up(state: ServerState, loop) -> bool:
     """Put the model back. False if there is nothing to put back or it would not load."""
     spec = state.model_spec
     if not spec:
-        # Nothing was ever loaded here, or the store lost it. Waking with no model is a
-        # valid state: the host restores a default to any agent that is up without one.
+        # Nothing was ever loaded here, or the store lost it. The host restores a default
+        # to any agent that is up without one — but only while the host is up, and this
+        # machine's normal condition is a master that is switched off. So keep asking:
+        # a spec appears the moment anything loads, and the retry costs one dict lookup.
         state.asleep = False
-        log.info("Awake — no remembered model, waiting for the host to send one")
+        _owe_another_wake(state, "no remembered model, waiting for the host to send one")
         return False
     name = spec.get("gguf_filename") or spec.get("repo_id") or spec.get("model_path") or "model"
     log.info("Waking up — reloading %s", name)
@@ -1475,14 +1514,19 @@ async def _wake_up(state: ServerState, loop) -> bool:
         state.backend_type = bt
         state.model_label  = name
         state.asleep       = False
+        state.wake_retry_at = 0.0
+        state.wake_failures = 0
         state.refresh_free_memory()
         log.info("Awake — %s loaded via %s", name, bt)
+        # The offline runner parks on `state.backend is None` between batches and picks
+        # up from the manifest on its own, so there is nothing here to restart.
         return True
     except Exception as exc:
-        # Stay marked awake: the host's model-default restore is the fallback, and it
-        # only fires for an agent that is up and has no model.
+        # Stay marked awake so the host's model-default restore still applies — it only
+        # fires for an agent that is up and has no model — and keep trying regardless,
+        # because that fallback needs a host and this one is off more than it is on.
         state.asleep = False
-        log.error("Waking up: could not reload %s (%s) — leaving it to the host", name, exc)
+        _owe_another_wake(state, f"could not reload {name}", str(exc))
         return False
 
 
@@ -1509,7 +1553,18 @@ async def _sleep_controller(state: ServerState) -> None:
                         log.info("A model was loaded while off-hours — unloading again")
                     await _sleep_for_the_night(state, loop)
                 state.asleep = True
+                # A new window is a fresh sequence of attempts: whatever went wrong at
+                # the last one should not start the next already backed off to ten
+                # minutes, and nothing is owed while we are meant to have no model.
+                state.wake_retry_at = 0.0
+                state.wake_failures = 0
             elif state.asleep:
+                await _wake_up(state, loop)
+            elif state.backend is None and 0 < state.wake_retry_at <= time.monotonic():
+                # The window is open and we still have no model: a reload that failed, or
+                # a spec we did not have when it opened. Waking is not a moment to be
+                # caught, it is a state to hold — the transition already happened and the
+                # runner is parked, so nothing else is going to ask.
                 await _wake_up(state, loop)
         except Exception as exc:
             log.warning("sleep controller: %s", exc)

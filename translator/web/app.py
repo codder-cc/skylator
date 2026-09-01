@@ -329,7 +329,7 @@ def create_app(config_path: Path | None = None) -> Flask:
             try:
                 orphaned = _assignment_mgr.reap()
                 if orphaned:
-                    n = len(_assignment_mgr.reassignable_string_ids())
+                    n = _assignment_mgr.reassignable_held()
                     log.warning("Reaper orphaned %d presumed-dead assignment(s); "
                                 "%d strings now reassignable", len(orphaned), n)
                 # Automatically re-dispatch the dead agents' pending work to live workers.

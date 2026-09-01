@@ -159,8 +159,21 @@ class AssignmentManager:
 
     def reassignable_string_ids(self) -> list[int]:
         """Undelivered string ids across all orphaned assignments — the work that a fresh
-        dispatch should pick up. Deduped."""
+        dispatch should pick up. Deduped.
+
+        Materialises every id, most of which are translated by now. Use
+        `reassignable_held()` for a count and `reassignable_pending()` for the work.
+        """
         ids: set[int] = set()
         for a in self.store.list_assignments(state="orphaned"):
             ids.update(self.store.undelivered_string_ids(a["assignment_id"]))
         return sorted(ids)
+
+    def reassignable_pending(self) -> list[dict]:
+        """The orphans' still-pending strings, ready to dispatch."""
+        return self.store.reassignable_pending()
+
+    def reassignable_held(self) -> int:
+        """How much the orphans still show as undelivered — for the log line and the
+        status endpoint, neither of which needs the ids themselves."""
+        return self.store.reassignable_held()

@@ -34,29 +34,27 @@ def _resolve_active_backends(app, cfg):
 
 
 def gather_reassignable(app):
-    """{mod_name: [string_dict,...]} for the still-PENDING undelivered strings of orphaned
-    assignments. Returns ({}, []) when there is nothing to do."""
-    repo = app.config.get("STRING_REPO")
+    """({mod_name: [string_dict,...]}, held) — the still-PENDING undelivered strings of
+    orphaned assignments, and how many strings those orphans hold in total.
+
+    `held` counts the ledger, `by_mod` carries the work: an orphan whose strings were all
+    translated elsewhere holds plenty and offers nothing, which is the case that gets the
+    assignment closed rather than re-dispatched. The two are counted separately because
+    the ledger is the larger number by an order of magnitude and only ever needs its size.
+    """
     amgr = app.config.get("ASSIGNMENT_MGR")
-    if repo is None or amgr is None:
-        return {}, []
-    ids = amgr.reassignable_string_ids()
-    if not ids:
-        return {}, []
-    placeholders = ",".join("?" * len(ids))
-    rows = repo.db.execute(
-        f"SELECT id, mod_name, esp_name, key, original, status "
-        f"FROM strings WHERE id IN ({placeholders})", ids,
-    ).fetchall()
+    if amgr is None:
+        return {}, 0
+    held = amgr.reassignable_held()
+    if not held:
+        return {}, 0
     by_mod: dict[str, list] = {}
-    for r in rows:
-        if r["status"] != "pending":
-            continue   # already translated since (e.g. dedup/late delivery) — skip
+    for r in amgr.reassignable_pending():
         by_mod.setdefault(r["mod_name"], []).append({
             "id": r["id"], "mod_name": r["mod_name"], "esp": r["esp_name"],
             "key": r["key"], "original": r["original"],
         })
-    return by_mod, ids
+    return by_mod, held
 
 
 def _close_orphaned(amgr) -> int:
@@ -80,10 +78,10 @@ def auto_redispatch(app):
     if not (repo and amgr and jm and registry):
         return None
 
-    by_mod, ids = gather_reassignable(app)
+    by_mod, held = gather_reassignable(app)
     if not by_mod:
         # Orphaned work exists but nothing is pending (all translated) → just close them.
-        if ids:
+        if held:
             _close_orphaned(amgr)
         return None
 

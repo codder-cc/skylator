@@ -47,11 +47,43 @@ def _orphaned_assignment(fakedb, amgr, statuses):
 def test_gather_returns_only_pending(fakedb):
     app, repo, amgr = _app(fakedb)
     _orphaned_assignment(fakedb, amgr, ["pending", "translated", "pending"])
-    by_mod, ids = gather_reassignable(app)
-    assert len(ids) == 3                       # all undelivered are reassignable candidates
+    by_mod, held = gather_reassignable(app)
+    assert held == 3                           # all undelivered are reassignable candidates
     assert "ModA" in by_mod
     assert len(by_mod["ModA"]) == 2            # but only the 2 pending get re-dispatched
     assert {s["key"] for s in by_mod["ModA"]} == {"k0", "k2"}
+
+
+def test_an_orphan_wider_than_the_parameter_ceiling(fakedb):
+    """The undelivered flag is bookkeeping, not truth: a result delivered without a job
+    record leaves it set, so an orphan accumulates far more undelivered rows than it has
+    outstanding work. Asking about them one bind parameter at a time put 325 000 of them
+    against SQLite's limit of 32 766, and the reaper raised "too many SQL variables"
+    every hour — before the line that would have closed the orphan and stopped it."""
+    app, repo, amgr = _app(fakedb)
+    n = 40_000
+    fakedb.executemany(
+        "INSERT INTO strings (mod_name, esp_name, key, original, translation, status) "
+        "VALUES ('ModWide','M.esp',?,'Hello','x','translated')",
+        [(f"k{i}",) for i in range(n)],
+    )
+    # Three of them are the work that actually still needs doing.
+    fakedb.executemany(
+        "INSERT INTO strings (mod_name, esp_name, key, original, translation, status) "
+        "VALUES ('ModWide','M.esp',?,'Hello','','pending')",
+        [(f"p{i}",) for i in range(3)],
+    )
+    fakedb.commit()
+    ids = [r[0] for r in fakedb.execute(
+        "SELECT id FROM strings WHERE mod_name='ModWide'").fetchall()]
+    assert len(ids) == n + 3
+    amgr.store.create_assignment("wide", "hj", "deadAgent", "ModWide",
+                                 items=[(i, f"h{i}") for i in ids], state="leased")
+    amgr.transition("wide", "orphaned")
+
+    by_mod, held = gather_reassignable(app)
+    assert held == n + 3
+    assert {s["key"] for s in by_mod["ModWide"]} == {"p0", "p1", "p2"}
 
 
 def test_no_live_workers_defers_without_losing(fakedb):

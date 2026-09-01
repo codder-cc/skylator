@@ -189,6 +189,39 @@ class AssignmentStore:
             (assignment_id,),
         ).fetchall()]
 
+    def reassignable_pending(self) -> list[dict]:
+        """The still-PENDING undelivered strings of every orphaned assignment, resolved
+        in one query.
+
+        This used to be two steps: collect the undelivered ids, then ask the strings
+        table about them with an `IN (...)` holding one parameter per id. The undelivered
+        flag is bookkeeping rather than truth — a result delivered without a job record
+        leaves it set — so the list grew to 325 000 ids against SQLite's ceiling of
+        32 766 parameters, and the hourly reaper died on "too many SQL variables" for as
+        long as the orphans sat there. Which is forever: the close that would have
+        cleared them runs after the query that raised.
+
+        Filtering in SQL keeps the answer the size of the actual work instead of the size
+        of the ledger, and takes no bind parameters at all.
+        """
+        return [dict(r) for r in self.db.execute(
+            "SELECT DISTINCT t.id, t.mod_name, t.esp_name, t.key, t.original "
+            "FROM assignment_strings s "
+            "JOIN assignments a ON a.assignment_id = s.assignment_id "
+            "JOIN strings t ON t.id = s.string_id "
+            "WHERE a.state='orphaned' AND s.delivered=0 AND t.status='pending'"
+        ).fetchall()]
+
+    def reassignable_held(self) -> int:
+        """How many distinct strings the orphaned assignments still show as undelivered,
+        translated or not. Says whether there is an orphan to close; never sized to be
+        handed to a query."""
+        return self.db.execute(
+            "SELECT COUNT(DISTINCT s.string_id) FROM assignment_strings s "
+            "JOIN assignments a ON a.assignment_id = s.assignment_id "
+            "WHERE a.state='orphaned' AND s.delivered=0"
+        ).fetchone()[0]
+
     def counts(self, assignment_id: str) -> tuple[int, int]:
         """(total, delivered) for an assignment."""
         row = self.db.execute(

@@ -2258,7 +2258,7 @@ def worker_abandon(label: str):
         return jsonify({"ok": False, "error": "not initialized"}), 500
     orphaned = amgr.abandon_agent(label)
     return jsonify({"ok": True, "orphaned": orphaned,
-                    "reassignable": len(amgr.reassignable_string_ids())})
+                    "reassignable": amgr.reassignable_held()})
 
 
 @bp.route("/workers/<label>/offline-results", methods=["POST"])

@@ -918,6 +918,7 @@ async def _async_register(client, host_url: str, my_url: str,
                 "hardware":     state.hardware,
                 "digest":       digest,
                 "protocol":     _PROTO,
+                "tz_offset_min": _tz_offset_min(),
             },
             timeout=10.0,
         )
@@ -1111,6 +1112,9 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
                     # Asleep is not idle and not broken: the machine was handed back on
                     # purpose. Without saying so it looks like an agent that lost its model.
                     "asleep":       state.asleep,
+                    # Sent every beat, not only at registration: a laptop crosses a
+                    # timezone or steps into DST without ever re-registering.
+                    "tz_offset_min": _tz_offset_min(),
                     "stats": {
                         "tps_avg":        state.tps_avg,
                         "tps_last":       state.tps_last,
@@ -1366,6 +1370,19 @@ async def _run_offline_job(
 # ── Working hours ─────────────────────────────────────────────────────────────
 
 _SCHEDULE_META_KEY = "schedule"
+
+
+def _tz_offset_min() -> int:
+    """Minutes this machine's wall clock is ahead of UTC right now, DST included.
+
+    The schedule itself stays local wall-clock time and this machine stays the authority
+    on enforcing it. The offset is sent so the master can *read* the same schedule the
+    same way — otherwise it feeds a machine that is asleep and skips one that is free,
+    and every number it shows about working hours is its own clock wearing a label.
+    """
+    import datetime as _dt
+    off = _dt.datetime.now().astimezone().utcoffset()
+    return int(off.total_seconds() // 60) if off else 0
 
 
 def _apply_schedule(state: ServerState, raw) -> None:

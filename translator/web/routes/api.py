@@ -1261,6 +1261,7 @@ def workers_register():
         gpu                = data.get("gpu", ""),
         commit             = data.get("commit", ""),
         hardware           = data.get("hardware") or {},
+        tz_offset_min      = data.get("tz_offset_min"),
         host_reachable_url = request.host_url.rstrip("/"),  # LAN IP as seen by the remote
     )
     registry.register(info)
@@ -1325,10 +1326,11 @@ def workers_heartbeat():
     asleep        = data.get("asleep")        # outside its working hours, model unloaded
     health        = data.get("health")        # {disk_full, idle_starved, stalled, undelivered}
     dl_progress   = data.get("download_progress")  # {model, stage, pct, ...}
+    tz_offset_min = data.get("tz_offset_min") # minutes its wall clock is ahead of UTC
     found, lost_job_ids = registry.heartbeat(
         label, models=models, model=model, backend_type=backend_type,
         stats=stats, hardware=hardware, commit=commit, offline_jobs=offline_jobs,
-        asleep=asleep,
+        asleep=asleep, tz_offset_min=tz_offset_min,
         health=health, download_progress=dl_progress,
     )
     if not found:
@@ -1510,8 +1512,16 @@ def workers_cancel_offline(label: str):
 _SCHEDULES_KEY = "agent_schedules"
 
 
-def _all_schedules() -> dict:
-    repo = current_app.config.get("STRING_REPO")
+def schedules_for(app) -> dict:
+    """Every stored schedule, read through an app passed in rather than current_app.
+
+    The auto-feed sweep runs in a plain background thread, where current_app raises. It
+    did: the feeder consults the schedule before handing a worker a batch, so from the
+    hour working hours landed, every sweep that reached a machine with nothing in flight
+    died on "Working outside of application context" — swallowed by the loop's own
+    except, one warning a sweep, and a fleet that looked merely busy rather than unfed.
+    """
+    repo = app.config.get("STRING_REPO")
     if repo is None:
         return {}
     try:
@@ -1522,10 +1532,52 @@ def _all_schedules() -> dict:
         return {}
 
 
-def agent_schedule(label: str) -> dict:
+def agent_schedule_for(app, label: str) -> dict:
     from remote_worker.work_schedule import default_schedule, normalize
-    got = _all_schedules().get(label)
+    got = schedules_for(app).get(label)
     return normalize(got) if got is not None else default_schedule()
+
+
+def agent_now_for(app, label: str):
+    """Now on that machine's own clock, or None if it has not said where it is.
+
+    A schedule is wall-clock in the agent's local time and the agent is the authority on
+    enforcing it. The master reads the same schedule to decide who to feed and what to
+    show, and doing that on the master's clock is only right while the whole fleet sits
+    in one timezone. A machine five hours east stops at what the master reads as 03:54,
+    and the master keeps feeding it until 09:00: the ledger then shows work in flight
+    that nothing is touching, which is the exact picture the check exists to prevent.
+
+    Unknown offset falls back to the master's clock, which is what it always did.
+    """
+    registry = app.config.get("WORKER_REGISTRY")
+    w = registry.get(label) if registry is not None else None
+    off = getattr(w, "tz_offset_min", None) if w is not None else None
+    if off is None:
+        return None
+    import datetime as _dt
+    return (_dt.datetime.now(_dt.timezone.utc)
+            + _dt.timedelta(minutes=int(off))).replace(tzinfo=None)
+
+
+def _all_schedules() -> dict:
+    return schedules_for(current_app)
+
+
+def agent_schedule(label: str) -> dict:
+    return agent_schedule_for(current_app, label)
+
+
+def agent_now(label: str):
+    return agent_now_for(current_app, label)
+
+
+def _tz_offset_of(label: str):
+    """The offset the agent reported, so a caller can read next_change and working as
+    that machine's own wall clock rather than guessing whose clock they are on."""
+    registry = current_app.config.get("WORKER_REGISTRY")
+    w = registry.get(label) if registry is not None else None
+    return getattr(w, "tz_offset_min", None) if w is not None else None
 
 
 @bp.route("/workers/<label>/chunk", methods=["GET"])
@@ -1575,9 +1627,13 @@ def worker_schedule(label: str):
     else:
         sched = agent_schedule(label)
 
-    nxt = next_change(sched)
+    # Every reading is on the agent's clock where it has told us one, so "working" here
+    # matches what the agent itself decides — the machine is the authority.
+    now = agent_now(label)
+    nxt = next_change(sched, now=now)
     return jsonify({"ok": True, "label": label, "schedule": sched,
-                    "working": is_working(sched), "summary": describe(sched),
+                    "working": is_working(sched, now=now), "summary": describe(sched, now=now),
+                    "tz_offset_min": _tz_offset_of(label),
                     "next_change": nxt.isoformat() if nxt else None})
 
 
@@ -1587,9 +1643,11 @@ def worker_schedules():
     from remote_worker.work_schedule import describe, is_working, next_change
     out = {}
     for label, sched in _all_schedules().items():
-        nxt = next_change(sched)
-        out[label] = {"schedule": sched, "working": is_working(sched),
-                      "summary": describe(sched),
+        now = agent_now(label)
+        nxt = next_change(sched, now=now)
+        out[label] = {"schedule": sched, "working": is_working(sched, now=now),
+                      "summary": describe(sched, now=now),
+                      "tz_offset_min": _tz_offset_of(label),
                       "next_change": nxt.isoformat() if nxt else None}
     return jsonify(out)
 

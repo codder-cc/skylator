@@ -48,6 +48,10 @@ class WorkerInfo:
     # Outside its working hours with the model unloaded, on purpose. Distinct from
     # idle (up, wants work) and from having lost a model (up, should have one).
     asleep:         bool  = False
+    # Minutes this machine's wall clock is ahead of UTC, as the machine reports it. A
+    # schedule is written in the agent's local time and enforced there; the master needs
+    # the offset to read the same schedule the same way. None until an agent says.
+    tz_offset_min:  int | None = None
     # What the last reconnect handshake decided, so an agent returning after days of
     # silence leaves a visible record instead of only a line in the log:
     # {at, away_seconds, counts: {resume, reassigned, reconciled, unknown}, actions: {...}}
@@ -74,6 +78,7 @@ class WorkerInfo:
             "ota_restart_at": self.ota_restart_at,
             "offline_jobs": self.offline_jobs,
             "asleep":       self.asleep,
+            "tz_offset_min": self.tz_offset_min,
             "health":       self.health,
             "download_progress": self.download_progress,
             "last_handshake": self.last_handshake,
@@ -196,7 +201,8 @@ class WorkerRegistry:
                   offline_jobs: list | None = None,
                   health: dict | None = None,
                   download_progress: dict | None = None,
-                  asleep: bool | None = None) -> tuple[bool, list[str]]:
+                  asleep: bool | None = None,
+                  tz_offset_min: int | None = None) -> tuple[bool, list[str]]:
         """Update last_seen and any pushed fields.
 
         Returns (found, lost_job_ids):
@@ -219,6 +225,9 @@ class WorkerRegistry:
             if health       is not None: w.health       = health
             if download_progress is not None: w.download_progress = download_progress
             if asleep       is not None: w.asleep       = bool(asleep)
+            # Sent on every heartbeat, not just registration: a laptop that crosses a
+            # timezone, or steps in or out of DST, keeps working under the same label.
+            if tz_offset_min is not None: w.tz_offset_min = int(tz_offset_min)
 
             # Build set of offline_job_ids currently reported by this worker
             reported_ids: set[str] = set()

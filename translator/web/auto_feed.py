@@ -95,7 +95,7 @@ def feed_once(app, batch_size: int = DEFAULT_FEED_BATCH) -> int:
     active = sorted(registry.get_active(),
                     key=lambda x: float((x.stats or {}).get("tps_avg") or 0), reverse=True)
     fastest = active[0].label if active else None
-    from translator.web.routes.api import agent_schedule
+    from translator.web.routes.api import agent_now_for, agent_schedule_for
     from remote_worker.work_schedule import is_working
 
     for w in active:
@@ -107,7 +107,11 @@ def feed_once(app, batch_size: int = DEFAULT_FEED_BATCH) -> int:
         # A machine that is paused, or outside the hours it was given, gets nothing new.
         # It would hold the package without touching it, and the ledger would show work
         # in flight that is not moving — the same picture as a stalled agent.
-        if not is_working(agent_schedule(w.label)):
+        #
+        # Read on that machine's own clock, and through the app we were handed: this runs
+        # in a background thread, so current_app is not available here.
+        if not is_working(agent_schedule_for(app, w.label),
+                          now=agent_now_for(app, w.label)):
             continue
         prefer = "long" if w.label == fastest and len(active) > 1 else "short"
         batch = next_unassigned_batch(repo, batch_size, exclude_ids=claimed, prefer=prefer)

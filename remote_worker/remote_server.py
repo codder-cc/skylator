@@ -1552,6 +1552,13 @@ async def _sleep_controller(state: ServerState) -> None:
     from work_schedule import describe, is_working
     loop = asyncio.get_running_loop()
     _load_model_spec(state)
+    if state.model_spec is not None and state.backend is None:
+        # Starting up inside the hours, holding work, with a model remembered and nothing
+        # in memory. The same hole as a window that opened on a failed reload, reached by
+        # a different road: a restart. The host restores a model to an agent that has
+        # none, so with the host up this changes nothing — and with the host off, which is
+        # this master's normal condition, nothing else was ever going to put one back.
+        state.wake_retry_at = time.monotonic()
     while True:
         try:
             should_work = is_working(state.schedule)

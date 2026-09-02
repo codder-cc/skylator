@@ -143,6 +143,53 @@ async def test_the_controller_asks_again_while_the_window_is_open(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_restart_with_a_model_remembered_loads_it(monkeypatch):
+    """The other road to the same hole. A restart leaves the agent inside its hours with
+    work in the store, a spec on disk and nothing in memory — and `asleep` false, so the
+    wake branch never applied. With a host up it does not matter, because the host
+    restores a model to any agent that has none. This host is off most of the time."""
+    monkeypatch.setattr(rs, "_SLEEP_CHECK_SEC", 0.01)
+    monkeypatch.setattr(rs, "_load_model_spec", lambda _state: None)
+    loaded = []
+
+    async def wake(state, _loop):
+        loaded.append(1)
+        state.backend = _Backend()
+        state.wake_retry_at = 0.0
+        return True
+
+    monkeypatch.setattr(rs, "_wake_up", wake)
+
+    state = _State(ALWAYS, model_spec={"repo_id": "org/m"})
+    task = asyncio.create_task(rs._sleep_controller(state))
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert loaded == [1], "a restart must put the remembered model back by itself"
+
+
+@pytest.mark.asyncio
+async def test_a_restart_with_nothing_remembered_waits_for_the_host(monkeypatch):
+    """Never loaded anything here: there is nothing to put back, and asking the host is
+    the only answer. Must not invent an attempt."""
+    monkeypatch.setattr(rs, "_SLEEP_CHECK_SEC", 0.01)
+    monkeypatch.setattr(rs, "_load_model_spec", lambda _state: None)
+    monkeypatch.setattr(rs, "_wake_up",
+                        lambda *_a, **_k: pytest.fail("nothing to reload"))
+
+    state = _State(ALWAYS, model_spec=None)
+    task = asyncio.create_task(rs._sleep_controller(state))
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert state.wake_retry_at == 0.0
+
+
+@pytest.mark.asyncio
 async def test_the_controller_owes_nothing_once_it_has_a_model(monkeypatch):
     monkeypatch.setattr(rs, "_SLEEP_CHECK_SEC", 0.01)
     called = []

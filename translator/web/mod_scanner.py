@@ -510,8 +510,8 @@ class ModScanner:
             # Only use pre-cached counts — never parse ESPs here
             cached_ct = counts_cache.get(esp_key)
             if cached_ct and cached_ct.get("size") == esp_f.size_bytes:
-                n_total   += cached_ct["count"]
-                n_untrans += cached_ct.get("untranslatable", 0)
+                n_total   += cached_ct.get("count") or 0
+                n_untrans += cached_ct.get("untranslatable") or 0
 
         # Prefer SQLite for translated/pending/needs_review counts (always up-to-date)
         n_pending = None  # None = use arithmetic fallback
@@ -708,7 +708,7 @@ class ModScanner:
                     esp_key   = f"{folder_name}/{p.name}"
                     cached_ct = counts_cache.get(esp_key)
                     if cached_ct and cached_ct.get("size") == size:
-                        n_esp_strings += cached_ct["count"]
+                        n_esp_strings += cached_ct.get("count") or 0
                         n_esp += 1
                         continue
                     count, untrans = self._count_esp_strings(p)
@@ -788,6 +788,25 @@ class ModScanner:
         except Exception:
             return {}
 
+    @staticmethod
+    def _counts_row(size, count, untranslatable) -> dict:
+        """One esp_counts entry with the numbers guaranteed to be numbers.
+
+        `untranslatable` was added after the counts were, and every row imported from the
+        old JSON file has it NULL. `dict.get("untranslatable", 0)` does not save you from
+        a key that is present and holds None, so it went straight into a running total as
+        `int += None`. That killed _scan_mod for every mod with an ESP that had a cached
+        count — which is every real mod — and scan_all() swallows a mod that raises. The
+        visible result was a mod list of 1 626 MO2 separators out of 3 789 folders, and a
+        full scan that reported success having bootstrapped nothing: the loop that seeds
+        strings iterates what scan_all returns, and what it returned had no ESPs in it.
+
+        An unknown count reads as zero. It is a statistic, and the scan recomputes it.
+        """
+        return {"size":           size or 0,
+                "count":          count or 0,
+                "untranslatable": untranslatable or 0}
+
     def _load_counts_cache(self) -> dict:
         """Per-ESP {size, count, untranslatable}, keyed by "<mod>/<relative esp path>".
 
@@ -814,9 +833,11 @@ class ModScanner:
                         self._counts_cache_path.with_suffix(".json.imported"))
                     log.info("Imported %d ESP count(s) into SQLite and set the file aside",
                              len(legacy))
-                    return legacy
-            return {r["esp_key"]: {"size": r["size"], "count": r["count"],
-                                   "untranslatable": r["untranslatable"]} for r in rows}
+                    return {k: self._counts_row(v.get("size"), v.get("count"),
+                                                v.get("untranslatable"))
+                            for k, v in legacy.items()}
+            return {r["esp_key"]: self._counts_row(r["size"], r["count"],
+                                                   r["untranslatable"]) for r in rows}
         except Exception as exc:
             log.warning("esp_counts read failed, falling back to the file: %s", exc)
             return {}

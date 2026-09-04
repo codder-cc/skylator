@@ -98,3 +98,45 @@ def test_a_clean_result_reports_ok(tmp_path):
 def test_unvalidated_mod_reads_as_empty(tmp_path):
     db = TranslationDB(tmp_path / "v.db")
     assert load_validation("Never", _app(StringRepo(db))) == {}
+
+
+# ── a column added after the rows were written ───────────────────────────────
+# `untranslatable` arrived later, so every row imported from the old JSON file holds
+# NULL. dict.get(key, 0) does not save you from a key that is present and None: the
+# value summed into a running total as `int += None`, _scan_mod raised for every mod
+# that had an ESP with a cached count — every real mod — and scan_all() swallows a mod
+# that raises. 1 626 of 3 789 folders survived, all of them MO2 separators, and a full
+# scan reported success having bootstrapped nothing, because the loop that seeds strings
+# walks what scan_all returns.
+
+def test_a_null_untranslatable_reads_as_zero(scanner):
+    sc, db, _ = scanner
+    db.execute("INSERT INTO esp_counts (esp_key, size, count, untranslatable) "
+               "VALUES ('Mod/a.esp', 100, 5, NULL)")
+    db.commit()
+    assert sc._load_counts_cache()["Mod/a.esp"] == {
+        "size": 100, "count": 5, "untranslatable": 0}
+
+
+def test_a_legacy_entry_without_the_column_reads_as_zero(scanner):
+    sc, db, _ = scanner
+    sc._counts_cache_path.write_text(
+        json.dumps({"Mod/old.esp": {"size": 7, "count": 3}}), encoding="utf-8")
+    assert sc._load_counts_cache()["Mod/old.esp"]["untranslatable"] == 0
+
+
+def test_a_mod_survives_a_null_count_instead_of_vanishing(scanner):
+    """The symptom that mattered: a mod that raises is dropped from scan_all(), so this
+    cost the mod list two thirds of its rows and the scan every string it should have
+    seeded."""
+    sc, db, tmp = scanner
+    mods = tmp / "mods" / "SomeMod"
+    mods.mkdir(parents=True)
+    esp = mods / "M.esp"
+    esp.write_bytes(b"TES4" + b"\0" * 60)
+    db.execute("INSERT INTO esp_counts (esp_key, size, count, untranslatable) "
+               "VALUES (?, ?, 5, NULL)", (f"SomeMod/{esp.name}", esp.stat().st_size))
+    db.commit()
+
+    found = {m.folder_name for m in sc.scan_all()}
+    assert "SomeMod" in found

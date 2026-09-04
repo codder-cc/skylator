@@ -100,3 +100,25 @@ def test_a_short_description_never_reaches_the_remote(refusing):
     s = sm.NeuralSummarizer()
     assert s.summarize("Adds a sword.") == "Adds a sword."
     assert refusing == []
+
+
+def test_skipping_answers_the_way_failing_does_in_strict_mode(refusing, monkeypatch):
+    """The regression this cost: strict remote mode returns "" on a failure and must do
+    the same when the breaker is open. Falling through reaches the local path, which
+    loads a 15.8 GB GGUF — per mod, inside a loop over 1 739 of them."""
+    loaded = []
+
+    class _Backend:
+        def __init__(self, *a, **kw): loaded.append(1)
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def _chat(self, *a, **kw): return "local summary"
+
+    import translator.models.llamacpp_backend as lb
+    monkeypatch.setattr(lb, "LlamaCppBackend", _Backend)
+
+    s = sm.NeuralSummarizer()
+    for _ in range(10):
+        assert s._llm_summarize("x" * 5000) == ""
+    assert len(refusing) == sm._REMOTE_FAILURE_LIMIT
+    assert loaded == [], "strict remote must never reach the local model"

@@ -85,6 +85,11 @@ class NeuralSummarizer:
             if remote.mode in ("remote", "auto") and remote.server_url and _remote_gave_up():
                 log.debug("Remote summarizer skipped — unreachable %d time(s)",
                           _remote_failures)
+                if remote.mode == "remote":
+                    # Strict remote: skipping has to answer the way failing does. Falling
+                    # through here reaches the local path, which loads a 15.8 GB GGUF —
+                    # per mod, inside a loop over 1 739 of them. Measured, once, live.
+                    return ""
             elif remote.mode in ("remote", "auto") and remote.server_url:
                 from translator.remote.client import TranslationClient
                 client = TranslationClient(remote.server_url, timeout=15.0)

@@ -186,3 +186,43 @@ def test_the_agent_reports_a_usable_offset():
     off = _tz_offset_min()
     assert isinstance(off, int)
     assert -16 * 60 <= off <= 16 * 60
+
+
+# ── who counts as the fastest ────────────────────────────────────────────────
+# The tail is routed by measured throughput, and an agent that has not reported one yet
+# sorts last — which silently promotes someone else. The quick Mac restarted for an
+# update, came back with no rate, and the machine seventeen times slower was handed
+# 417 KB of book pages it would have held for hours.
+
+def _first_prefer(app, monkeypatch):
+    """The `prefer` the feeder asks for first — the fastest machine is asked first."""
+    import translator.web.auto_feed as af
+    seen = []
+
+    def spy(repo, limit, exclude_ids=(), prefer=None):
+        seen.append(prefer)
+        return []                      # empty batch ends the sweep right after the choice
+
+    monkeypatch.setattr(af, "next_unassigned_batch", spy)
+    af.feed_once(app)
+    return seen[0] if seen else None
+
+
+def test_an_unrated_machine_holds_the_tail_back(fakedb, monkeypatch):
+    quick = _worker("quick", tps=0)      # just restarted: no measured rate yet
+    slow  = _worker("slow", tps=3.0)
+    app = _app(fakedb, {}, [quick, slow])
+    assert _first_prefer(app, monkeypatch) == "short"
+
+
+def test_the_tail_goes_out_once_everyone_has_a_rate(fakedb, monkeypatch):
+    quick = _worker("quick", tps=90.0)
+    slow  = _worker("slow", tps=3.0)
+    app = _app(fakedb, {}, [quick, slow])
+    assert _first_prefer(app, monkeypatch) == "long"
+
+
+def test_one_machine_alone_gets_the_short_end(fakedb, monkeypatch):
+    """Pre-existing rule: with nobody to compare against there is no tail to route."""
+    app = _app(fakedb, {}, [_worker("only", tps=90.0)])
+    assert _first_prefer(app, monkeypatch) == "short"

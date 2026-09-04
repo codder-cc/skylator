@@ -94,7 +94,13 @@ def feed_once(app, batch_size: int = DEFAULT_FEED_BATCH) -> int:
     # Rank by measured throughput so the quickest machine takes the expensive tail.
     active = sorted(registry.get_active(),
                     key=lambda x: float((x.stats or {}).get("tps_avg") or 0), reverse=True)
-    fastest = active[0].label if active else None
+    # An agent that has not said how fast it is yet sorts last, which quietly promotes
+    # someone else to fastest. That happened: the quick Mac restarted for an update, came
+    # back with no measured rate, and the machine seventeen times slower inherited a
+    # 417 KB batch of book pages it would hold for hours. Until every live agent has a
+    # rate, nobody is the fastest and the tail waits — it costs one sweep to learn.
+    rated  = [w for w in active if float((w.stats or {}).get("tps_avg") or 0) > 0]
+    fastest = active[0].label if active and len(rated) == len(active) else None
     from translator.web.routes.api import agent_now_for, agent_schedule_for
     from remote_worker.work_schedule import is_working
 

@@ -32,6 +32,20 @@ _SKIP_WORDS   = re.compile(
 )
 
 
+# A remote summarizer that is not there is not there for the next mod either. Dispatching
+# the whole backlog builds a context per mod, and each one paid the full connection
+# refusal: two seconds × 1 739 mods is an hour of a job that does nothing else, on a run
+# that has to finish before the operator switches the box off. The agents dial outward and
+# nothing listens at the address on this side, so the first few failures are the answer.
+# Reset per process: a restart is the natural moment to try again.
+_REMOTE_FAILURE_LIMIT = 3
+_remote_failures = 0
+
+
+def _remote_gave_up() -> bool:
+    return _remote_failures >= _REMOTE_FAILURE_LIMIT
+
+
 class NeuralSummarizer:
 
     def __init__(self):
@@ -60,6 +74,7 @@ class NeuralSummarizer:
         Routes to the configured remote server when mode is 'remote' or 'auto',
         otherwise loads the model locally.
         """
+        global _remote_failures
         try:
             cfg     = get_config()
             trimmed = text[:4000]
@@ -67,7 +82,10 @@ class NeuralSummarizer:
 
             # Use remote server if configured — avoids loading the model locally
             remote = cfg.remote
-            if remote.mode in ("remote", "auto") and remote.server_url:
+            if remote.mode in ("remote", "auto") and remote.server_url and _remote_gave_up():
+                log.debug("Remote summarizer skipped — unreachable %d time(s)",
+                          _remote_failures)
+            elif remote.mode in ("remote", "auto") and remote.server_url:
                 from translator.remote.client import TranslationClient
                 client = TranslationClient(remote.server_url, timeout=15.0)
                 try:
@@ -86,11 +104,17 @@ class NeuralSummarizer:
                         raise RuntimeError(f"Remote chat failed: {job.get('error')}")
                     result = str(job.get("result") or "").strip()
                     if result:
+                        _remote_failures = 0     # it answered — trust it again
                         return result
                     # Fall through to local if remote returned empty
                 except Exception as exc:
                     client.close()
-                    log.warning("Remote summarizer failed (%s)", exc)
+                    _remote_failures += 1
+                    if _remote_gave_up():
+                        log.warning("Remote summarizer failed %d times (%s) — not asking "
+                                    "again this run", _remote_failures, exc)
+                    else:
+                        log.warning("Remote summarizer failed (%s)", exc)
                     if remote.mode == "remote":
                         return ""   # strict remote mode — don't fall back to local
                     # auto mode falls through to local

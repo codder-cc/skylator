@@ -69,6 +69,21 @@ def _is_long(s: dict) -> bool:
     return len(s.get("original") or "") > _LONG_CHARS
 
 
+# What a string costs the machine that takes it, over and above its own length: the slot
+# it occupies in a batch and the share of the prompt built around it. Measured rather
+# than guessed — the slow Mac turns out ~270 strings an hour whatever is in them, while
+# its 5 tok/s would generate several times that much text, so overhead runs to roughly
+# five times the average string. Splitting by string count is this constant set to
+# infinity: length stops counting at all, and a machine gets a twelfth of the *rows*
+# regardless of whether they are book pages or four-letter item names.
+_PER_STRING_COST = 200
+
+
+def _cost(s: dict) -> float:
+    """Work in one string, in characters-equivalent."""
+    return len(s.get("original") or "") + _PER_STRING_COST
+
+
 def _agent_meta(machines, registry) -> list[dict]:
     """Per-agent weight (throughput) + capability (VRAM/RAM ≈ model size it can run),
     derived from the registry heartbeat data."""
@@ -93,8 +108,13 @@ def smart_partition(strings: list[dict], agents: list[dict]) -> dict:
     if not strings:
         return buckets
 
-    total_w = sum(max(a.get("weight") or 0, 0.1) for a in agents)
-    rem = {a["label"]: len(strings) * max(a.get("weight") or 0, 0.1) / total_w for a in agents}
+    # Budget in work, not in rows. Counting rows handed the quick Mac 35 165 strings
+    # carrying 1.26 M characters and the slow one 1 298 averaging five characters each:
+    # twenty minutes of work against a night of it, and the slow machine then stood idle
+    # until someone refilled it — which needs the master, which is switched off by design.
+    total_w    = sum(max(a.get("weight") or 0, 0.1) for a in agents)
+    total_cost = sum(_cost(s) for s in strings)
+    rem = {a["label"]: total_cost * max(a.get("weight") or 0, 0.1) / total_w for a in agents}
 
     long_s  = sorted((s for s in strings if _is_long(s)),
                      key=lambda s: len(s.get("original") or ""), reverse=True)
@@ -104,11 +124,12 @@ def smart_partition(strings: list[dict], agents: list[dict]) -> dict:
     by_weight = sorted(agents, key=lambda a: (a.get("weight") or 0), reverse=True)
 
     def place(s, order):
-        chosen = next((a for a in order if rem[a["label"]] >= 1), None)
+        c = _cost(s)
+        chosen = next((a for a in order if rem[a["label"]] >= c), None)
         if chosen is None:                       # all at/over target → least-loaded
             chosen = max(order, key=lambda a: rem[a["label"]])
         buckets[chosen["label"]].append(s)
-        rem[chosen["label"]] -= 1
+        rem[chosen["label"]] -= c
 
     for s in long_s:                             # strongest agents first → big-model routing
         place(s, by_cap)

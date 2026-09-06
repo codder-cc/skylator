@@ -1587,6 +1587,26 @@ def agent_now(label: str):
     return agent_now_for(current_app, label)
 
 
+def job_is_review(repo, host_job_id: str) -> bool:
+    """Whether a delivery answers a review package rather than a translation one.
+
+    It decides a tie in the merge, so it has to be read from the job that dispatched the
+    work rather than trusted from the wire. A job record that is gone reads as False,
+    which is the pre-existing behaviour: results outlive their job, and the safe answer
+    when we cannot tell is to keep what is stored.
+    """
+    if not host_job_id or repo is None:
+        return False
+    try:
+        row = repo.db.execute("SELECT payload FROM jobs WHERE id=?", (host_job_id,)).fetchone()
+        if not row or not row[0]:
+            return False
+        payload = json.loads(row[0])
+        return bool((payload.get("params") or {}).get("review"))
+    except Exception:
+        return False
+
+
 _TPS_KEY = "agent_tps"
 
 
@@ -2446,6 +2466,9 @@ def workers_offline_results(label: str):
 
     host_job_id = oj["host_job_id"] if oj else ""
     job = jm.get_job(host_job_id) if host_job_id else None
+    # Read once per delivery, not per string: it decides a tie in the merge for every
+    # result in the batch, and it is a database lookup.
+    _reviewing = job_is_review(repo, host_job_id)
 
     if repo is not None and cfg is not None:
         mods_dir   = cfg.paths.mods_dir if cfg else Path(".")
@@ -2492,6 +2515,11 @@ def workers_offline_results(label: str):
                     # Same reason as the pull path: a returning agent's older result
                     # must not overwrite a better one produced after reassignment.
                     merge=True,
+                    # A review answer was written with the stored text in front of it, so
+                    # on an equal score it is the later and better-informed one. The score
+                    # cannot tell a forge from an anvil; without this the whole pass
+                    # cannot land a single meaning fix.
+                    prefer_incoming=_reviewing,
                 )
                 mods_touched.add(mod_name)
                 saved_count += 1

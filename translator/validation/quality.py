@@ -291,13 +291,25 @@ def _candidate_score(original: str, t: str) -> float:
     return qs + (5.0 if tok_ok else 0.0)
 
 
-def pick_better(original: str, a: str | None, b: str | None) -> dict:
+def pick_better(original: str, a: str | None, b: str | None,
+                prefer_b_on_tie: bool = False) -> dict:
     """Choose the better of two candidate translations (G6 — multi-agent quality). Lets a
     re-translation (e.g. on a bigger-model agent) only WIN if it actually scores higher, so
-    quality is monotonic across passes. Returns {translation, quality_score, status, chose}."""
+    quality is monotonic across passes. Returns {translation, quality_score, status, chose}.
+
+    `prefer_b_on_tie` is for a review delivery, and without it a review pass is a very
+    expensive no-op. The score counts tokens, markup and length; it cannot tell a forge
+    from an anvil. So correcting "at a forge" from «на наковальне» to «в кузнице» leaves
+    the score at 100 on both sides, the strict comparison keeps the stored text, and the
+    fix is discarded — which is exactly the class of error the pass exists to find. A
+    reviewer saw the stored text and was asked to change it only when it was wrong, so on
+    equal scores its answer is the later and better-informed one. A lower score still
+    loses: this widens the door, it does not remove it.
+    """
     sa, sb = _candidate_score(original, a), _candidate_score(original, b)
-    winner = b if sb > sa else a
-    chose  = "b" if sb > sa else "a"
+    b_wins = (sb >= sa) if prefer_b_on_tie else (sb > sa)
+    winner = b if b_wins else a
+    chose  = "b" if b_wins else "a"
     if not winner:
         return {"translation": "", "quality_score": 0, "status": "pending", "chose": chose}
     qs, _, _, st = compute_string_status(original, winner)

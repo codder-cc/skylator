@@ -109,3 +109,49 @@ def test_the_manifest_keeps_the_stored_translation(tmp_path):
     assert items[1]["current"] == "Кровать"
     assert items[2]["current"] is None          # a translation item, unchanged
     s.close()
+
+
+# ── a correction has to be able to win ───────────────────────────────────────
+# The merge keeps the stored text unless the incoming scores strictly higher, and the
+# score counts tokens, markup and length — it cannot tell a forge from an anvil. So a
+# meaning fix reads 100 on both sides and is discarded, which would make the whole pass
+# an expensive no-op against exactly the errors it exists to find.
+
+def test_a_translation_delivery_still_loses_a_tie():
+    """The pre-existing rule, and the reason it exists: a returning agent's older answer
+    must not undo work done after its assignment was reassigned."""
+    from translator.validation.quality import pick_better
+    out = pick_better("at a forge", "на наковальне", "в кузнице")
+    assert out["chose"] == "a"
+    assert out["translation"] == "на наковальне"
+
+
+def test_a_review_delivery_wins_a_tie():
+    from translator.validation.quality import pick_better
+    out = pick_better("at a forge", "на наковальне", "в кузнице", prefer_b_on_tie=True)
+    assert out["chose"] == "b"
+    assert out["translation"] == "в кузнице"
+
+
+def test_a_review_delivery_still_loses_when_it_is_worse():
+    """Widening the door is not removing it — a lower score is still refused."""
+    from translator.validation.quality import pick_better
+    out = pick_better("Iron Dagger of Fear", "Железный кинжал Страха",
+                      "Iron Dagger of Fear", prefer_b_on_tie=True)
+    assert out["chose"] == "a"
+
+
+def test_the_write_gate_passes_the_preference_through(fakedb, tmp_path):
+    from translator.data_manager.string_manager import StringManager
+    from translator.db.repo import StringRepo
+    sm = StringManager(StringRepo(fakedb), tmp_path)
+    fakedb.insert_string("M", "e.esp", "k1", "at a forge", "на наковальне", "translated")
+    fakedb.commit()
+
+    sm.save_string(mod_name="M", esp_name="e.esp", key="k1", original="at a forge",
+                   translation="в кузнице", merge=True)
+    assert fakedb.execute("SELECT translation FROM strings").fetchone()[0] == "на наковальне"
+
+    sm.save_string(mod_name="M", esp_name="e.esp", key="k1", original="at a forge",
+                   translation="в кузнице", merge=True, prefer_incoming=True)
+    assert fakedb.execute("SELECT translation FROM strings").fetchone()[0] == "в кузнице"

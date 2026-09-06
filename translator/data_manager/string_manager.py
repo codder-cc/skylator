@@ -104,6 +104,7 @@ class StringManager:
         status: Optional[str] = None,
         produced_at: Optional[float] = None,
         merge: bool = False,
+        prefer_incoming: bool = False,
     ) -> SaveResult:
         """Single write entry point for ALL string types.
 
@@ -174,7 +175,13 @@ class StringManager:
             prev = (existing["translation"] or "").strip() if existing else ""
             if prev and prev != translation.strip():
                 from translator.validation.quality import pick_better
-                best = pick_better(original, prev, translation)
+                # A review delivery was made with the stored text in hand and told to
+                # change it only when it is wrong, so on an equal score its answer is the
+                # later and better-informed one. Without this the pass cannot land a
+                # single meaning fix: the score cannot tell a forge from an anvil, both
+                # sides read 100, and the stored text keeps winning.
+                best = pick_better(original, prev, translation,
+                                   prefer_b_on_tie=prefer_incoming)
                 if best["chose"] == "a":
                     # What we already have wins. Leave the row untouched and report it, so a
                     # late delivery from a returning agent cannot undo better work.

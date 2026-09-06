@@ -1262,6 +1262,11 @@ def workers_register():
         commit             = data.get("commit", ""),
         hardware           = data.get("hardware") or {},
         tz_offset_min      = data.get("tz_offset_min"),
+        # Seed the rate we last saw, so a machine that has just restarted is not read as
+        # slower than one that has been running — which is how the largest dispatch of the
+        # run got split down the middle between a 90 tok/s Mac and a 6 tok/s one.
+        stats              = ({"tps_avg": remembered_tps(current_app).get(label)}
+                              if remembered_tps(current_app).get(label) else {}),
         host_reachable_url = request.host_url.rstrip("/"),  # LAN IP as seen by the remote
     )
     registry.register(info)
@@ -1327,6 +1332,16 @@ def workers_heartbeat():
     health        = data.get("health")        # {disk_full, idle_starved, stalled, undelivered}
     dl_progress   = data.get("download_progress")  # {model, stage, pct, ...}
     tz_offset_min = data.get("tz_offset_min") # minutes its wall clock is ahead of UTC
+    # A rate survives the agent that measured it. Restarting for an update used to leave a
+    # machine looking unrated, and both places that route by speed then got it wrong.
+    if isinstance(stats, dict):
+        live = float(stats.get("tps_avg") or 0)
+        if live > 0:
+            _remember_tps(current_app, label, live)
+        else:
+            known = float(remembered_tps(current_app).get(label) or 0)
+            if known > 0:
+                stats = dict(stats, tps_avg=known)
     found, lost_job_ids = registry.heartbeat(
         label, models=models, model=model, backend_type=backend_type,
         stats=stats, hardware=hardware, commit=commit, offline_jobs=offline_jobs,
@@ -1570,6 +1585,50 @@ def agent_schedule(label: str) -> dict:
 
 def agent_now(label: str):
     return agent_now_for(current_app, label)
+
+
+_TPS_KEY = "agent_tps"
+
+
+def remembered_tps(app) -> dict:
+    """Each machine's last known throughput, kept across restarts.
+
+    A rate is measured, and a restart loses it: the agent comes back reporting zero until
+    it has done some work. Everything that routes by speed then treats it as unrated —
+    and both places that do fell over on exactly that. The feeder promoted a machine
+    seventeen times slower to fastest and handed it 417 KB of book pages. The partitioner,
+    with both agents freshly restarted for an update, read them as equals and split the
+    largest dispatch of the run down the middle: 50 310 items to the machine that does six
+    a second, 34 948 to the one that does ninety.
+
+    So the number outlives the process. It is a measurement, not state — stale is fine,
+    absent is not.
+    """
+    repo = app.config.get("STRING_REPO")
+    if repo is None:
+        return {}
+    try:
+        got = repo.db.get_setting(_TPS_KEY)
+        return got if isinstance(got, dict) else {}
+    except Exception:
+        return {}
+
+
+def _remember_tps(app, label: str, tps: float) -> None:
+    """Store a fresh rate, but only when it has actually moved — this is on the heartbeat
+    path, and every agent beats every fifteen seconds for months."""
+    repo = app.config.get("STRING_REPO")
+    if repo is None or not tps or tps <= 0:
+        return
+    table = remembered_tps(app)
+    old = float(table.get(label) or 0)
+    if old and abs(tps - old) / max(old, 1e-6) < 0.15:
+        return
+    table[label] = round(float(tps), 2)
+    try:
+        repo.db.set_setting(_TPS_KEY, table)
+    except Exception as exc:
+        log.debug("could not persist tps for %s: %s", label, exc)
 
 
 def _tz_offset_of(label: str):

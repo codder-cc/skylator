@@ -226,3 +226,41 @@ def test_one_machine_alone_gets_the_short_end(fakedb, monkeypatch):
     """Pre-existing rule: with nobody to compare against there is no tail to route."""
     app = _app(fakedb, {}, [_worker("only", tps=90.0)])
     assert _first_prefer(app, monkeypatch) == "short"
+
+
+# ── a rate outlives the process that measured it ─────────────────────────────
+# Restarting for an update leaves an agent reporting zero until it has done some work,
+# and both places that route by speed read that as unrated. The feeder promoted a machine
+# seventeen times slower to fastest; the partitioner, with both agents freshly updated,
+# read them as equals and split the largest dispatch of the run down the middle — 50 310
+# items to the machine that does six a second.
+
+def test_a_measured_rate_is_remembered_and_handed_back(fakedb):
+    from types import SimpleNamespace as NS
+    import translator.web.routes.api as api
+
+    store = {}
+    db = NS(get_setting=lambda k: store.get(k),
+            set_setting=lambda k, v: store.__setitem__(k, v))
+    app = NS(config={"STRING_REPO": NS(db=db)})
+
+    assert api.remembered_tps(app) == {}
+    api._remember_tps(app, "mac", 90.0)
+    assert api.remembered_tps(app)["mac"] == 90.0
+
+    api._remember_tps(app, "mac", 92.0)          # noise — not worth a write
+    assert api.remembered_tps(app)["mac"] == 90.0
+    api._remember_tps(app, "mac", 40.0)          # a real change
+    assert api.remembered_tps(app)["mac"] == 40.0
+
+
+def test_nothing_is_remembered_without_a_rate(fakedb):
+    from types import SimpleNamespace as NS
+    import translator.web.routes.api as api
+    store = {}
+    db = NS(get_setting=lambda k: store.get(k),
+            set_setting=lambda k, v: store.__setitem__(k, v))
+    app = NS(config={"STRING_REPO": NS(db=db)})
+    api._remember_tps(app, "mac", 0.0)
+    api._remember_tps(app, "mac", -1)
+    assert api.remembered_tps(app) == {}

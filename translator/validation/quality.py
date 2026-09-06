@@ -169,6 +169,79 @@ def markup_violations(original: str, translation: str) -> list[str]:
     return issues
 
 
+# ── Damage the token and markup checks do not see ─────────────────────────────
+#
+# Found by reading a stratified sample of what had already been accepted: 439 677 strings,
+# every one of them status='translated' with a quality score of 100, and roughly one in
+# seven carrying a real defect. Three of the shapes are exact enough to decide without a
+# model, and each was present in the thousands.
+
+# "Bed" → "Bed → Кровать". The model echoed the source and the arrow of its own prompt
+# into the answer and the parser took it whole, so the item renders in game with its
+# English name and an arrow in front. 551 of these, 391 already copied onto twins.
+_ECHO_ARROW_RE = re.compile(r"\s*(?:→|->|=>)\s*")
+
+# A word carrying both alphabets — "Сорcerer", "Рунa", "Гримoire". Half-translated, or a
+# Cyrillic word with a Latin look-alike letter substituted; either way it is not a word,
+# it breaks search, and no human wrote it. 1 237 of these.
+_MIXED_SCRIPT_WORD_RE = re.compile(r"\b(?=\w*[А-Яа-яЁё])(?=\w*[A-Za-z])\w{2,}\b")
+
+_CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")
+
+
+def looks_like_identifier(text: str) -> bool:
+    """A name for the engine rather than a line for the player.
+
+    `00_HairKhajiitMale_to_female_05b` is a head-part record; translating it does not
+    produce bad prose, it corrupts the record. The shape is unambiguous — no spaces, pure
+    ASCII, and either an underscore, an embedded digit or an internal capital — and no
+    English sentence looks like that.
+    """
+    t = (text or "").strip()
+    if not t or " " in t or len(t) < 8 or not t.isascii():
+        return False
+    if "_" in t:
+        return True
+    return (any(c.isdigit() for c in t)
+            or any(t[i].isupper() and t[i - 1].islower() for i in range(1, len(t))))
+
+
+def echo_violations(original: str, translation: str) -> list[str]:
+    """The source repeated back with an arrow before the actual answer."""
+    o, t = (original or "").strip(), (translation or "").strip()
+    if not o or not t or not _ECHO_ARROW_RE.search(t):
+        return []
+    head = _ECHO_ARROW_RE.split(t, maxsplit=1)[0].strip()
+    if head and head == o:
+        return ["prompt echoed back: the source and an arrow precede the translation"]
+    return []
+
+
+def identifier_violations(original: str, translation: str) -> list[str]:
+    """An engine identifier that came back translated."""
+    o, t = (original or "").strip(), (translation or "").strip()
+    if not o or not t or o == t or not looks_like_identifier(o):
+        return []
+    if _CYRILLIC_RE.search(t):
+        return [f"engine identifier was translated: {o[:40]}"]
+    return []
+
+
+def mixed_script_violations(translation: str) -> list[str]:
+    """Words with two alphabets inside them."""
+    bad = list(dict.fromkeys(_MIXED_SCRIPT_WORD_RE.findall(translation or "")))
+    if not bad:
+        return []
+    return ["mixed alphabets in: " + ", ".join(bad[:3])]
+
+
+def strip_echo(original: str, translation: str) -> str:
+    """The answer without the echoed source, when that is exactly what precedes it."""
+    if not echo_violations(original, translation):
+        return translation
+    return _ECHO_ARROW_RE.split((translation or "").strip(), maxsplit=1)[1].strip()
+
+
 def compute_string_status(original: str, translation: str,
                           terms: dict | None = None) -> tuple[int, bool, list[str], str]:
     """Single source of truth: returns (quality_score, tok_ok, issues, status).
@@ -189,6 +262,13 @@ def compute_string_status(original: str, translation: str,
     issues = list(tok_issues)
     markup_bad = markup_violations(original, translation)
     issues.extend(markup_bad)
+    # Damage the token and markup checks cannot see. Each of these was measured in the
+    # thousands inside work already accepted at a perfect score, so they belong in the
+    # judgement itself rather than in a report somebody has to go and read.
+    structural_bad = (echo_violations(original, translation)
+                      + identifier_violations(original, translation)
+                      + mixed_script_violations(translation))
+    issues.extend(structural_bad)
     glossary_ok = True
     if terms:
         from translator.validation.terminology import glossary_violations
@@ -196,7 +276,8 @@ def compute_string_status(original: str, translation: str,
         if bad:
             glossary_ok = False
             issues.extend(f"glossary: {en} should be {ru}" for en, ru in bad[:5])
-    status = ("translated" if (tok_ok and glossary_ok and not markup_bad and qs > 70)
+    status = ("translated" if (tok_ok and glossary_ok and not markup_bad
+                               and not structural_bad and qs > 70)
               else "needs_review")
     return qs, tok_ok, issues, status
 

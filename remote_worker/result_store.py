@@ -30,7 +30,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Wire-protocol version negotiated with the master at registration. Over a months-long
 # run an OTA update may change payloads on one side; both ends carry this so a mismatch
@@ -41,7 +41,11 @@ PROTOCOL_VERSION = 1
 # The base schema is created by _SCHEMA; this is for future in-place changes so an
 # OTA-updated agent migrates worker_results.db without losing in-flight rows.
 _AGENT_MIGRATIONS: list[tuple[int, list[str]]] = [
-    # (2, ["ALTER TABLE agent_results ADD COLUMN ...", ...]),
+    # A review pass hands the agent the translation that is already stored, so the model
+    # can correct it instead of translating from scratch. It rides the same manifest as a
+    # translation package — same transport, same durable store, same delivery — which is
+    # what lets it run while the master is switched off.
+    (2, ["ALTER TABLE agent_manifest ADD COLUMN current TEXT"]),
 ]
 
 _SCHEMA = """
@@ -72,6 +76,7 @@ CREATE TABLE IF NOT EXISTS agent_manifest (
     mod_name      TEXT,
     esp_name      TEXT,
     str_key       TEXT,
+    current       TEXT,                          -- set only for a review package
     done          INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (assignment_id, string_id)
 );
@@ -229,13 +234,15 @@ class ResultStore:
                 assignment_id, sid, h, original,
                 it.get("mod_name"), it.get("esp_name") or it.get("esp"),
                 it.get("key") or it.get("str_key"),
+                it.get("current"),
             ))
 
         def _do():
             self._conn.executemany(
                 """INSERT OR IGNORE INTO agent_manifest
-                   (assignment_id, string_id, string_hash, original, mod_name, esp_name, str_key)
-                   VALUES (?,?,?,?,?,?,?)""",
+                   (assignment_id, string_id, string_hash, original, mod_name, esp_name,
+                    str_key, current)
+                   VALUES (?,?,?,?,?,?,?,?)""",
                 rows,
             )
 
@@ -251,7 +258,8 @@ class ResultStore:
         """Manifest rows not yet done — the agent's resume work list."""
         with self._lock:
             cur = self._conn.execute(
-                """SELECT string_id, string_hash, original, mod_name, esp_name, str_key
+                """SELECT string_id, string_hash, original, mod_name, esp_name, str_key,
+                          current
                    FROM agent_manifest WHERE assignment_id=? AND done=0
                    ORDER BY string_id""",
                 (assignment_id,),

@@ -254,6 +254,10 @@ class OfflineTranslateRunner:
                         end += 1
                     batch = batch[:end]
                 originals = [b.get("original") or "" for b in batch]
+                # A review package carries the translation already stored. Present it and
+                # the model corrects rather than translates; absent, nothing changes.
+                stored = [b.get("current") or "" for b in batch]
+                reviewing = any(stored)
 
                 # TM block for this chunk
                 tm_lines = []
@@ -291,6 +295,7 @@ class OfflineTranslateRunner:
                     thinking        = thinking,
                     terminology     = terminology,
                     preserve_tokens = preserve_tokens,
+                    current         = stored if reviewing else None,
                 )
                 # A preview for the UI, not data. Untruncated, a single book chapter put
                 # 12.6 KB on every heartbeat and made up 88% of the /api/workers payload —

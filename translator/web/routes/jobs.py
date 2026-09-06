@@ -151,6 +151,13 @@ def create_job():
             repo      = current_app.config.get("STRING_REPO"),
             cfg       = cfg,
         )
+    elif job_type == "repair_strings":
+        job = _create_repair_job(jm, apply=bool(options.get("apply", True)))
+    elif job_type == "review_strings":
+        job = _create_review_fleet_job(jm, cfg,
+                                       machines = options.get("machines"),
+                                       scope    = options.get("scope", "all"),
+                                       limit    = options.get("limit"))
     elif job_type == "validate" and mod_names:
         job = _create_validate_job(jm, cfg, mod_names[0])
     elif job_type == "fetch_nexus" and mod_names:
@@ -1364,6 +1371,91 @@ def _create_recompute_scores_job(jm, cfg, mod_name: str = None, repo=None):
         name     = name,
         job_type = "recompute_scores",
         params   = {"mod_name": mod_name} if mod_name else {},
+        fn       = run,
+    )
+
+
+def _create_review_fleet_job(jm, cfg, machines: list | None = None,
+                             scope: str = "all", limit: int | None = None):
+    """Send stored translations back to the fleet to be checked and corrected.
+
+    A review is a translation job with the answer already filled in: the package carries
+    the stored translation, the agent's prompt switches from "translate this" to "correct
+    this", and the answer comes back as the same numbered list every translation returns.
+    Nothing downstream changes — durable store, delivery, the merge gate that only lets a
+    correction win if it scores higher. That is what makes it detachable: dispatch it,
+    switch the box off, and the machines work through it and deliver when it comes back.
+
+    No per-mod context is built. Fetching a Nexus description per mod costs an hour across
+    the collection for a job that has the source and the stored answer in front of it.
+    """
+    repo     = current_app.config.get("STRING_REPO")
+    registry = current_app.config.get("WORKER_REGISTRY")
+    backends, _skipped = _resolve_backends(cfg, machines)
+    if not backends:
+        raise ValueError("review requires at least one registered machine")
+
+    def run(job):
+        from translator.web.offline_backend import dispatch_multi
+        from translator.models.inference_params import InferenceParams
+
+        where = ["status='translated'", "TRIM(translation) <> ''",
+                 "translation <> original", "COALESCE(source,'') <> 'untranslatable'"]
+        if scope == "unchecked":
+            # Never seen by the current rules: the legacy import and everything a twin
+            # was copied onto rather than translated.
+            where.append("(translated_by IS NULL OR source='duplicate')")
+        sql = f"SELECT id, mod_name, esp_name, key, original, translation, rec_type " \
+              f"FROM strings WHERE {' AND '.join(where)}"
+        if limit:
+            sql += f" LIMIT {int(limit)}"
+
+        by_mod: dict[str, list] = {}
+        for r in repo.db.execute(sql).fetchall():
+            by_mod.setdefault(r["mod_name"], []).append({
+                "id": r["id"], "mod_name": r["mod_name"], "esp": r["esp_name"],
+                "key": r["key"], "original": r["original"],
+                "rec_type": r["rec_type"] or "",
+                "current": r["translation"],       # what makes this a review, not a retry
+            })
+        n = sum(len(v) for v in by_mod.values())
+        job.add_log(f"Review: {n} stored translation(s) across {len(by_mod)} mod(s)")
+        if not n:
+            job.result = "nothing to review"
+            return
+        mods = [(mod, strs, "") for mod, strs in by_mod.items()]
+        dispatch_multi(job, mods, InferenceParams(), backends, registry, jm, repo, cfg)
+
+    return jm.create(
+        name     = f"Review stored translations ({scope})",
+        job_type = "translate_strings",
+        params   = {"review": True, "scope": scope},
+        fn       = run,
+    )
+
+
+def _create_repair_job(jm, apply: bool = True):
+    """Repair the damage that has one right answer, across the whole store.
+
+    A job rather than a script so it detaches: it is started, it reports into the same
+    place every other job does, and the operator can walk away or switch the box off.
+    """
+    repo      = current_app.config.get("STRING_REPO")
+    stats_mgr = current_app.config.get("STATS_MGR")
+
+    def run(job):
+        from translator.validation.repair import repair_worker
+        out = repair_worker(job, repo, apply=apply)
+        if stats_mgr and out.get("repaired"):
+            try:
+                stats_mgr.invalidate()          # no mod name → the whole cache
+            except Exception:
+                pass
+
+    return jm.create(
+        name     = "Repair damaged translations" + ("" if apply else " (dry run)"),
+        job_type = "repair_strings",
+        params   = {"apply": apply},
         fn       = run,
     )
 

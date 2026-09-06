@@ -51,11 +51,52 @@ def _preserve_note(preserve_tokens: list[str]) -> str:
     return f"\nDo NOT translate these tokens (keep as-is): {', '.join(preserve_tokens[:20])}\n"
 
 
+_REVIEW_RULES = """\
+CRITICAL RULES — violating any of these is an error:
+- Each line is: the source text, then ⇥, then the translation that is already stored.
+- Judge the stored translation. Output the CORRECTED translation for every number.
+- If the stored translation is already correct, output it unchanged. Do not rewrite \
+good work for the sake of changing it.
+- Fix: wrong or invented words, proper nouns rendered as a different name, English left \
+inside the Russian, half-translated words mixing both alphabets, text that repeats the \
+source before the translation, and anything omitted from the source.
+- Preserve formatting tokens and placeholders (<Alias=...>, %1, [PlayerName]) exactly, \
+along with ⟨NL⟩, ⟨H0⟩⟨H1⟩⟨H2⟩ and {{T0}}{{T1}} — copy them verbatim.
+- Never output the source text, an explanation, or the ⇥ separator. \
+Output ONLY the numbered translations."""
+
+_REVIEW_SYSTEM = (
+    "You are a senior reviewer of Russian translations for "
+    "The Elder Scrolls V: Skyrim (Нолвус modpack). "
+    "You are given translations that were produced earlier and accepted without review. "
+    "Your job is to return each one corrected where it is wrong and untouched where it is "
+    "right — never to paraphrase acceptable work."
+)
+
+_QWEN_REVIEW_TMPL = """\
+Review each numbered {src}→{tgt} translation and output the corrected translation.
+
+""" + _REVIEW_RULES + """
+{terminology}{preserve}{context_block}
+Strings (source ⇥ stored translation):
+{numbered_texts}"""
+
+
+def _one_line(t: str) -> str:
+    return (t or "").replace(chr(13), "").replace(chr(10), "⟨NL⟩")
+
+
 def _numbered(texts: list[str]) -> str:
-    return "\n".join(
-        f"{i+1}. {t.replace(chr(13), '').replace(chr(10), '⟨NL⟩')}"
-        for i, t in enumerate(texts)
-    )
+    return "\n".join(f"{i+1}. {_one_line(t)}" for i, t in enumerate(texts))
+
+
+def _numbered_pairs(texts: list[str], current: list[str]) -> str:
+    """One line per item: source, separator, the translation already stored."""
+    out = []
+    for i, t in enumerate(texts):
+        cur = current[i] if i < len(current) else ""
+        out.append(f"{i+1}. {_one_line(t)} ⇥ {_one_line(cur)}")
+    return "\n".join(out)
 
 
 def build_prompt(
@@ -68,27 +109,37 @@ def build_prompt(
     terminology:     str        = "",   # pre-built block from host ("Key terms:\n  ...")
     preserve_tokens: list[str]  = [],
     model_type:      str        = "qwen",
+    current:         list[str] | None = None,
 ) -> str:
     """
     Assemble the full ChatML inference prompt.
 
     All dynamic data (terminology, preserve_tokens, system_prompt, context)
     is provided by the caller — this function does no file I/O.
+
+    `current` turns the task from translating into reviewing: each line carries the
+    translation already stored, and the model returns it corrected or unchanged. The
+    answer is still a numbered list of translations, so everything downstream — the
+    parser, the durable store, delivery, the merge gate — is untouched. That is the
+    point: a review pass rides the machinery a translation pass already uses, which is
+    what lets it run on the agents with the master switched off.
     """
     ctx_block   = f"\nContext: {context}\n" if context else ""
     term_block  = (terminology.rstrip() + "\n") if terminology else ""
     preserve    = _preserve_note(preserve_tokens)
+    reviewing   = bool(current)
 
-    user_msg = _QWEN_USER_TMPL.format(
+    user_msg = (_QWEN_REVIEW_TMPL if reviewing else _QWEN_USER_TMPL).format(
         src            = src_lang,
         tgt            = tgt_lang,
         terminology    = term_block,
         preserve       = preserve,
         context_block  = ctx_block,
-        numbered_texts = _numbered(texts),
+        numbered_texts = (_numbered_pairs(texts, current) if reviewing
+                          else _numbered(texts)),
     )
 
-    system       = system_prompt or _DEFAULT_SYSTEM
+    system       = system_prompt or (_REVIEW_SYSTEM if reviewing else _DEFAULT_SYSTEM)
     think_prefix = "" if thinking else "</think>\n\n"
 
     return (

@@ -139,7 +139,13 @@ def smart_partition(strings: list[dict], agents: list[dict]) -> dict:
 
 
 def dedupe_by_text(strings: list[dict]) -> tuple[list[dict], int]:
-    """Keep one string per distinct source text. Returns (unique, dropped).
+    """Keep one string per distinct work item. Returns (unique, dropped).
+
+    For a review package the item is the pair (source, stored translation), not the source
+    alone: the same English can hold several different Russians — 17 971 sources do — and
+    collapsing on the source would check one of them and leave the rest exactly as they
+    are. For a translation package `current` is absent and this is deduplication by source
+    text, unchanged.
 
     42% of a real backlog is repeated text — "Chest" appears 912 times across the live
     collection. An agent works from its own durable manifest, so anything dispatched
@@ -154,9 +160,10 @@ def dedupe_by_text(strings: list[dict]) -> tuple[list[dict], int]:
         text = s.get("original") or ""
         if not text:
             continue
-        if text in seen:
+        key = (text, s["current"]) if s.get("current") else text
+        if key in seen:
             continue
-        seen.add(text)
+        seen.add(key)
         unique.append(s)
     return unique, len(strings) - len(unique)
 
@@ -186,6 +193,10 @@ def _make_remote_strings(bucket: list[dict], default_mod: str):
             # differ per record type, and the agent had no way to know which it had.
             "rec_type":    s.get("rec_type") or "",
             "string_hash": h,          # agent stores this → master/agent hashes always match
+            # Present only in a review package: the translation already stored, so the
+            # agent corrects it instead of translating the source again. Absent for a
+            # translation package, and the agent's prompt switches on exactly that.
+            **({"current": s["current"]} if s.get("current") else {}),
         })
         if sid is not None:
             items.append((sid, h))

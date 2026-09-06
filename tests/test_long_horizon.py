@@ -34,16 +34,20 @@ def test_agent_migration_runner_applies_real_step():
     """Exercise the agent migration runner with an actual ALTER (Gap 6 coverage)."""
     import result_store as rs_mod
     saved = list(rs_mod._AGENT_MIGRATIONS)
-    rs_mod._AGENT_MIGRATIONS.append((2, ["ALTER TABLE agent_results ADD COLUMN extra TEXT"]))
+    # The next free number, not a literal: the runner skips a version it has already
+    # passed, so a test that hard-codes one silently stops exercising anything the day a
+    # real migration takes that number.
+    nxt = max([v for v, _ in rs_mod._AGENT_MIGRATIONS] or [1]) + 1
+    rs_mod._AGENT_MIGRATIONS.append((nxt, ["ALTER TABLE agent_results ADD COLUMN extra TEXT"]))
     try:
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "w.db"
             s = ResultStore(p)   # __init__ runs migrate()
             cols = {r[1] for r in s._conn.execute("PRAGMA table_info(agent_results)").fetchall()}
             assert "extra" in cols
-            assert s.get_meta("schema_version") == "2"
+            assert s.get_meta("schema_version") == str(nxt)
             s.migrate()          # idempotent — no error, version unchanged
-            assert s.get_meta("schema_version") == "2"
+            assert s.get_meta("schema_version") == str(nxt)
             s.close()
     finally:
         rs_mod._AGENT_MIGRATIONS[:] = saved

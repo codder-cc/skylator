@@ -1,0 +1,35 @@
+{
+  "_note": "Control set for the review prompt. Every 'bad' pair was found by reading stored work against its original; every 'good' pair is correct and must survive untouched. A prompt that does not catch the bad ones must not be dispatched — 238 000 pairs went out once on an untested prompt and came back with a 0.23% correction rate against a measured ~14% defect rate.",
+  "bad": [
+    {"en": "Druid Footwraps", "ru": "Дриульские обмотки для ног", "why": "invented word; Druid → друидские"},
+    {"en": "Bound Quarterstaff FX", "ru": "Привязанная дубина FX", "why": "Bound → призванный; quarterstaff → посох, not дубина"},
+    {"en": "Shock spells have a chance to overload targets.", "ru": "Молниеносные заклинания имеют шанс перегрузить цели.", "why": "Shock → электричество; молниеносный means fast"},
+    {"en": "Summons a Fire-Tongued Daedroth for one day.", "ru": "Призывает огненноязычного даэдра для одного дня.", "why": "Daedroth → даэдрот, a specific creature"},
+    {"en": "Vault Twelve: Rare Book Collection", "ru": "Склеп Двенадцать: Коллекция редких книг", "why": "Vault → хранилище, not склеп (crypt)"},
+    {"en": "I was afraid as much.", "ru": "Я боялся так же сильно.", "why": "means 'that is what I feared'"},
+    {"en": "I am in need of the blessing of one who embodies Julianos.", "ru": "Мне нужно благословение того, кто воплощает Юлиана.", "why": "Julianos → Джулианос, one of the Divines"},
+    {"en": "The Nerevarine", "ru": "Нереарин", "why": "→ Нереварин, a letter dropped"},
+    {"en": "Leviathan", "ru": "Ливатан", "why": "→ Левиафан"},
+    {"en": "Mehrunes Dagon", "ru": "Меrunnes Dagon", "why": "Latin letters inside the Russian word"},
+    {"en": "Lost Legends of Skyrim", "ru": "Забытые легенды Сиродила", "why": "Skyrim rendered as Cyrodiil, a different province"},
+    {"en": "Dwemer Pot", "ru": "Дверной горшок", "why": "Dwemer → двемерский; дверной means 'of a door'"},
+    {"en": "Adventurer", "ru": "Приключеник", "why": "not a word; искатель приключений"},
+    {"en": "You can make Dragonbone weapons at a forge.", "ru": "Вы можете изготовить драконье оружие на наковальне.", "why": "forge → кузница; наковальня is an anvil"},
+    {"en": "You are up to 30% harder to detect when sneaking.", "ru": "Вы на 30% труднее обнаруживаются при скрытности.", "why": "grammar: Вы … обнаруживаются"},
+    {"en": "Cyrodiil", "ru": "Киродил", "why": "→ Сиродил"},
+    {"en": "Iron Mace", "ru": "Железная дубина", "why": "mace → булава, not club"},
+    {"en": "9th of Evening Star", "ru": "9-е звёздного вечера", "why": "Evening Star is the month Вечерняя звезда"}
+  ],
+  "good": [
+    {"en": "Iron Dagger", "ru": "Железный кинжал"},
+    {"en": "Mortar and Pestle", "ru": "Ступка и пестик"},
+    {"en": "What is it, dragons?", "ru": "Что это, драконы?"},
+    {"en": "Slows the target and deals frost damage over 10 seconds.", "ru": "Замедляет цель и наносит урон холодом в течение 10 секунд."},
+    {"en": "HumanBeard02", "ru": "HumanBeard02"},
+    {"en": "Silda the Unseen", "ru": "Сильда Невидимая"},
+    {"en": "Gulvar's House", "ru": "Дом Гулвара"},
+    {"en": "Head to Morvunskar", "ru": "Отправиться в Морвунскар"},
+    {"en": "*humming*", "ru": "*напевает*"},
+    {"en": "Frostfruit Inn", "ru": "Трактир «Замёрзший Фрукт»"}
+  ]
+}

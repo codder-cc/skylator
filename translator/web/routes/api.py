@@ -2690,6 +2690,47 @@ def workers_offline_results(label: str):
                     "confirmed_seq": max(0, confirmed_seq), "failed_seqs": failed_seqs})
 
 
+@bp.route("/workers/<label>/infer", methods=["POST"])
+def workers_infer(label: str):
+    """Run one prompt on a worker and return the raw text. Stores nothing.
+
+    A prompt is a piece of behaviour, and there was no way to try one without dispatching
+    it. 238 000 pairs went out on a review prompt nobody had run against a known-bad
+    string; it came back having corrected 0.23% of them, against a defect rate measured
+    at roughly one in seven. Two days of two machines to learn what ten strings would
+    have said in a minute.
+
+    Body: {prompt, params?, timeout?}. The worker refuses this while it is running an
+    offline package — free it first, which is also the honest thing to do before
+    borrowing it for an experiment.
+    """
+    import uuid as _uuid
+    registry = current_app.config.get("WORKER_REGISTRY")
+    if registry is None:
+        return jsonify({"error": "Registry not initialized"}), 500
+    if registry.get(label) is None:
+        return jsonify({"error": "Worker not found"}), 404
+    data   = request.get_json(silent=True) or {}
+    prompt = data.get("prompt") or ""
+    if not prompt:
+        return jsonify({"error": "prompt is required"}), 400
+
+    chunk_id = str(_uuid.uuid4())
+    registry.enqueue_chunk(label, {"chunk_id": chunk_id, "type": "infer",
+                                   "prompt": prompt, "params": data.get("params") or {}})
+    raw = registry.collect_result(chunk_id, timeout=float(data.get("timeout") or 300))
+    if raw is None:
+        return jsonify({"error": "timed out"}), 504
+    # The agent answers a refusal in band — say so plainly rather than returning it as text.
+    if raw == "\x00busy\x00":
+        return jsonify({"error": "worker is busy with an offline package"}), 409
+    if raw == "\x00no_model\x00":
+        return jsonify({"error": "worker has no model loaded"}), 409
+    if raw == "\x00infer_error\x00":
+        return jsonify({"error": "inference failed on the worker"}), 502
+    return jsonify({"ok": True, "result": raw})
+
+
 @bp.route("/workers/<label>/benchmark", methods=["POST"])
 def workers_benchmark(label: str):
     """Run a performance benchmark on a registered worker.

@@ -176,10 +176,16 @@ def markup_violations(original: str, translation: str) -> list[str]:
 # seven carrying a real defect. Three of the shapes are exact enough to decide without a
 # model, and each was present in the thousands.
 
-# "Bed" → "Bed → Кровать". The model echoed the source and the arrow of its own prompt
-# into the answer and the parser took it whole, so the item renders in game with its
-# English name and an arrow in front. 551 of these, 391 already copied onto twins.
-_ECHO_ARROW_RE = re.compile(r"\s*(?:→|->|=>)\s*")
+# "Bed" → "Bed → Кровать". The model echoed the source and the separator of its own
+# prompt into the answer and the parser took it whole, so the item renders in game with
+# its English name and an arrow in front. 551 of these, 391 already copied onto twins.
+#
+# ⇥ is on the list because a review pass put it there. The review prompt separated the
+# source from the stored translation with ⇥, the model echoed the whole line back, and
+# 1 922 strings were stored that way — the same defect this rule exists to catch, in a
+# new separator, introduced by the pass built to remove it. Any character used to
+# separate a prompt's columns belongs here the moment it is used.
+_ECHO_ARROW_RE = re.compile(r"\s*(?:→|->|=>|⇥|\|)\s*")
 
 # A word carrying both alphabets — "Сорcerer", "Рунa", "Гримoire". Half-translated, or a
 # Cyrillic word with a Latin look-alike letter substituted; either way it is not a word,
@@ -206,14 +212,44 @@ def looks_like_identifier(text: str) -> bool:
             or any(t[i].isupper() and t[i - 1].islower() for i in range(1, len(t))))
 
 
+# U+21E5 exists in this collection for exactly one reason: a review prompt used it to
+# separate its columns. No Skyrim string contains one, so its presence in a translation
+# and not in the source is damage on its own — even where the shape is too tangled to
+# repair, which is the case in a long book text where the echo landed mid-document. Those
+# belong in review rather than sitting accepted at a perfect score.
+_PROMPT_ONLY_CHARS = "⇥"
+
+
 def echo_violations(original: str, translation: str) -> list[str]:
-    """The source repeated back with an arrow before the actual answer."""
+    """The source repeated back with a separator before the actual answer."""
     o, t = (original or "").strip(), (translation or "").strip()
-    if not o or not t or not _ECHO_ARROW_RE.search(t):
+    if not o or not t:
         return []
-    head = _ECHO_ARROW_RE.split(t, maxsplit=1)[0].strip()
-    if head and head == o:
-        return ["prompt echoed back: the source and an arrow precede the translation"]
+    leaked = [c for c in _PROMPT_ONLY_CHARS if c in t and c not in o]
+    if leaked and not _ECHO_ARROW_RE.search(t):
+        return [f"a prompt separator ({leaked[0]}) is in the translation"]
+    if not _ECHO_ARROW_RE.search(t):
+        return []
+    if _ECHO_ARROW_RE.search(o):
+        return []                      # the source has one of its own — nothing to infer
+    parts = [p.strip() for p in _ECHO_ARROW_RE.split(t)]
+    if len(parts) > 1 and len({p for p in parts if p}) == 1:
+        # "Мол ⇥ Мол" — the answer repeated around the separator rather than the source
+        # echoed before it. Nothing repeats itself around a column separator on purpose,
+        # and both halves being identical says which text to keep without guessing.
+        return ["the translation is repeated around a prompt separator"]
+    head = parts[0]
+    if head == o:
+        return ["prompt echoed back: the source and a separator precede the translation"]
+    if leaked:
+        # Tangled beyond a safe automatic repair — a long book text where the echo landed
+        # mid-document. Flag it for review rather than guess which half to keep.
+        return [f"a prompt separator ({leaked[0]}) is in the translation"]
+    # A bare separator with nothing before it is the same accident with the source lost:
+    # "⇥ Норналхорст". There is nothing to compare, and no translation legitimately opens
+    # with a column separator.
+    if not head:
+        return ["prompt separator leaked into the start of the translation"]
     return []
 
 
@@ -236,10 +272,14 @@ def mixed_script_violations(translation: str) -> list[str]:
 
 
 def strip_echo(original: str, translation: str) -> str:
-    """The answer without the echoed source, when that is exactly what precedes it."""
+    """The answer with the separator and whatever it repeated taken off."""
     if not echo_violations(original, translation):
         return translation
-    return _ECHO_ARROW_RE.split((translation or "").strip(), maxsplit=1)[1].strip()
+    parts = [p.strip() for p in _ECHO_ARROW_RE.split((translation or "").strip()) if p.strip()]
+    if not parts:
+        return translation
+    # Identical halves collapse to one; otherwise the answer is what follows the source.
+    return parts[0] if len(set(parts)) == 1 else parts[-1]
 
 
 def compute_string_status(original: str, translation: str,

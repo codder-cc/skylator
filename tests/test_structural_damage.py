@@ -113,3 +113,63 @@ def test_clean_work_still_passes():
     assert status == "translated"
     assert issues == []
     assert tok_ok and qs > 70
+
+
+# ── the separator a review pass leaked ───────────────────────────────────────
+# The review prompt put the source and the stored translation on one line, separated by
+# ⇥. The model echoed the whole line back and 1 922 strings were stored that way — the
+# very defect the pass was built to remove, in a new separator, caused by the pass. Every
+# character used to separate a prompt's columns belongs in the rule the day it is used.
+
+@pytest.mark.parametrize("en, ru", [
+    ("Shadow Wolf", "Shadow Wolf ⇥ Теневой Волк"),
+    ("Ravager Archer", "Ravager Archer ⇥ Разоритель-лучник"),
+    ("Bed", "Bed | Кровать"),
+])
+def test_a_leaked_column_separator_is_damage(en, ru):
+    assert echo_violations(en, ru)
+    assert strip_echo(en, ru) == ru.split("⇥")[-1].split("|")[-1].strip()
+
+
+def test_a_separator_with_the_source_lost_is_still_damage():
+    """"⇥ Норналхорст" — the same accident, with nothing left to compare against. No
+    translation legitimately opens with a column separator."""
+    assert echo_violations("Nornalhorst", "⇥ Норналхорст")
+    assert strip_echo("Nornalhorst", "⇥ Норналхорст") == "Норналхорст"
+
+
+def test_a_separator_the_source_itself_contains_is_left_alone():
+    """Nothing can be inferred when the source has one too."""
+    assert echo_violations("A | B", "А | Б") == []
+    assert echo_violations("Choose → confirm", "Выбери → подтверди") == []
+
+
+def test_the_answer_repeated_around_the_separator():
+    """"Мол ⇥ Мол" — the model doubled its own answer rather than echoing the source, so
+    comparing the head against the English finds nothing. Identical halves say which text
+    to keep without guessing."""
+    assert echo_violations("Maul", "Мол ⇥ Мол")
+    assert strip_echo("Maul", "Мол ⇥ Мол") == "Мол"
+    assert echo_violations("Moth", "Мотылёк → Мотылёк")
+    assert strip_echo("Moth", "Мотылёк → Мотылёк") == "Мотылёк"
+
+
+def test_two_different_halves_are_not_a_repeat():
+    """A source echoed before the answer keeps the answer, not the source."""
+    assert strip_echo("Bed", "Bed ⇥ Кровать") == "Кровать"
+
+
+def test_the_separator_character_alone_is_damage():
+    """U+21E5 is in this collection for one reason only — a review prompt's columns. No
+    Skyrim string contains one, so it is damage even where the shape is too tangled to
+    repair: a long book text where the echo landed mid-document goes to review rather
+    than sitting accepted at a perfect score."""
+    long_en = "<font face='$Hand'>" + "Rising Threat, Vol. III " * 8
+    long_ru = "<font face='$Hand'>" + "Rising Threat ⇥ Растущая угроза " * 8
+    assert echo_violations(long_en, long_ru)
+    _qs, _tok, issues, status = compute_string_status(long_en, long_ru)
+    assert status == "needs_review"
+
+
+def test_a_separator_the_source_carries_is_not_the_prompt_leaking():
+    assert echo_violations("Press ⇥ to continue", "Нажми ⇥ чтобы продолжить") == []

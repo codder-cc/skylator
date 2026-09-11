@@ -263,6 +263,66 @@ def identifier_violations(original: str, translation: str) -> list[str]:
     return []
 
 
+_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")
+# Thousands, written either way: "1,440" in English, "40 000" in Russian. Both are one
+# number, and comparing them as written reported every large figure in the collection.
+_THOUSANDS_RE = re.compile(r"\d{1,3}(?:[,  ]\d{3})+(?!\d)")
+
+
+def _strip_all_tokens(text: str) -> str:
+    """Text without markup tags or inline placeholders, so their digits do not count:
+    <Global=WB_Shockbloom_Percentage> carries a number that belongs to a placeholder."""
+    return _INLINE_TOKEN_RE.sub(" ", _FORMAT_TAG_RE.sub(" ", text or ""))
+
+
+def _numbers(text: str) -> list[str]:
+    """The numbers a sentence states, with thousands separators normalised away."""
+    cleaned = _THOUSANDS_RE.sub(lambda m: re.sub(r"[,  ]", "", m.group(0)),
+                                _strip_all_tokens(text))
+    # Russian writes the decimal separator as a comma: 0.8 is «0,8». Same number.
+    return [t.replace(",", ".") if re.fullmatch(r"\d+,\d+", t) else t
+            for t in _NUMBER_RE.findall(cleaned)]
+
+
+def number_violations(original: str, translation: str) -> list[str]:
+    """A game value the translation states differently from the source.
+
+    "Deal 25 damage for 10 seconds" rendered as «на 20 урона в течение 10 секунд» is a
+    changed game value, not a wording choice, and neither the token nor the markup check
+    looks at numbers.
+
+    Narrowed three times against the live collection, because the obvious rule is almost
+    all false positives:
+
+      * Russian writes numerals out. "The 7000 Steps" is «Семитысячеступенной Тропы»,
+        "the 3rd Era" is «Третьей эры», "1 too many" is «на один стакан».
+      * Thousands are grouped differently: "40,000" is «40 000».
+      * A sentence mixes both. "500 gold at 3 to 1 makes 1500" keeps 500 and 1500 as
+        digits and writes «три к одному» in words.
+
+    So this reports a substitution and nothing else: a number in the source that is absent
+    from the translation *and* a number in the translation that is absent from the source.
+    An omission alone is a numeral spelled out, which this rule cannot judge and does not
+    claim to. 25 against 20 is caught; everything above is not.
+    """
+    if not original or not translation:
+        return []
+    src, dst = _numbers(original), _numbers(translation)
+    if not src or not dst:
+        return []
+    pool = list(dst)
+    missing = []
+    for n in src:
+        if n in pool:
+            pool.remove(n)
+        else:
+            missing.append(n)
+    if not missing or not pool:
+        return []                      # nothing lost, or lost without anything put in its place
+    return [f"number changed: source has {', '.join(dict.fromkeys(missing))}, "
+            f"translation has {', '.join(dict.fromkeys(pool))}"]
+
+
 def mixed_script_violations(translation: str) -> list[str]:
     """Words with two alphabets inside them."""
     bad = list(dict.fromkeys(_MIXED_SCRIPT_WORD_RE.findall(translation or "")))
@@ -307,7 +367,8 @@ def compute_string_status(original: str, translation: str,
     # judgement itself rather than in a report somebody has to go and read.
     structural_bad = (echo_violations(original, translation)
                       + identifier_violations(original, translation)
-                      + mixed_script_violations(translation))
+                      + mixed_script_violations(translation)
+                      + number_violations(original, translation))
     issues.extend(structural_bad)
     glossary_ok = True
     if terms:

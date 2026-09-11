@@ -15,6 +15,19 @@ class RecomputePipeline:
         self._cfg  = cfg
         self._repo = repo
 
+    def _load_terms(self) -> dict:
+        """The curated glossary, or {} — a missing file turns terminology checking off
+        rather than failing the run, and the job log says which happened."""
+        import json
+        from pathlib import Path
+        try:
+            path = self._cfg.paths.skyrim_terms
+            if path and Path(path).exists():
+                return json.loads(Path(path).read_text(encoding="utf-8"))
+        except Exception as exc:
+            log.warning("recompute: could not load glossary, enforcement is off: %s", exc)
+        return {}
+
     def run(self, job, mod_name: str | None = None) -> None:
         from scripts.esp_engine import compute_string_status as _css, needs_translation as _needs_trans
         from translator.web.job_manager import JobManager
@@ -25,6 +38,14 @@ class RecomputePipeline:
         if not repo:
             job.add_log("ERROR: no repo — cannot recompute scores without SQLite")
             return
+
+        # The whole point of a recompute is to re-judge with everything the gate knows
+        # today, and the gate's two strongest checks are the ones that need arguments:
+        # the glossary, and a full stop on the end of a name. Run without them and this
+        # pass silently agrees with 3 932 of the 7 861 strings it exists to catch.
+        terms = self._load_terms()
+        job.add_log(f"Glossary: {len(terms)} term(s) enforced"
+                    if terms else "Glossary: NOT loaded — terminology will not be checked")
 
         mods_dir = self._cfg.paths.mods_dir
         mod_names = [mod_name] if mod_name else [p.name for p in mods_dir.iterdir() if p.is_dir()]
@@ -72,7 +93,9 @@ class RecomputePipeline:
                         new_trans = trans
                         if not trans:
                             continue
-                        new_qs, _, _, new_status = _css(orig, trans)
+                        new_qs, _, _, new_status = _css(
+                            orig, trans, terms,
+                            r.get("rec_type") or None, r.get("field_type") or None)
                     if new_status == "needs_review":
                         n_review += 1
                     if (r.get("quality_score") != new_qs or r.get("status") != new_status

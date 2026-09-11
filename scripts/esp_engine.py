@@ -620,16 +620,20 @@ def validate_tokens(original: str, translation: str) -> tuple:
     return len(issues) == 0, issues
 
 
-def compute_string_status(original: str, translation: str) -> tuple:
-    """Single source of truth: returns (quality_score, tok_ok, token_issues, status).
-    status is 'pending' if no translation, 'translated' if tok_ok and qs>70, else 'needs_review'.
+def compute_string_status(original: str, translation: str, terms: dict | None = None,
+                          rec_type: str | None = None,
+                          field_type: str | None = None) -> tuple:
+    """Alias for translator.validation.quality.compute_string_status. See it for the rules.
+
+    This was a second, independent copy of the judgement, and it had fallen a year
+    behind: tokens and the score, and none of the markup, echo, identifier,
+    mixed-alphabet, number, glossary or leftover-English checks. Both copies carried the
+    comment "single source of truth". Four call sites import this name — the recompute
+    pass among them — so every one of them was re-judging 435 010 strings against rules
+    that no longer decide anything, and agreeing with all of them.
     """
-    if not translation or not translation.strip():
-        return 0, False, [], "pending"
-    tok_ok, tok_issues = validate_tokens(original, translation)
-    qs = quality_score(original, translation)
-    status = "translated" if (tok_ok and qs > 70) else "needs_review"
-    return qs, tok_ok, tok_issues, status
+    from translator.validation.quality import compute_string_status as _real
+    return _real(original, translation, terms, rec_type, field_type)
 
 
 # ── Translation ───────────────────────────────────────────────────────────────

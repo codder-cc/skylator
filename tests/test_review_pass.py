@@ -155,3 +155,50 @@ def test_the_write_gate_passes_the_preference_through(fakedb, tmp_path):
     sm.save_string(mod_name="M", esp_name="e.esp", key="k1", original="at a forge",
                    translation="в кузнице", merge=True, prefer_incoming=True)
     assert fakedb.execute("SELECT translation FROM strings").fetchone()[0] == "в кузнице"
+
+
+# ── the flagged scope is blind, and that is the point ────────────────────────
+#
+# Measured on the control set: a prompt that shows the stored answer and asks for a
+# correction has 11–17% recall, because "the same, if it is right" makes copying a valid
+# response. A blind re-translation has 94%, at the cost of rewriting 30% of the strings
+# that were already fine.
+#
+# For a string the rules have flagged that cost is not there to pay. An exact rule has
+# already named a defect in the stored text, so there is nothing good to churn — and the
+# merge gate ranks an answer it accepts above one it refuses, so a clean re-translation
+# lands while one carrying the same defect does not.
+
+def test_a_flagged_string_is_sent_without_its_stored_text():
+    """Sending it would turn a 94% method back into an 11% one."""
+    import inspect
+    from translator.web.routes.jobs import _create_review_fleet_job
+    src = inspect.getsource(_create_review_fleet_job)
+    assert 'blind = scope == "flagged"' in src
+    assert "if not blind:" in src, "the stored text must be attached only when reviewing"
+    assert 'status=\'needs_review\'" if blind' in src
+
+
+def test_the_flagged_scope_does_not_ask_for_the_tie_break():
+    """A review delivery wins ties because the reviewer had the stored text in hand. A
+    blind re-translation did not, so it has to win on the verdict or not at all."""
+    import inspect
+    from translator.web.routes.jobs import _create_review_fleet_job
+    src = inspect.getsource(_create_review_fleet_job)
+    assert '"review": scope != "flagged"' in src
+
+
+def test_a_clean_retranslation_displaces_a_flagged_one_without_the_tie_break():
+    from translator.validation.quality import pick_better
+    # exactly the shapes the recompute flagged: echo, a changed number, leftover English
+    for en, flagged, fresh in (("Bed", "Bed → Кровать", "Кровать"),
+                               ("Deal 25 damage.", "Наносит 20 урона.", "Наносит 25 урона."),
+                               ("Is that a threat?", "Это threat?", "Это угроза?")):
+        out = pick_better(en, flagged, fresh, prefer_b_on_tie=False)
+        assert out["chose"] == "b" and out["status"] == "translated", (en, fresh)
+
+
+def test_a_retranslation_with_the_same_defect_does_not_land():
+    from translator.validation.quality import pick_better
+    out = pick_better("Bed", "Bed → Кровать", "Bed -> Кровать", prefer_b_on_tie=False)
+    assert out["chose"] == "a", "neither is acceptable, so the stored text keeps its place"

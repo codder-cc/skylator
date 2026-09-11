@@ -1388,6 +1388,22 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
 
     No per-mod context is built. Fetching a Nexus description per mod costs an hour across
     the collection for a job that has the source and the stored answer in front of it.
+
+    Three scopes:
+
+      all         every accepted translation, shown to the model beside the source
+      unchecked   the same, narrowed to what the current rules never judged
+      flagged     the strings the rules refuse — status='needs_review' — sent WITHOUT the
+                  stored text, so the model translates rather than corrects
+
+    `flagged` is blind on purpose, and the measurements are why. On the control set, a
+    prompt that shows the stored answer and asks for a correction has 11–17% recall: "the
+    same, if it is right" makes copying a valid response. A blind re-translation has 94%,
+    at the cost of rewriting 30% of the strings that were already fine. For a flagged
+    string that cost is not there to pay: an exact rule has already named a defect in the
+    stored text, so there is nothing good to churn, and the merge gate ranks an answer it
+    accepts above one it refuses — so a clean re-translation lands and a re-translation
+    carrying the same defect does not.
     """
     repo     = current_app.config.get("STRING_REPO")
     registry = current_app.config.get("WORKER_REGISTRY")
@@ -1399,8 +1415,10 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         from translator.web.offline_backend import dispatch_multi
         from translator.models.inference_params import InferenceParams
 
-        where = ["status='translated'", "TRIM(translation) <> ''",
-                 "translation <> original", "COALESCE(source,'') <> 'untranslatable'"]
+        blind = scope == "flagged"
+        where = ["TRIM(translation) <> ''", "translation <> original",
+                 "COALESCE(source,'') <> 'untranslatable'",
+                 "status='needs_review'" if blind else "status='translated'"]
         if scope == "unchecked":
             # Never seen by the current rules: the legacy import and everything a twin
             # was copied onto rather than translated.
@@ -1412,14 +1430,15 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
 
         by_mod: dict[str, list] = {}
         for r in repo.db.execute(sql).fetchall():
-            by_mod.setdefault(r["mod_name"], []).append({
-                "id": r["id"], "mod_name": r["mod_name"], "esp": r["esp_name"],
-                "key": r["key"], "original": r["original"],
-                "rec_type": r["rec_type"] or "",
-                "current": r["translation"],       # what makes this a review, not a retry
-            })
+            item = {"id": r["id"], "mod_name": r["mod_name"], "esp": r["esp_name"],
+                    "key": r["key"], "original": r["original"],
+                    "rec_type": r["rec_type"] or ""}
+            if not blind:
+                item["current"] = r["translation"]   # what makes this a review, not a retry
+            by_mod.setdefault(r["mod_name"], []).append(item)
         n = sum(len(v) for v in by_mod.values())
-        job.add_log(f"Review: {n} stored translation(s) across {len(by_mod)} mod(s)")
+        job.add_log(f"{'Blind re-translation' if blind else 'Review'}: "
+                    f"{n} string(s) across {len(by_mod)} mod(s)")
         if not n:
             job.result = "nothing to review"
             return
@@ -1427,9 +1446,10 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         dispatch_multi(job, mods, InferenceParams(), backends, registry, jm, repo, cfg)
 
     return jm.create(
-        name     = f"Review stored translations ({scope})",
+        name     = ("Re-translate flagged strings (blind)" if scope == "flagged"
+                    else f"Review stored translations ({scope})"),
         job_type = "translate_strings",
-        params   = {"review": True, "scope": scope},
+        params   = {"review": scope != "flagged", "scope": scope},
         fn       = run,
     )
 

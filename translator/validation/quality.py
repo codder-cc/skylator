@@ -530,13 +530,21 @@ def compute_string_status(original: str, translation: str,
     return qs, tok_ok, issues, status
 
 
-def _candidate_score(original: str, t: str) -> float:
-    """Comparable score for picking between two candidate translations: quality_score plus a
-    bonus for preserving all game tokens. Empty/missing → -1 (never chosen over real text)."""
+def _candidate_score(original: str, t: str) -> tuple[int, float]:
+    """Comparable rank for picking between two candidates: (would the gate accept it,
+    then the score). Empty/missing sorts below everything.
+
+    The verdict has to come first, and leaving it out is what made the review pass need a
+    tie-break to land anything. The score counts tokens, markup and length; it does not
+    know about echo, a translated identifier, a changed number or a leftover English
+    word. So «Bed → Кровать» reads 100, a clean «Кровать» reads 100, they tie, and the
+    damaged text keeps its place — while compute_string_status, ten lines up, is refusing
+    that very string. Two functions deciding "better" by different rules is one too many.
+    """
     if not t or not t.strip():
-        return -1.0
-    qs, tok_ok, _, _ = compute_string_status(original, t)
-    return qs + (5.0 if tok_ok else 0.0)
+        return (-1, -1.0)
+    qs, tok_ok, _, status = compute_string_status(original, t)
+    return (1 if status == "translated" else 0, qs + (5.0 if tok_ok else 0.0))
 
 
 def pick_better(original: str, a: str | None, b: str | None,
@@ -553,6 +561,11 @@ def pick_better(original: str, a: str | None, b: str | None,
     reviewer saw the stored text and was asked to change it only when it was wrong, so on
     equal scores its answer is the later and better-informed one. A lower score still
     loses: this widens the door, it does not remove it.
+
+    An answer the gate accepts beats one the gate refuses, tie-break or not — see
+    _candidate_score. That is what lets a re-translation of a flagged string land: the
+    stored text carries a defect an exact rule can name, so a clean answer wins on the
+    verdict and never has to argue about the score.
     """
     sa, sb = _candidate_score(original, a), _candidate_score(original, b)
     b_wins = (sb >= sa) if prefer_b_on_tie else (sb > sa)

@@ -279,8 +279,8 @@ def _numbers(text: str) -> list[str]:
     """The numbers a sentence states, with thousands separators normalised away."""
     cleaned = _THOUSANDS_RE.sub(lambda m: re.sub(r"[,  ]", "", m.group(0)),
                                 _strip_all_tokens(text))
-    # Russian writes the decimal separator as a comma: 0.8 is «0,8». Same number.
-    return [t.replace(",", ".") if re.fullmatch(r"\d+,\d+", t) else t
+    # Russian writes the decimal separator as a comma: 0.8 is «0,8». Same number.
+    return [t.replace(",", ".") if re.fullmatch(r"\d+,\d+", t) else t
             for t in _NUMBER_RE.findall(cleaned)]
 
 
@@ -331,6 +331,140 @@ def mixed_script_violations(translation: str) -> list[str]:
     return ["mixed alphabets in: " + ", ".join(bad[:3])]
 
 
+# ── Four more shapes, each read off a sample before it was written ────────────
+#
+# Found by reading 70 of the strings a review pass rewrote and 70 more it left alone.
+# Every one of these was measured against the whole collection before being trusted, and
+# every one of them was sitting at status='translated'.
+
+# An English word left standing inside a Russian sentence: «Это supposed to быть
+# угрозой», «его духи страдают в моих entrails», «зачем даже bother спрашивать».
+#
+# The first version of this rule took any Latin run and reported 5 595 accepted strings,
+# most of them right: DLC, III, KSSMP, MageFur, 3DNPC, Jaysus Swords — acronyms, roman
+# numerals and asset names the source itself carries, which belong in the translation
+# untouched. Requiring a lower-case initial separates them, because a leftover is a
+# dictionary word in mid-sentence and an asset name is capitalised. 1 534 accepted
+# strings, and reading twenty of them found eighteen real.
+_LATIN_LEFTOVER_RE = re.compile(r"(?<![A-Za-z'’А-Яа-яЁё])[a-z]{3,}(?![A-Za-z])")
+
+# Characters from a third writing system, spliced into the middle of Russian words:
+# «на不定期ная работа», «которые设定ила Справедливая Леди», «Ма'دران сказал мне». The
+# mixed-alphabet rule above only knows Latin and Cyrillic and reads straight past these.
+# 200 accepted strings, and the shape cannot occur in a correct Skyrim translation.
+# The scripts a Russian translation of Skyrim is allowed to be written in. Everything
+# outside them — Han, Arabic, Hiragana — is a model slip, never a choice.
+_ALLOWED_SCRIPTS = (
+    (0x0000, 0x024F),   # ASCII, Latin-1, Latin Extended-A and -B
+    (0x0300, 0x036F),   # combining marks, as in «Садри́т Кегран»
+    (0x0400, 0x04FF),   # Cyrillic
+    (0x2000, 0x206F),   # punctuation, dashes, quotes — and ⇥
+    (0x20A0, 0x20CF),   # currency
+    (0x2190, 0x21FF),   # arrows
+    (0x2200, 0x22FF),   # maths
+    (0x2460, 0x24FF),   # enclosed alphanumerics
+    # Shapes, dingbats and mathematical brackets. ⟨ ⟩ (U+27E8/9) are in this range on
+    # purpose: a model that swapped them for < > has damaged markup, and
+    # markup_violations already says so in the words that fit. One defect, one rule.
+    (0x25A0, 0x27EF),
+    (0x3000, 0x303F),   # CJK punctuation — 〈 〉 likewise
+    (0xFE00, 0xFE0F),   # variation selectors
+)
+# № is Russian typography, not a foreign script.
+_FOREIGN_ALLOWED = "№"
+
+
+def _foreign_chars(text: str) -> list[str]:
+    out = []
+    for ch in text or "":
+        c = ord(ch)
+        if ch in _FOREIGN_ALLOWED:
+            continue
+        if not any(lo <= c <= hi for lo, hi in _ALLOWED_SCRIPTS):
+            out.append(ch)
+    return list(dict.fromkeys(out))
+
+
+
+# The model thinking out loud, stored as the answer. "Raspberry" came back as «Малина
+# (если это название растения, то можно перевести как «Малина», но в Skyrim часто
+# оставляют как есть. Для точности: «Малина»)» — the deliberation, the alternatives and
+# the conclusion, all of it rendered in game. 389 accepted strings, 304 of them plant
+# names from one run; 58 more are a refusal («Извините, но…») shipped as a translation.
+_META_COMMENT_RE = re.compile(
+    "(?:можно перевести|вариант перевода|если это название|дословно:|примечание:"
+    "|в контексте игры|оставляют как есть|перевод не требуется"
+    "|I cannot|I can't|as an AI|извините, но)", re.IGNORECASE)
+
+# A word repeated with a space between the copies: «Огненный огненный шар», «советника
+# Советника Лундена», «Для меня это должно быть быть захваченным».
+#
+# Hyphenated reduplication is ordinary Russian — «чуть-чуть», «Стук-стук», «очень-очень»
+# — and was almost every hit of the first version, so only the spaced shape counts. The
+# source is consulted too: "nothing nothing" and a line of fifteen Wabbajacks are
+# repeated on purpose, and copying them is correct.
+_DUP_WORD_RE = re.compile(r"\b([А-Яа-яЁё]{4,})\s+\1\b", re.IGNORECASE)
+_DUP_WORD_EN_RE = re.compile(r"\b([A-Za-z]{3,})\s+\1\b", re.IGNORECASE)
+
+# A period on the end of a name that has none in the source: "Vampiric Strength" stored
+# as «Вампирская сила.» An effect name renders in the magic menu mid-sentence, so the
+# stop shows. 76 accepted strings, and one of them turned out to be a whole different
+# defect: "Resolution" → «Получает <mag> урона огнем в течение <dur> секунд.»
+_NAME_RECORDS = frozenset(("WEAP", "ARMO", "MISC", "INGR", "ALCH", "SPEL", "MGEF",
+                           "NPC_", "KEYM", "AMMO", "ENCH", "PERK", "SHOU"))
+
+
+def latin_leftover_violations(original: str, translation: str) -> list[str]:
+    """An English word the translation never translated."""
+    if not translation:
+        return []
+    bare = _strip_all_tokens(translation)
+    if not _CYRILLIC_RE.search(bare):
+        return []                      # not a Russian sentence; nothing to leave behind
+    bad = list(dict.fromkeys(_LATIN_LEFTOVER_RE.findall(bare)))
+    if not bad:
+        return []
+    return ["untranslated English: " + ", ".join(bad[:4])]
+
+
+def foreign_script_violations(translation: str) -> list[str]:
+    """Characters from a writing system that is neither Latin nor Cyrillic."""
+    bad = _foreign_chars(translation)
+    if not bad:
+        return []
+    return ["foreign script: " + "".join(bad[:8])]
+
+
+def meta_comment_violations(translation: str) -> list[str]:
+    """The model's own deliberation, stored as the translation."""
+    m = _META_COMMENT_RE.search(translation or "")
+    return [f"model commentary in the translation: «{m.group(0)}»"] if m else []
+
+
+def duplicated_word_violations(original: str, translation: str) -> list[str]:
+    """A word repeated that the source does not repeat."""
+    m = _DUP_WORD_RE.search(_strip_all_tokens(translation))
+    if not m:
+        return []
+    if _DUP_WORD_EN_RE.search(_strip_all_tokens(original)):
+        return []                      # the source stutters too; copying it is correct
+    return [f"word repeated: {m.group(0)[:40]}"]
+
+
+def trailing_stop_violations(original: str, translation: str,
+                             rec_type: str | None = None,
+                             field_type: str | None = None) -> list[str]:
+    """A sentence-ending stop on a name that has none in the source."""
+    if rec_type not in _NAME_RECORDS or field_type != "FULL":
+        return []
+    o = _strip_all_tokens(original).strip()
+    t = _strip_all_tokens(translation).strip()
+    if (not o or len(o) >= 60 or o.endswith((".", "!", "?", ":", ";"))
+            or not t.endswith(".") or t.endswith("...")):
+        return []
+    return ["a name ending in a full stop the source does not have"]
+
+
 def strip_echo(original: str, translation: str) -> str:
     """The answer with the separator and whatever it repeated taken off."""
     if not echo_violations(original, translation):
@@ -343,7 +477,10 @@ def strip_echo(original: str, translation: str) -> str:
 
 
 def compute_string_status(original: str, translation: str,
-                          terms: dict | None = None) -> tuple[int, bool, list[str], str]:
+                          terms: dict | None = None,
+                          rec_type: str | None = None,
+                          field_type: str | None = None,
+                          ) -> tuple[int, bool, list[str], str]:
     """Single source of truth: returns (quality_score, tok_ok, issues, status).
 
     status is 'pending' with no translation, 'translated' when the tokens survived, the
@@ -354,6 +491,10 @@ def compute_string_status(original: str, translation: str,
     on the live collection with "Skyrim" rendered as "Сиродил" — a different province —
     all of them marked translated. Pass `terms` to enforce it; omit for the token/score
     checks alone.
+
+    `rec_type` and `field_type` are optional and only one check reads them: a full stop
+    on the end of a name matters in the magic menu and not in a book. Omit them and that
+    check stands down rather than guessing.
     """
     if not translation or not translation.strip():
         return 0, False, [], "pending"
@@ -368,7 +509,13 @@ def compute_string_status(original: str, translation: str,
     structural_bad = (echo_violations(original, translation)
                       + identifier_violations(original, translation)
                       + mixed_script_violations(translation)
-                      + number_violations(original, translation))
+                      + number_violations(original, translation)
+                      + latin_leftover_violations(original, translation)
+                      + foreign_script_violations(translation)
+                      + meta_comment_violations(translation)
+                      + duplicated_word_violations(original, translation)
+                      + trailing_stop_violations(original, translation,
+                                                 rec_type, field_type))
     issues.extend(structural_bad)
     glossary_ok = True
     if terms:

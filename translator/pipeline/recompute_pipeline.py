@@ -8,6 +8,32 @@ import logging
 log = logging.getLogger(__name__)
 
 
+def _revertible(original: str, translation: str) -> bool:
+    """Whether replacing this translation with the English original is the right answer.
+
+    needs_translation() says a string did not need translating, and where it is right the
+    stored Russian is a mistake to undo: HairMaleElf09 rendered as «Волосы эльфа-самца
+    09», or <Alias=Bruma> stored as <Alias=Брума>, which breaks the alias outright.
+
+    But it also answers False for any all-caps word, because all-caps is usually an
+    abbreviation. On the live collection that caught ALTERATION → «ИЗМЕНЕНИЕ»,
+    ILLUSION → «ИЛЛЮЗИЯ» and "{0} LVL DIFF" → «{0} РАЗНИЦА УРОВНЕЙ» — three correct
+    translations of magic-school labels that show in the menu, which the pass would have
+    discarded for being upper case. Six strings met the branch in total and four of them
+    were this.
+
+    So reverting needs a reason of its own: the source reads as a name for the engine, or
+    the translation broke a token. Neither is true of a word in capitals.
+    """
+    from translator.validation.quality import looks_like_identifier, validate_tokens
+    if not translation or translation.strip() == (original or "").strip():
+        return True                      # nothing to lose
+    if looks_like_identifier(original):
+        return True
+    tok_ok, _ = validate_tokens(original, translation)
+    return not tok_ok
+
+
 class RecomputePipeline:
     """Recomputes quality scores and statuses from SQLite."""
 
@@ -68,18 +94,13 @@ class RecomputePipeline:
                 for r in esp_rows:
                     orig  = r.get("original", "") or ""
                     trans = r.get("translation", "") or ""
-                    if not _needs_trans(orig):
+                    if not _needs_trans(orig) and _revertible(orig, trans):
                         new_qs, new_status, new_trans = 100, "translated", orig
                         if (trans == orig and r.get("quality_score") == 100
                                 and r.get("status") == "translated"):
                             continue
-                        # We are about to replace a real translation with the English
-                        # original. That is right for the common case — an editor ID like
-                        # HairMaleElf09 that a model translated by mistake — but the same
-                        # heuristic also catches all-caps UI labels ("ALTERATION" →
-                        # "ИЗМЕНЕНИЕ"), where the translation is correct and would be lost.
-                        # repo.upsert keeps no history, so archive it first: the string
-                        # history view can then show and restore it.
+                        # repo.upsert keeps no history, so archive the translation we are
+                        # about to discard: the string history view can show and restore it.
                         if trans and trans != orig and r.get("id") is not None:
                             try:
                                 repo.insert_history(

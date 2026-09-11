@@ -81,21 +81,30 @@ def test_editor_id_mistranslation_is_repaired(setup):
 
 
 def test_a_discarded_translation_is_archived_not_destroyed(setup):
-    """The same heuristic catches all-caps UI labels, where the translation is correct.
-    repo.upsert keeps no history, so recompute has to archive before overwriting."""
-    repo, db, _ = setup([("ALTERATION", "ИЗМЕНЕНИЕ", "translated", 100)])
-    got = _row(db, "ALTERATION")
-    assert got["translation"] == "ALTERATION"          # repaired in place
+    """repo.upsert keeps no history, so recompute has to archive before overwriting."""
+    repo, db, _ = setup([("HairMaleElf09", "Волосы эльфа-самца 09", "translated", 100)])
+    got = _row(db, "HairMaleElf09")
+    assert got["translation"] == "HairMaleElf09"        # repaired in place
 
     history = repo.get_history(got["id"])
-    assert any(h["translation"] == "ИЗМЕНЕНИЕ" for h in history), \
+    assert any(h["translation"] == "Волосы эльфа-самца 09" for h in history), \
         "the discarded translation must remain recoverable"
     assert any(h["source"] == "recompute-discarded" for h in history)
 
 
 def test_archiving_is_reported_in_the_job_log(setup):
-    _, _, job = setup([("ALTERATION", "ИЗМЕНЕНИЕ", "translated", 100)])
+    _, _, job = setup([("HairMaleElf09", "Волосы эльфа-самца 09", "translated", 100)])
     assert any("archived to history" in l for l in job.logs)
+
+
+def test_a_word_in_capitals_keeps_its_translation(setup):
+    """These two tests used to use ALTERATION → «ИЗМЕНЕНИЕ» as their example of a
+    translation worth archiving, which had it backwards: it is a magic school shown in
+    the menu, and a correct translation. needs_translation() answers False for anything
+    in capitals because all-caps is usually an abbreviation, and reverting on that alone
+    put English back into the UI. See _revertible and tests/test_recompute_revert.py."""
+    _, db, _ = setup([("ALTERATION", "ИЗМЕНЕНИЕ", "translated", 100)])
+    assert _row(db, "ALTERATION")["translation"] == "ИЗМЕНЕНИЕ"
 
 
 def test_untranslated_rows_are_not_touched(setup):

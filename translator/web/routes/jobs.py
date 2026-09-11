@@ -154,10 +154,18 @@ def create_job():
     elif job_type == "repair_strings":
         job = _create_repair_job(jm, apply=bool(options.get("apply", True)))
     elif job_type == "review_strings":
-        job = _create_review_fleet_job(jm, cfg,
-                                       machines = options.get("machines"),
-                                       scope    = options.get("scope", "all"),
-                                       limit    = options.get("limit"))
+        # The builders raise ValueError to refuse a job — no machines, an unknown scope —
+        # and the message is the whole diagnosis. Unhandled it reached the caller as a
+        # bare 500 with "the server encountered an internal error", so "review requires
+        # at least one registered machine" was only visible to whoever thought to go and
+        # read the log. Twice in one sitting that cost a round trip to find out.
+        try:
+            job = _create_review_fleet_job(jm, cfg,
+                                           machines = options.get("machines"),
+                                           scope    = options.get("scope", "all"),
+                                           limit    = options.get("limit"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc), "ok": False}), 400
     elif job_type == "validate" and mod_names:
         job = _create_validate_job(jm, cfg, mod_names[0])
     elif job_type == "fetch_nexus" and mod_names:
@@ -1407,9 +1415,14 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
     """
     repo     = current_app.config.get("STRING_REPO")
     registry = current_app.config.get("WORKER_REGISTRY")
+    # A job whose whole purpose is "send this to the machines" should not have to be told
+    # which machines. Omit them and it takes every live one, and says which in the log so
+    # the answer is never guessed at.
+    if not machines:
+        machines = [w.label for w in (registry.get_active() if registry else [])]
     backends, _skipped = _resolve_backends(cfg, machines)
     if not backends:
-        raise ValueError("review requires at least one registered machine")
+        raise ValueError("review needs a registered machine and no live one is connected")
 
     def run(job):
         from translator.web.offline_backend import dispatch_multi
@@ -1438,7 +1451,8 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
             by_mod.setdefault(r["mod_name"], []).append(item)
         n = sum(len(v) for v in by_mod.values())
         job.add_log(f"{'Blind re-translation' if blind else 'Review'}: "
-                    f"{n} string(s) across {len(by_mod)} mod(s)")
+                    f"{n} string(s) across {len(by_mod)} mod(s) "
+                    f"→ {', '.join(lbl for lbl, _ in backends)}")
         if not n:
             job.result = "nothing to review"
             return

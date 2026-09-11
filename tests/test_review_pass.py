@@ -202,3 +202,24 @@ def test_a_retranslation_with_the_same_defect_does_not_land():
     from translator.validation.quality import pick_better
     out = pick_better("Bed", "Bed → Кровать", "Bed -> Кровать", prefer_b_on_tie=False)
     assert out["chose"] == "a", "neither is acceptable, so the stored text keeps its place"
+
+
+# ── refusing a job has to say why ────────────────────────────────────────────
+
+def test_the_machines_default_to_every_live_one():
+    """A job whose purpose is "send this to the machines" should not have to be told
+    which. Omitting them refused the job outright, and the refusal arrived as a bare
+    500."""
+    import inspect
+    from translator.web.routes.jobs import _create_review_fleet_job
+    src = inspect.getsource(_create_review_fleet_job)
+    assert "if not machines:" in src
+    assert "registry.get_active()" in src
+
+
+def test_a_refusal_is_a_400_with_the_reason():
+    import inspect
+    from translator.web.routes import jobs as jobs_rt
+    src = inspect.getsource(jobs_rt.create_job)
+    assert "except ValueError as exc:" in src
+    assert 'str(exc)' in src and "400" in src

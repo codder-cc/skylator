@@ -1607,6 +1607,28 @@ def job_is_review(repo, host_job_id: str) -> bool:
         return False
 
 
+def job_is_candidate_only(repo, host_job_id: str) -> bool:
+    """Whether this job's answers are opinions to compare, not translations to store.
+
+    An ensemble sends the same string to two machines and learns from whether they agree.
+    That only works if neither answer is written down on arrival — the second delivery
+    would otherwise be merging against the first instead of against the stored text, and
+    the comparison would be between one model and itself.
+
+    Read from the dispatching job, like job_is_review, because a result outlives its job
+    and the wire cannot be trusted for something that decides whether to write.
+    """
+    if not host_job_id or repo is None:
+        return False
+    try:
+        row = repo.db.execute("SELECT payload FROM jobs WHERE id=?", (host_job_id,)).fetchone()
+        if not row or not row[0]:
+            return False
+        return bool((json.loads(row[0]).get("params") or {}).get("candidate_only"))
+    except Exception:
+        return False
+
+
 _TPS_KEY = "agent_tps"
 
 
@@ -2469,6 +2491,7 @@ def workers_offline_results(label: str):
     # Read once per delivery, not per string: it decides a tie in the merge for every
     # result in the batch, and it is a database lookup.
     _reviewing = job_is_review(repo, host_job_id)
+    _candidate = job_is_candidate_only(repo, host_job_id)
 
     if repo is not None and cfg is not None:
         mods_dir   = cfg.paths.mods_dir if cfg else Path(".")
@@ -2513,6 +2536,31 @@ def workers_offline_results(label: str):
                 stored_before = (_row["translation"] or "") if _row else ""
             except Exception:
                 stored_before = ""
+
+        # An ensemble's answers are opinions, not translations. Stored as candidates in
+        # history and compared later; nothing in `strings` moves, so the second machine's
+        # answer is still compared against what the collection actually holds rather than
+        # against the first machine's.
+        if _candidate and repo is not None:
+            sid = r.get("string_id")
+            if sid is None:
+                row = repo.db.execute(
+                    "SELECT id FROM strings WHERE mod_name=? AND esp_name=? AND key=?",
+                    (mod_name, esp_name, key)).fetchone()
+                sid = row["id"] if row else None
+            if sid is not None:
+                try:
+                    repo.insert_history(sid, translation, "candidate", quality,
+                                        f"candidate:{label}", label, host_job_id)
+                    saved_count += 1
+                except Exception as exc:
+                    log.debug("candidate: could not record %s: %s", sid, exc)
+                if astore is not None:
+                    try:
+                        astore.mark_string_delivered(offline_job_id, sid)
+                    except Exception:
+                        pass
+            continue
 
         try:
             if repo is not None and cfg is not None:

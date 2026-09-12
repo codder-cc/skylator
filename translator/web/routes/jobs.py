@@ -153,6 +153,18 @@ def create_job():
         )
     elif job_type == "repair_strings":
         job = _create_repair_job(jm, apply=bool(options.get("apply", True)))
+    elif job_type == "ensemble":
+        try:
+            job = _create_ensemble_job(jm, cfg,
+                                       machines  = options.get("machines"),
+                                       limit     = options.get("limit"),
+                                       offset    = options.get("offset") or 0,
+                                       max_chars = options.get("max_chars") or 300)
+        except ValueError as exc:
+            return jsonify({"error": str(exc), "ok": False}), 400
+    elif job_type == "ensemble_decide":
+        job = _create_ensemble_decide_job(jm, cfg,
+                                          apply=bool(options.get("apply", False)))
     elif job_type == "review_strings":
         # The builders raise ValueError to refuse a job — no machines, an unknown scope —
         # and the message is the whole diagnosis. Unhandled it reached the caller as a
@@ -1449,6 +1461,114 @@ def _create_recompute_scores_job(jm, cfg, mod_name: str = None, repo=None):
         name     = name,
         job_type = "recompute_scores",
         params   = {"mod_name": mod_name} if mod_name else {},
+        fn       = run,
+    )
+
+
+def _create_ensemble_job(jm, cfg, machines: list | None = None,
+                         limit: int | None = None, max_chars: int = 300,
+                         offset: int = 0):
+    """Ask two machines the same question and learn from whether they agree.
+
+    Seven eighths of what is wrong in this collection is meaning — a Stalhrim bow stored
+    as «Даэдрический лук», grammatical Russian about a bow — and no rule will ever see
+    it. Measured on the control set: one model asked to judge catches 11–17%; one model
+    asked to translate blind catches 94% but rewords 30% of what was already right, and
+    with a single translator a rewording and a correction look the same.
+
+    A rewording is one model's taste, and two models do not share taste. So both
+    translate the same source, seeing neither each other nor the stored text:
+
+        stems, agree ≥ 0.35, differ < 0.65 → recall 50%, false positives 0%
+
+    Every string goes to BOTH machines — this is the one pass that must not partition the
+    work, because the answer is the comparison. Their answers land in history as
+    candidates and nothing in `strings` moves until `ensemble_decide` compares them.
+
+    Short strings only by default. A name or a line of dialogue has one meaning to agree
+    about; two independent translations of a book chapter differ everywhere for reasons
+    that have nothing to do with the stored text being wrong.
+    """
+    repo     = current_app.config.get("STRING_REPO")
+    registry = current_app.config.get("WORKER_REGISTRY")
+    if not machines:
+        machines = [w.label for w in (registry.get_active() if registry else [])]
+    backends, _skipped = _resolve_backends(cfg, machines)
+    if not backends or len(backends) < 2:
+        raise ValueError("an ensemble needs two live machines; "
+                         f"found {len(backends or [])}")
+
+    def run(job):
+        from translator.web.offline_backend import dispatch_multi
+        from translator.models.inference_params import InferenceParams
+
+        sql = ("SELECT id, mod_name, esp_name, key, original, rec_type FROM strings "
+               "WHERE status='translated' AND TRIM(translation) <> '' "
+               "AND translation <> original "
+               "AND COALESCE(source,'') <> 'untranslatable' "
+               "AND LENGTH(original) <= ? "
+               "ORDER BY id")
+        params: list = [int(max_chars)]
+        if limit:
+            sql += " LIMIT ? OFFSET ?"
+            params += [int(limit), int(offset)]
+        rows = repo.db.execute(sql, tuple(params)).fetchall()
+
+        by_mod: dict[str, list] = {}
+        for r in rows:
+            by_mod.setdefault(r["mod_name"], []).append({
+                "id": r["id"], "mod_name": r["mod_name"], "esp": r["esp_name"],
+                "key": r["key"], "original": r["original"],
+                "rec_type": r["rec_type"] or "",
+            })
+        n = sum(len(v) for v in by_mod.values())
+        job.add_log(f"Ensemble: {n} accepted string(s) across {len(by_mod)} mod(s), "
+                    f"each to BOTH of {', '.join(lbl for lbl, _ in backends)}")
+        if not n:
+            job.result = "nothing to compare"
+            return
+        mods = [(mod, strs, "") for mod, strs in by_mod.items()]
+        # One dispatch per machine, each carrying everything. dispatch_multi partitions
+        # across the backends it is given, so it is given one at a time.
+        for lbl, backend in backends:
+            job.add_log(f"Dispatching the whole set to {lbl}")
+            dispatch_multi(job, mods, InferenceParams(), [(lbl, backend)],
+                           registry, jm, repo, cfg)
+
+    return jm.create(
+        name     = "Ensemble: two translators on the same strings",
+        job_type = "translate_strings",
+        params   = {"review": False, "candidate_only": True, "scope": "ensemble"},
+        fn       = run,
+    )
+
+
+def _create_ensemble_decide_job(jm, cfg, apply: bool = False):
+    """Compare the candidates two machines left and, with apply, act on them."""
+    repo      = current_app.config.get("STRING_REPO")
+    stats_mgr = current_app.config.get("STATS_MGR")
+
+    def run(job):
+        from translator.validation.ensemble_decide import decide
+        out = decide(repo, _load_glossary(cfg), apply=apply, job=job)
+        c = out["counts"]
+        for en, stored, a_, b_ in out["examples"]:
+            job.add_log(f"  {en[:44]!r}")
+            job.add_log(f"     stored {stored[:52]!r}")
+            job.add_log(f"     A      {a_[:52]!r}")
+            job.add_log(f"     B      {b_[:52]!r}")
+        job.result = ", ".join(f"{k}: {v}" for k, v in c.items())
+        job.add_log(job.result)
+        if apply and c.get("replaced") and stats_mgr:
+            try:
+                stats_mgr.invalidate_all()
+            except Exception:
+                pass
+
+    return jm.create(
+        name     = "Ensemble: decide" + ("" if apply else " (dry run)"),
+        job_type = "ensemble_decide",
+        params   = {"apply": apply},
         fn       = run,
     )
 

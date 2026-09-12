@@ -112,9 +112,8 @@ def test_the_delivery_path_reads_the_old_text_before_the_merge_replaces_it():
     import inspect
     from translator.web.routes import api as api_rt
     src = inspect.getsource(api_rt)
-    i = src.index("stored_before = \"\"")
-    block = src[i:i + 3400]
-    assert "SELECT translation FROM strings" in block
-    assert "apply_correction_to_duplicates" in block
-    assert block.index("SELECT translation FROM strings") < block.index("save_string("), \
-        "read before the merge, not after"
+    read = src.index("stored_before = \"\"")
+    merge = src.index("string_mgr.save_string(", read)
+    carry = src.index("apply_correction_to_duplicates", read)
+    assert read < merge < carry, "read the old text, then merge, then carry it to the twins"
+    assert "SELECT translation FROM strings" in src[read:merge]

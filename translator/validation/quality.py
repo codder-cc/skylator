@@ -451,6 +451,27 @@ def duplicated_word_violations(original: str, translation: str) -> list[str]:
     return [f"word repeated: {m.group(0)[:40]}"]
 
 
+# The model losing its place and repeating one letter until it runs out of budget.
+# "Rrrrrrrrgh!" came back as «Рррр…» 148 times the length of the source, and a shout in
+# a dialogue line renders every character of it. 36 of these, and nothing named them: the
+# score's length-ratio penalty tops out at −40, which leaves 60 — above the threshold.
+_RUNAWAY_RUN_RE = re.compile(r"(\w)\1{11,}")
+
+
+def runaway_repetition_violations(original: str, translation: str) -> list[str]:
+    """One character repeated far past anything the source does."""
+    m = _RUNAWAY_RUN_RE.search(translation or "")
+    if not m:
+        return []
+    # A source that stutters gets the same licence: "Aaaaaaaaaaaargh" may be translated
+    # as «Аааааааааааа». What is caught is a run the source has no answer for.
+    longest_src = max((len(g.group(0)) for g in re.finditer(r"(\w)\1{2,}", original or "")),
+                      default=0)
+    if len(m.group(0)) <= max(12, longest_src * 2):
+        return []
+    return [f"a letter repeated {len(m.group(0))} times: {m.group(0)[:14]}…"]
+
+
 def trailing_stop_violations(original: str, translation: str,
                              rec_type: str | None = None,
                              field_type: str | None = None) -> list[str]:
@@ -514,6 +535,7 @@ def compute_string_status(original: str, translation: str,
                       + foreign_script_violations(translation)
                       + meta_comment_violations(translation)
                       + duplicated_word_violations(original, translation)
+                      + runaway_repetition_violations(original, translation)
                       + trailing_stop_violations(original, translation,
                                                  rec_type, field_type))
     issues.extend(structural_bad)
@@ -562,6 +584,7 @@ def renders_as_garbage(original: str, translation: str) -> list[str]:
     out += number_violations(original, translation)
     out += foreign_script_violations(translation)
     out += meta_comment_violations(translation)
+    out += runaway_repetition_violations(original, translation)
     out += markup_violations(original, translation)
     tok_ok, tok_issues = validate_tokens(original, translation)
     if not tok_ok:

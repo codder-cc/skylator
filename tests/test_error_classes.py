@@ -184,3 +184,41 @@ def test_clean_work_still_passes():
         qs, tok_ok, issues, status = compute_string_status(en, ru)
         assert status == "translated", (en, ru, issues)
         assert issues == [] and tok_ok and qs > 70
+
+
+# ── the model losing its place ───────────────────────────────────────────────
+#
+# "Rrrrrrrrgh!" came back as «Рррр…» 148 times the length of the source, and a shout in
+# a dialogue line renders every character of it. 36 of these, and nothing named them:
+# the score's length-ratio penalty tops out at −40, which leaves 60 — above the
+# threshold that decides.
+
+@pytest.mark.parametrize("en, ru", [
+    ("Rrrrrrrrgh!", "Р" * 56),
+    ("Well, here goes nothing...Chaaaaaarge!", "Ну, вот и начинается... Чеее" + "е" * 40),
+])
+def test_a_runaway_repeat_is_damage(en, ru):
+    from translator.validation.quality import runaway_repetition_violations
+    assert runaway_repetition_violations(en, ru)
+
+
+@pytest.mark.parametrize("en, ru, why", [
+    ("Aaaaaaaaaaaargh!", "А" * 14, "the source stutters too, and at the same length"),
+    ("Mmmm", "Мммм", "a short repeat is ordinary"),
+    ("Hello", "Привет", "no repeat at all"),
+    ("Hmm...", "Хмм...", "likewise"),
+])
+def test_a_repeat_the_source_earns_is_left_alone(en, ru, why):
+    from translator.validation.quality import runaway_repetition_violations
+    assert runaway_repetition_violations(en, ru) == [], why
+
+
+def test_a_runaway_repeat_never_reaches_the_game():
+    from translator.validation.quality import renders_as_garbage
+    assert renders_as_garbage("Rrrrrrrrgh!", "Р" * 56)
+
+
+def test_the_gate_refuses_it():
+    _qs, _tok, issues, status = compute_string_status("Rrrrrrrrgh!", "Р" * 56)
+    assert status == "needs_review"
+    assert any("repeated" in i for i in issues)

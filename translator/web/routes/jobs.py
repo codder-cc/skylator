@@ -1401,6 +1401,20 @@ def _create_recompute_scores_job(jm, cfg, mod_name: str = None, repo=None):
     )
 
 
+def _load_glossary(cfg) -> dict:
+    """The curated glossary, or {} — a missing file turns the term scope into a no-op
+    rather than failing the dispatch."""
+    import json
+    from pathlib import Path
+    try:
+        path = cfg.paths.skyrim_terms if cfg else None
+        if path and Path(path).exists():
+            return json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception as exc:
+        log.warning("terms scope: could not load glossary: %s", exc)
+    return {}
+
+
 def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                              scope: str = "all", limit: int | None = None):
     """Send stored translations back to the fleet to be checked and corrected.
@@ -1415,12 +1429,14 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
     No per-mod context is built. Fetching a Nexus description per mod costs an hour across
     the collection for a job that has the source and the stored answer in front of it.
 
-    Three scopes:
+    Four scopes:
 
       all         every accepted translation, shown to the model beside the source
       unchecked   the same, narrowed to what the current rules never judged
       flagged     the strings the rules refuse — status='needs_review' — sent WITHOUT the
                   stored text, so the model translates rather than corrects
+      terms       the flagged strings that break the glossary, each carrying the rendering
+                  it must use, so the model corrects that one word and nothing else
 
     `flagged` is blind on purpose, and the measurements are why. On the control set, a
     prompt that shows the stored answer and asks for a correction has 11–17% recall: "the
@@ -1430,6 +1446,18 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
     stored text, so there is nothing good to churn, and the merge gate ranks an answer it
     accepts above one it refuses — so a clean re-translation lands and a re-translation
     carrying the same defect does not.
+
+    `terms` exists because blind is not enough for terminology. Of the 390 strings a
+    blind pass could not fix, 357 repeated the same glossary violation: the model writes
+    «Дверный» for Dwemer, is asked again, and writes «Дверный» again. Measured on 24 real
+    violations, one per term:
+
+        translate the string again, unaided        50% correct
+        translate with the term required           83%
+        correct the stored text, term required     88%
+
+    So the requirement rides on the line it applies to. A glossary listed at the top of a
+    batch does not bind — Dwemer was in that list and came back «Дверной» anyway.
     """
     repo     = current_app.config.get("STRING_REPO")
     registry = current_app.config.get("WORKER_REGISTRY")
@@ -1447,9 +1475,10 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         from translator.models.inference_params import InferenceParams
 
         blind = scope == "flagged"
+        fixing_terms = scope == "terms"
         where = ["TRIM(translation) <> ''", "translation <> original",
                  "COALESCE(source,'') <> 'untranslatable'",
-                 "status='needs_review'" if blind else "status='translated'"]
+                 "status='needs_review'" if (blind or fixing_terms) else "status='translated'"]
         if scope == "unchecked":
             # Never seen by the current rules: the legacy import and everything a twin
             # was copied onto rather than translated.
@@ -1459,18 +1488,32 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         if limit:
             sql += f" LIMIT {int(limit)}"
 
+        terms_map = _load_glossary(cfg) if fixing_terms else {}
         by_mod: dict[str, list] = {}
+        skipped_no_violation = 0
         for r in repo.db.execute(sql).fetchall():
             item = {"id": r["id"], "mod_name": r["mod_name"], "esp": r["esp_name"],
                     "key": r["key"], "original": r["original"],
                     "rec_type": r["rec_type"] or ""}
-            if not blind:
+            if fixing_terms:
+                from translator.validation.terminology import glossary_violations
+                bad = glossary_violations(r["original"], r["translation"], terms_map)
+                if not bad:
+                    skipped_no_violation += 1
+                    continue        # flagged for something else; a term fix cannot help it
+                item["current"]   = r["translation"]
+                item["req_terms"] = "; ".join(f"{en} = {ru}" for en, ru in bad[:3])
+            elif not blind:
                 item["current"] = r["translation"]   # what makes this a review, not a retry
             by_mod.setdefault(r["mod_name"], []).append(item)
         n = sum(len(v) for v in by_mod.values())
-        job.add_log(f"{'Blind re-translation' if blind else 'Review'}: "
-                    f"{n} string(s) across {len(by_mod)} mod(s) "
+        kind = ("Terminology fix" if fixing_terms else
+                "Blind re-translation" if blind else "Review")
+        job.add_log(f"{kind}: {n} string(s) across {len(by_mod)} mod(s) "
                     f"→ {', '.join(lbl for lbl, _ in backends)}")
+        if skipped_no_violation:
+            job.add_log(f"Skipped {skipped_no_violation} flagged for something a term "
+                        f"fix cannot repair")
         if not n:
             job.result = "nothing to review"
             return
@@ -1479,6 +1522,7 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
 
     return jm.create(
         name     = ("Re-translate flagged strings (blind)" if scope == "flagged"
+                    else "Fix terminology on flagged strings" if scope == "terms"
                     else f"Review stored translations ({scope})"),
         job_type = "translate_strings",
         params   = {"review": scope != "flagged", "scope": scope},

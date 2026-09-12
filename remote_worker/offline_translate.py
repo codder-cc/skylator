@@ -258,6 +258,10 @@ class OfflineTranslateRunner:
                 # the model corrects rather than translates; absent, nothing changes.
                 stored = [b.get("current") or "" for b in batch]
                 reviewing = any(stored)
+                # The rendering each line must use for the term it got wrong. Present
+                # only in a terminology-fix package, and it changes the prompt from
+                # "review this" to "correct this one word".
+                req_terms = [b.get("req_terms") or "" for b in batch]
 
                 # TM block for this chunk
                 tm_lines = []
@@ -296,6 +300,7 @@ class OfflineTranslateRunner:
                     terminology     = terminology,
                     preserve_tokens = preserve_tokens,
                     current         = stored if reviewing else None,
+                    terms           = req_terms if reviewing else None,
                 )
                 # A preview for the UI, not data. Untruncated, a single book chapter put
                 # 12.6 KB on every heartbeat and made up 88% of the /api/workers payload —

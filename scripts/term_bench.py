@@ -53,13 +53,13 @@ def infer(label: str, prompt: str, timeout: int = 240) -> str:
     req = urllib.request.Request(f"{MASTER}/api/workers/{label}/infer", data=body,
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout + 30) as r:
-        return (json.load(r) or {}).get("text") or ""
+        return (json.load(r) or {}).get("result") or ""
 
 
 # ── the three prompts ────────────────────────────────────────────────────────
 
-_RULES = ("Output ONLY the Russian translation. No English, no explanation, no quotes, "
-          "no commentary, no alternatives.")
+_RULES = ("Answer with the Russian translation on a single line and nothing else. "
+          "/no_think")
 
 
 def p_blind(en: str, _cur: str, _term: str, _ru: str) -> str:
@@ -88,13 +88,25 @@ def p_fix(en: str, cur: str, term: str, ru: str) -> str:
 VARIANTS = {"blind": p_blind, "term": p_term, "fix": p_fix}
 
 
+_THINK = __import__("re").compile(r"<think>.*?(?:</think>|$)", __import__("re").S)
+_CYR = __import__("re").compile(r"[А-Яа-яЁё]")
+
+
 def clean_output(raw: str) -> str:
-    """First non-empty line, stripped of the quoting a model adds unbidden."""
-    for line in (raw or "").splitlines():
-        s = line.strip().strip('"').strip("«»").strip()
-        if s:
-            return s
-    return ""
+    """The answer, out of everything the model says around it.
+
+    The raw inference chunk gets no chat template, so Qwen reasons out loud: a <think>
+    block, then an analysis, often a markdown table of alternatives, and the answer last.
+    Taking the first non-empty line returned "<think>" every time and scored three
+    variants at 0% — a measurement that said nothing about any of them.
+    """
+    text = _THINK.sub(" ", raw or "")
+    lines = [ln.strip().strip("*").strip() for ln in text.splitlines()]
+    lines = [ln.strip('"').strip("«»").strip() for ln in lines if ln.strip()]
+    cyr = [ln for ln in lines
+           if _CYR.search(ln) and not ln.startswith(("|", "#", "-", ">"))
+           and len(ln) < 400 and ":" not in ln[:14]]
+    return cyr[-1] if cyr else (lines[-1] if lines else "")
 
 
 def main() -> int:

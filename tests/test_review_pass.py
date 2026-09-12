@@ -175,8 +175,8 @@ def test_a_flagged_string_is_sent_without_its_stored_text():
     from translator.web.routes.jobs import _create_review_fleet_job
     src = inspect.getsource(_create_review_fleet_job)
     assert 'blind = scope == "flagged"' in src
-    assert "if not blind:" in src, "the stored text must be attached only when reviewing"
-    assert 'status=\'needs_review\'" if blind' in src
+    assert "elif not blind:" in src, "the stored text is attached only when reviewing"
+    assert "status='needs_review'" in src, "flagged reads the strings the rules refuse"
 
 
 def test_the_flagged_scope_does_not_ask_for_the_tie_break():
@@ -223,3 +223,108 @@ def test_a_refusal_is_a_400_with_the_reason():
     src = inspect.getsource(jobs_rt.create_job)
     assert "except ValueError as exc:" in src
     assert 'str(exc)' in src and "400" in src
+
+
+# ── the terminology fix: the requirement rides on the line ───────────────────
+#
+# A blind pass could not fix 390 strings, and 357 of them were the same glossary
+# violation repeated: the model writes «Дверный» for Dwemer, is asked again, and writes
+# «Дверный» again. Measured on 24 real violations, one per term:
+#
+#     translate the string again, unaided        50% correct
+#     translate with the term required           83%
+#     correct the stored text, term required     88%
+#
+# A glossary listed at the top of the batch does not bind — Dwemer was in that list and
+# came back «Дверной» anyway. The same requirement attached to its own line does.
+
+def test_a_requirement_turns_a_review_into_a_term_fix():
+    p = build_prompt(["Dwemer Bowl"], "English", "Russian",
+                     current=["Дверная чаша"], terms=["Dwemer = Двемер"])
+    assert "must use for one term" in p
+    assert "Change ONLY the wrong term" in p
+    assert "1. Dwemer Bowl ⇥ Дверная чаша ⇥ MUST USE: Dwemer = Двемер" in p
+
+
+def test_without_a_requirement_it_is_still_an_ordinary_review():
+    p = build_prompt(["Iron Dagger"], "English", "Russian", current=["Железный кинжал"])
+    assert "Review each numbered" in p
+    assert "MUST USE" not in p
+
+
+def test_an_empty_requirement_list_does_not_switch_the_prompt():
+    """Some lines of a review batch may have no term to fix; that is not a term-fix job."""
+    p = build_prompt(["Iron Dagger"], "English", "Russian",
+                     current=["Железный кинжал"], terms=[""])
+    assert "Review each numbered" in p and "MUST USE" not in p
+
+
+def test_the_prompt_says_to_decline_the_word():
+    """The glossary holds a dictionary form. «Двемер» has to become «двемерская» before a
+    feminine noun, and pasting the entry verbatim would produce «Двемер чаша»."""
+    p = build_prompt(["Dwemer Bowl"], "English", "Russian",
+                     current=["Дверная чаша"], terms=["Dwemer = Двемер"])
+    assert "Decline the required word" in p
+    assert "dictionary form" in p
+
+
+def test_the_fix_prompt_still_forbids_the_separator():
+    """⇥ is in this prompt for the same reason it leaked into 1 922 translations before."""
+    p = build_prompt(["Bed"], "English", "Russian",
+                     current=["Кровать"], terms=["Bed = Кровать"])
+    assert "Never output the source text, the requirement" in p
+    assert "separator" in p
+
+
+def test_a_term_fix_dedupes_on_the_requirement_too():
+    """The same source and the same stored Russian can be held against different terms in
+    different mods, and collapsing them would fix one and leave the other."""
+    from translator.web.offline_backend import dedupe_by_text
+    rows = [
+        {"original": "Ebony Mace", "current": "Эбонитовый молот", "req_terms": "Mace = Булава"},
+        {"original": "Ebony Mace", "current": "Эбонитовый молот", "req_terms": "Ebony = Эбонит"},
+        {"original": "Ebony Mace", "current": "Эбонитовый молот", "req_terms": "Mace = Булава"},
+    ]
+    unique, dropped = dedupe_by_text(rows)
+    assert len(unique) == 2 and dropped == 1
+
+
+def test_the_package_carries_the_requirement():
+    from translator.web.offline_backend import _make_remote_strings
+    remote, _items = _make_remote_strings(
+        [{"id": 1, "original": "Dwemer Bowl", "current": "Дверная чаша",
+          "req_terms": "Dwemer = Двемер", "mod_name": "M", "esp": "M.esp", "key": "k"}], "M")
+    assert remote[0]["req_terms"] == "Dwemer = Двемер"
+    assert remote[0]["current"] == "Дверная чаша"
+
+
+def test_a_plain_translation_package_carries_neither():
+    from translator.web.offline_backend import _make_remote_strings
+    remote, _ = _make_remote_strings(
+        [{"id": 1, "original": "Iron Dagger", "mod_name": "M", "esp": "M.esp", "key": "k"}], "M")
+    assert "req_terms" not in remote[0] and "current" not in remote[0]
+
+
+def test_the_agent_store_keeps_the_requirement_across_a_restart(tmp_path):
+    """It has to survive in the agent's own database, or a machine that reboots mid-package
+    resumes it as an ordinary review and reproduces the very error it was sent to fix."""
+    from result_store import ResultStore
+    s = ResultStore(tmp_path / "w.db")
+    s.add_assignment("a1", items=[
+        {"string_id": 7, "original": "Dwemer Bowl", "current": "Дверная чаша",
+         "req_terms": "Dwemer = Двемер"},
+        {"string_id": 8, "original": "Iron Dagger"},
+    ])
+    items = {r["string_id"]: r for r in s.pending_items("a1")}
+    assert items[7]["req_terms"] == "Dwemer = Двемер"
+    assert items[7]["current"] == "Дверная чаша"
+    assert items[8]["req_terms"] is None      # an ordinary translation item, unchanged
+    s.close()
+
+
+def test_the_terms_scope_skips_what_a_term_fix_cannot_repair():
+    import inspect
+    from translator.web.routes.jobs import _create_review_fleet_job
+    src = inspect.getsource(_create_review_fleet_job)
+    assert "glossary_violations" in src
+    assert "skipped_no_violation" in src, "a string flagged for markup is not a term fix"

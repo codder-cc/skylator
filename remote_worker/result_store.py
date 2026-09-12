@@ -30,7 +30,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Wire-protocol version negotiated with the master at registration. Over a months-long
 # run an OTA update may change payloads on one side; both ends carry this so a mismatch
@@ -46,6 +46,9 @@ _AGENT_MIGRATIONS: list[tuple[int, list[str]]] = [
     # translation package — same transport, same durable store, same delivery — which is
     # what lets it run while the master is switched off.
     (2, ["ALTER TABLE agent_manifest ADD COLUMN current TEXT"]),
+    # The rendering a line must use for the one term it got wrong. Stated per line it
+    # binds; listed at the top of a batch it does not.
+    (3, ["ALTER TABLE agent_manifest ADD COLUMN req_terms TEXT"]),
 ]
 
 _SCHEMA = """
@@ -77,6 +80,7 @@ CREATE TABLE IF NOT EXISTS agent_manifest (
     esp_name      TEXT,
     str_key       TEXT,
     current       TEXT,                          -- set only for a review package
+    req_terms     TEXT,                          -- set only for a terminology-fix package
     done          INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (assignment_id, string_id)
 );
@@ -235,14 +239,15 @@ class ResultStore:
                 it.get("mod_name"), it.get("esp_name") or it.get("esp"),
                 it.get("key") or it.get("str_key"),
                 it.get("current"),
+                it.get("req_terms"),
             ))
 
         def _do():
             self._conn.executemany(
                 """INSERT OR IGNORE INTO agent_manifest
                    (assignment_id, string_id, string_hash, original, mod_name, esp_name,
-                    str_key, current)
-                   VALUES (?,?,?,?,?,?,?,?)""",
+                    str_key, current, req_terms)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
                 rows,
             )
 
@@ -259,7 +264,7 @@ class ResultStore:
         with self._lock:
             cur = self._conn.execute(
                 """SELECT string_id, string_hash, original, mod_name, esp_name, str_key,
-                          current
+                          current, req_terms
                    FROM agent_manifest WHERE assignment_id=? AND done=0
                    ORDER BY string_id""",
                 (assignment_id,),

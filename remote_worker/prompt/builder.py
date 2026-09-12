@@ -81,6 +81,32 @@ Review each numbered {src}→{tgt} translation and output the corrected translat
 Strings (source ⇥ stored translation):
 {numbered_texts}"""
 
+_TERMFIX_SYSTEM = (
+    "You are a terminology editor for Russian translations of "
+    "The Elder Scrolls V: Skyrim (Нолвус modpack). "
+    "Each line carries a translation that renders one term with the wrong word. "
+    "You correct that word and leave the rest of the sentence exactly as it is."
+)
+
+_TERMFIX_TMPL = """\
+Each numbered line is a {src} string, its {tgt} translation, and the rendering that \
+translation must use for one term.
+
+CRITICAL RULES — violating any of these is an error:
+- Change ONLY the wrong term. Every other word stays exactly as written.
+- Decline the required word as the sentence needs — «Двемер» becomes «двемерская» \
+before a feminine noun. The required form is the dictionary form, not the literal text \
+to paste.
+- If the stored translation is already correct apart from that term, change nothing else \
+about it.
+- Preserve formatting tokens and placeholders (<Alias=...>, %1, [PlayerName]) exactly, \
+along with ⟨NL⟩, ⟨H0⟩⟨H1⟩⟨H2⟩ and {{T0}}{{T1}} — copy them verbatim.
+- Never output the source text, the requirement, an explanation, or the ⇥ separator. \
+Output ONLY the numbered corrected translations.
+{terminology}{preserve}{context_block}
+Strings (source ⇥ stored translation ⇥ required rendering):
+{numbered_texts}"""
+
 
 def _one_line(t: str) -> str:
     return (t or "").replace(chr(13), "").replace(chr(10), "⟨NL⟩")
@@ -99,6 +125,25 @@ def _numbered_pairs(texts: list[str], current: list[str]) -> str:
     return "\n".join(out)
 
 
+def _numbered_terms(texts: list[str], current: list[str], terms: list[str]) -> str:
+    """Source, the stored translation, and the one rendering this line got wrong.
+
+    The requirement goes on the line it applies to. A glossary at the top of the batch
+    does not bind — measured on Dwemer, which was in that list and came back «Дверной»
+    anyway. Stated per line it binds 88% of the time against 50% for translating the
+    string again from scratch.
+    """
+    out = []
+    for i, t in enumerate(texts):
+        cur = current[i] if i < len(current) else ""
+        req = terms[i] if i < len(terms) else ""
+        line = f"{i+1}. {_one_line(t)} ⇥ {_one_line(cur)}"
+        if req:
+            line += f" ⇥ MUST USE: {_one_line(req)}"
+        out.append(line)
+    return "\n".join(out)
+
+
 def build_prompt(
     texts:           list[str],
     src_lang:        str,
@@ -110,6 +155,7 @@ def build_prompt(
     preserve_tokens: list[str]  = [],
     model_type:      str        = "qwen",
     current:         list[str] | None = None,
+    terms:           list[str] | None = None,
 ) -> str:
     """
     Assemble the full ChatML inference prompt.
@@ -123,23 +169,43 @@ def build_prompt(
     parser, the durable store, delivery, the merge gate — is untouched. That is the
     point: a review pass rides the machinery a translation pass already uses, which is
     what lets it run on the agents with the master switched off.
+
+    `terms` narrows it further: each line also carries the one rendering that line got
+    wrong, and the task becomes correcting that word and nothing else. Measured on 24
+    real violations, one per term:
+
+        translate the string again, unaided        50% correct
+        translate with the term required           83%
+        correct the stored text, term required     88%
+
+    A glossary listed at the top of the batch does not bind — Dwemer was in that list
+    and came back «Дверной» anyway. The same requirement attached to the line does.
     """
     ctx_block   = f"\nContext: {context}\n" if context else ""
     term_block  = (terminology.rstrip() + "\n") if terminology else ""
     preserve    = _preserve_note(preserve_tokens)
-    reviewing   = bool(current)
+    fixing      = bool(current) and any(terms or [])
+    reviewing   = bool(current) and not fixing
 
-    user_msg = (_QWEN_REVIEW_TMPL if reviewing else _QWEN_USER_TMPL).format(
+    tmpl = _TERMFIX_TMPL if fixing else (_QWEN_REVIEW_TMPL if reviewing else _QWEN_USER_TMPL)
+    if fixing:
+        numbered = _numbered_terms(texts, current or [], terms or [])
+    elif reviewing:
+        numbered = _numbered_pairs(texts, current or [])
+    else:
+        numbered = _numbered(texts)
+
+    user_msg = tmpl.format(
         src            = src_lang,
         tgt            = tgt_lang,
         terminology    = term_block,
         preserve       = preserve,
         context_block  = ctx_block,
-        numbered_texts = (_numbered_pairs(texts, current) if reviewing
-                          else _numbered(texts)),
+        numbered_texts = numbered,
     )
 
-    system       = system_prompt or (_REVIEW_SYSTEM if reviewing else _DEFAULT_SYSTEM)
+    system = system_prompt or (_TERMFIX_SYSTEM if fixing else
+                               _REVIEW_SYSTEM if reviewing else _DEFAULT_SYSTEM)
     think_prefix = "" if thinking else "</think>\n\n"
 
     return (

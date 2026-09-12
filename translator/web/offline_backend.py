@@ -160,7 +160,12 @@ def dedupe_by_text(strings: list[dict]) -> tuple[list[dict], int]:
         text = s.get("original") or ""
         if not text:
             continue
-        key = (text, s["current"]) if s.get("current") else text
+        # A terminology fix is keyed by the requirement too: the same source and the
+        # same stored Russian can be held against different terms in different mods.
+        if s.get("current"):
+            key = (text, s["current"], s.get("req_terms") or "")
+        else:
+            key = text
         if key in seen:
             continue
         seen.add(key)
@@ -197,6 +202,10 @@ def _make_remote_strings(bucket: list[dict], default_mod: str):
             # agent corrects it instead of translating the source again. Absent for a
             # translation package, and the agent's prompt switches on exactly that.
             **({"current": s["current"]} if s.get("current") else {}),
+            # Present only in a terminology-fix package: the rendering this line must
+            # use for the one term it got wrong. Stated per line it binds 88% of the
+            # time; the same glossary listed at the top of a batch binds 50%.
+            **({"req_terms": s["req_terms"]} if s.get("req_terms") else {}),
         })
         if sid is not None:
             items.append((sid, h))

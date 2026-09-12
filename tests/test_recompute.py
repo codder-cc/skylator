@@ -127,3 +127,41 @@ def test_missing_repo_is_reported_not_crashed(tmp_path, monkeypatch):
     job = _Job()
     RecomputePipeline(cfg, None).run(job, "Mod")
     assert any("no repo" in l for l in job.logs)
+
+
+def test_a_settled_record_name_gets_the_status_to_match(setup, tmp_path, monkeypatch):
+    """The repair pass marks a record name untranslatable and leaves its answer — itself.
+    Nothing then set the status, so 1 217 of them sat in review carrying
+    source='untranslatable', re-dispatched by every sweep and answered the same way each
+    time. The recompute is the authority on status and has to say so.
+
+    «Variable07» also shows why nothing else caught it: identifier_violations only fires
+    when a record name comes back TRANSLATED, and the score takes 50 off any translation
+    equal to its source."""
+    repo, db, _ = setup([("Variable07", "Variable07", "needs_review", 20)])
+    db.execute("UPDATE strings SET source='untranslatable', status='needs_review',"
+               " quality_score=20")
+    db.commit()
+
+    cfg = _Cfg()
+    cfg.paths.mods_dir = tmp_path / "mods"
+    RecomputePipeline(cfg, repo).run(_Job(), "Mod")
+
+    got = _row(db, "Variable07")
+    assert got["status"] == "translated" and got["quality_score"] == 100
+    assert got["translation"] == "Variable07"
+
+
+def test_the_mark_only_settles_a_row_whose_answer_is_the_source(setup, tmp_path):
+    """A marked row that says something else is a different problem and still goes
+    through the gate — the mark is not a licence to accept anything."""
+    repo, db, _ = setup([("WB_Dremora_Hair", "Волосы дреморы", "needs_review", 20)])
+    db.execute("UPDATE strings SET source='untranslatable', status='needs_review'")
+    db.commit()
+
+    cfg = _Cfg()
+    cfg.paths.mods_dir = tmp_path / "mods"
+    RecomputePipeline(cfg, repo).run(_Job(), "Mod")
+
+    got = _row(db, "WB_Dremora_Hair")
+    assert got["translation"] == "WB_Dremora_Hair", "a translated identifier is still undone"

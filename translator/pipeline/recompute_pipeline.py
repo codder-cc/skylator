@@ -94,7 +94,16 @@ class RecomputePipeline:
                 for r in esp_rows:
                     orig  = r.get("original", "") or ""
                     trans = r.get("translation", "") or ""
-                    if not _needs_trans(orig) and _revertible(orig, trans):
+                    # Already settled: a record name whose answer is itself. The repair
+                    # pass marks these, and nothing then set the status to match — 1 217
+                    # of them sat in review carrying source='untranslatable', re-dispatched
+                    # by every sweep and answered the same way each time.
+                    if (r.get("source") == "untranslatable"
+                            and trans.strip() == orig.strip()):
+                        if r.get("status") == "translated" and r.get("quality_score") == 100:
+                            continue
+                        new_qs, new_status, new_trans = 100, "translated", orig
+                    elif not _needs_trans(orig) and _revertible(orig, trans):
                         new_qs, new_status, new_trans = 100, "translated", orig
                         if (trans == orig and r.get("quality_score") == 100
                                 and r.get("status") == "translated"):

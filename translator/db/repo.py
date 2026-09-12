@@ -227,7 +227,7 @@ class StringRepo:
             rows = self.db.execute("""
                 SELECT id, mod_name, esp_name, key, original, translation, status,
                        quality_score, form_id, rec_type, field_type, field_index,
-                       vmad_str_idx
+                       vmad_str_idx, source
                 FROM strings WHERE mod_name=? AND esp_name=?
                 ORDER BY esp_name, form_id, rec_type, field_type, field_index
             """, (mod_name, esp_name)).fetchall()
@@ -235,7 +235,7 @@ class StringRepo:
             rows = self.db.execute("""
                 SELECT id, mod_name, esp_name, key, original, translation, status,
                        quality_score, form_id, rec_type, field_type, field_index,
-                       vmad_str_idx
+                       vmad_str_idx, source
                 FROM strings WHERE mod_name=?
                 ORDER BY esp_name, form_id, rec_type, field_type, field_index
             """, (mod_name,)).fetchall()

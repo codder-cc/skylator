@@ -163,7 +163,8 @@ def create_job():
             job = _create_review_fleet_job(jm, cfg,
                                            machines = options.get("machines"),
                                            scope    = options.get("scope", "all"),
-                                           limit    = options.get("limit"))
+                                           limit    = options.get("limit"),
+                                           max_chars = options.get("max_chars"))
         except ValueError as exc:
             return jsonify({"error": str(exc), "ok": False}), 400
     elif job_type == "validate" and mod_names:
@@ -1466,8 +1467,18 @@ def _load_glossary(cfg) -> dict:
     return {}
 
 
+# Where a terminology fix stops being worth its compute. Measured on the 11 724
+# strings that break the glossary: the 522 longer than 4 000 characters are 4.5% of
+# them and 69% of the work, and everything over 1 200 is 8.4% of them and 86% of the
+# work. Those are book chapters with one wrong word in them, and regenerating a whole
+# chapter to mend it risks every other sentence in it. A term variance reads fine;
+# a re-written chapter that drops a paragraph does not.
+_TERMFIX_MAX_CHARS = 1200
+
+
 def _create_review_fleet_job(jm, cfg, machines: list | None = None,
-                             scope: str = "all", limit: int | None = None):
+                             scope: str = "all", limit: int | None = None,
+                             max_chars: int | None = None):
     """Send stored translations back to the fleet to be checked and corrected.
 
     A review is a translation job with the answer already filled in: the package carries
@@ -1515,6 +1526,7 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
     # A job whose whole purpose is "send this to the machines" should not have to be told
     # which machines. Omit them and it takes every live one, and says which in the log so
     # the answer is never guessed at.
+    max_chars = int(max_chars or _TERMFIX_MAX_CHARS)
     if not machines:
         machines = [w.label for w in (registry.get_active() if registry else [])]
     backends, _skipped = _resolve_backends(cfg, machines)
@@ -1542,6 +1554,7 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         terms_map = _load_glossary(cfg) if fixing_terms else {}
         by_mod: dict[str, list] = {}
         skipped_no_violation = 0
+        skipped_too_long = 0
         for r in repo.db.execute(sql).fetchall():
             item = {"id": r["id"], "mod_name": r["mod_name"], "esp": r["esp_name"],
                     "key": r["key"], "original": r["original"],
@@ -1552,6 +1565,9 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                 if not bad:
                     skipped_no_violation += 1
                     continue        # flagged for something else; a term fix cannot help it
+                if len(r["original"] or "") > max_chars:
+                    skipped_too_long += 1
+                    continue
                 item["current"]   = r["translation"]
                 item["req_terms"] = "; ".join(f"{en} = {ru}" for en, ru in bad[:3])
             elif not blind:
@@ -1565,6 +1581,10 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         if skipped_no_violation:
             job.add_log(f"Skipped {skipped_no_violation} flagged for something a term "
                         f"fix cannot repair")
+        if skipped_too_long:
+            job.add_log(f"Skipped {skipped_too_long} longer than {max_chars} characters "
+                        f"— regenerating a book chapter to mend one word is most of the "
+                        f"run and risks the rest of the chapter")
         if not n:
             job.result = "nothing to review"
             return

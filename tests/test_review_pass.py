@@ -328,3 +328,26 @@ def test_the_terms_scope_skips_what_a_term_fix_cannot_repair():
     src = inspect.getsource(_create_review_fleet_job)
     assert "glossary_violations" in src
     assert "skipped_no_violation" in src, "a string flagged for markup is not a term fix"
+
+
+def test_a_term_fix_stops_at_a_length_where_it_costs_more_than_it_is_worth():
+    """Measured on the 11 724 strings that break the glossary: the 522 longer than 4 000
+    characters are 4.5% of them and 69% of the work; everything over 1 200 is 8.4% of
+    them and 86% of the work.
+
+    Those are book chapters with one wrong word, and regenerating a whole chapter to mend
+    it risks every other sentence in it. A term variance reads fine; a rewritten chapter
+    that drops a paragraph does not."""
+    import inspect
+    from translator.web.routes.jobs import _create_review_fleet_job, _TERMFIX_MAX_CHARS
+    assert _TERMFIX_MAX_CHARS == 1200
+    src = inspect.getsource(_create_review_fleet_job)
+    assert "skipped_too_long" in src
+    assert "> max_chars" in src
+
+
+def test_the_cap_can_be_raised_per_job():
+    import inspect
+    from translator.web.routes import jobs as jobs_rt
+    src = inspect.getsource(jobs_rt.create_job)
+    assert 'options.get("max_chars")' in src

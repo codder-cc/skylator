@@ -128,7 +128,13 @@ class ApplyPipeline:
         ROOT = Path(__file__).parent.parent.parent
         sys.path.insert(0, str(ROOT))
 
-        esp_files = list(mod_dir.rglob("*.esp")) + list(mod_dir.rglob("*.esm"))
+        # is_file() is not decoration. Skyrim keeps a plugin's voice lines in
+        # Sound\Voice\<Plugin>.esp\ and its facegen in FaceTint\<Plugin>.esp\ — both
+        # directories named after the plugin, both matched by this glob. Opening one to
+        # write gave "[Errno 13] Permission denied" on 36 mods, which reads like a locked
+        # file and is nothing of the kind.
+        esp_files = [p for p in list(mod_dir.rglob("*.esp")) + list(mod_dir.rglob("*.esm"))
+                     if p.is_file()]
         if not esp_files:
             job.add_log("No ESP/ESM files found")
             return

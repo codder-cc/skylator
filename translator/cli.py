@@ -108,10 +108,13 @@ def translate_mod(ctx, mod_folder, dry_run):
     # ESP files
     try:
         from scripts.esp_engine import cmd_translate
-        for esp_file in mod_path.rglob("*.esp"):
+        # is_file(): Skyrim keeps voice lines in Sound\Voice\<Plugin>.esp\ and facegen in
+        # FaceTint\<Plugin>.esp\ — directories named after the plugin, matched by this
+        # glob, and opening one to write reads back as a permission error.
+        for esp_file in (p for p in mod_path.rglob("*.esp") if p.is_file()):
             click.echo(f"  ESP: {esp_file.name}")
             cmd_translate(esp_file, esp_file, mod_path, dry_run=dry_run)
-        for esm_file in mod_path.rglob("*.esm"):
+        for esm_file in (p for p in mod_path.rglob("*.esm") if p.is_file()):
             click.echo(f"  ESM: {esm_file.name}")
             cmd_translate(esm_file, esm_file, mod_path, dry_run=dry_run)
     except Exception as exc:

@@ -351,3 +351,21 @@ def test_the_cap_can_be_raised_per_job():
     from translator.web.routes import jobs as jobs_rt
     src = inspect.getsource(jobs_rt.create_job)
     assert 'options.get("max_chars")' in src
+
+
+def test_the_term_fix_prompt_allows_a_different_sense_to_stand():
+    """Forcing the glossary word into a line that uses the English in another sense wrote
+    «Мы тихонько используем Скрытность моей дорогой Авеллы» for "we'll sneak her out",
+    and «заходим в Кузнец» for "we go to a blacksmith". Both are nonsense, and both were
+    scored as clean fixes because the required term did appear."""
+    p = build_prompt(["We'll sneak her out"], "English", "Russian",
+                     current=["Мы тихонько выведем её"], terms=["Sneak = Скрытность"])
+    assert "DIFFERENT SENSE" in p
+    assert "A natural sentence with the other word beats a broken sentence" in p
+
+
+def test_the_term_fix_prompt_forbids_markdown():
+    """130 strings came back with the corrected word in **bold**, which renders."""
+    p = build_prompt(["The Aedra"], "English", "Russian",
+                     current=["Эйдры"], terms=["Aedra = Аэдра"])
+    assert "No asterisks, no bold, no markdown" in p

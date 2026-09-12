@@ -472,6 +472,21 @@ def runaway_repetition_violations(original: str, translation: str) -> list[str]:
     return [f"a letter repeated {len(m.group(0))} times: {m.group(0)[:14]}…"]
 
 
+# Markdown emphasis around the word a pass just corrected: «Эйдры и **Даэдра** — …».
+# The asterisks render in game; the model is marking its own work. 130 strings, all from
+# the terminology pass, and no rule saw them — ** is not a game token, not a tag, and
+# does not shift the length ratio.
+_MARKDOWN_EMPHASIS_RE = re.compile(r"\*\*[^*\n]{1,60}\*\*|(?<![\w*])__[^_\n]{1,60}__(?![\w*])")
+
+
+def markdown_emphasis_violations(original: str, translation: str) -> list[str]:
+    """Bold-marking the model added around its own correction."""
+    m = _MARKDOWN_EMPHASIS_RE.search(translation or "")
+    if not m or _MARKDOWN_EMPHASIS_RE.search(original or ""):
+        return []
+    return [f"markdown emphasis the source does not have: {m.group(0)[:24]}"]
+
+
 def trailing_stop_violations(original: str, translation: str,
                              rec_type: str | None = None,
                              field_type: str | None = None) -> list[str]:
@@ -536,6 +551,7 @@ def compute_string_status(original: str, translation: str,
                       + meta_comment_violations(translation)
                       + duplicated_word_violations(original, translation)
                       + runaway_repetition_violations(original, translation)
+                      + markdown_emphasis_violations(original, translation)
                       + trailing_stop_violations(original, translation,
                                                  rec_type, field_type))
     issues.extend(structural_bad)
@@ -585,6 +601,7 @@ def renders_as_garbage(original: str, translation: str) -> list[str]:
     out += foreign_script_violations(translation)
     out += meta_comment_violations(translation)
     out += runaway_repetition_violations(original, translation)
+    out += markdown_emphasis_violations(original, translation)
     out += markup_violations(original, translation)
     tok_ok, tok_issues = validate_tokens(original, translation)
     if not tok_ok:

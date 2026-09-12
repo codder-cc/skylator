@@ -97,6 +97,12 @@ CRITICAL RULES — violating any of these is an error:
 - Decline the required word as the sentence needs — «Двемер» becomes «двемерская» \
 before a feminine noun. The required form is the dictionary form, not the literal text \
 to paste.
+- If the English word is used in a DIFFERENT SENSE — as a verb, or as an ordinary noun \
+rather than the name — leave the line as it is. "We'll sneak her out" is not the Sneak \
+skill and "we go to a blacksmith" is not the smith's title. A natural sentence with the \
+other word beats a broken sentence with the required one.
+- Output plain text. No asterisks, no bold, no markdown of any kind around the word you \
+changed or anywhere else.
 - If the stored translation is already correct apart from that term, change nothing else \
 about it.
 - Preserve formatting tokens and placeholders (<Alias=...>, %1, [PlayerName]) exactly, \

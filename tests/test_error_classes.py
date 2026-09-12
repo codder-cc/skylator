@@ -222,3 +222,24 @@ def test_the_gate_refuses_it():
     _qs, _tok, issues, status = compute_string_status("Rrrrrrrrgh!", "Р" * 56)
     assert status == "needs_review"
     assert any("repeated" in i for i in issues)
+
+
+# ── the model marking its own work ───────────────────────────────────────────
+
+def test_markdown_emphasis_is_damage():
+    from translator.validation.quality import markdown_emphasis_violations
+    assert markdown_emphasis_violations("The Aedra are agents",
+                                        "Эйдры — агенты. **Даэдра** — суть хаоса.")
+    assert markdown_emphasis_violations("Across Skyrim", "по всему **Скайриму**")
+
+
+def test_emphasis_the_source_itself_has_is_left_alone():
+    from translator.validation.quality import markdown_emphasis_violations
+    assert markdown_emphasis_violations("**bold** in the source", "**жирный** в переводе") == []
+    assert markdown_emphasis_violations("Plain line", "Обычная строка") == []
+    assert markdown_emphasis_violations("A * B * C", "А * Б * В") == [], "not emphasis"
+
+
+def test_it_never_reaches_the_game():
+    from translator.validation.quality import renders_as_garbage
+    assert renders_as_garbage("The Aedra", "Эйдры и **Даэдра**")

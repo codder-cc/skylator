@@ -31,7 +31,8 @@ import re
 import time
 
 from translator.validation.quality import (
-    echo_violations, identifier_violations, markup_violations,
+    echo_violations, identifier_violations, markdown_emphasis_violations,
+    markup_violations,
     meta_comment_violations, renders_as_garbage, strip_echo,
 )
 
@@ -96,6 +97,16 @@ def _restore_brackets(original: str, translation: str) -> str:
     return out
 
 
+# The model bolding the word it just corrected: «Эйдры и **Даэдра** — …». The
+# asterisks render in game. 130 strings, all from the terminology pass.
+_MD_RE = re.compile(r"\*\*([^*\n]{1,60})\*\*|(?<![\w*])__([^_\n]{1,60})__(?![\w*])")
+
+
+def _strip_markdown(translation: str) -> str:
+    """The line with the emphasis marks taken off, the word inside kept."""
+    return _MD_RE.sub(lambda m: m.group(1) or m.group(2) or "", translation or "")
+
+
 _SRC_PAREN_TAIL_RE = re.compile(r"[(\[][^)\]]*[)\]]\s*$")
 
 
@@ -122,7 +133,8 @@ def find_repairable(repo, limit: int | None = None) -> dict:
            "WHERE TRIM(translation) <> '' AND translation <> original")
     if limit:
         sql += f" LIMIT {int(limit)}"
-    out: dict[str, list] = {"echo": [], "identifier": [], "angle": [], "meta": []}
+    out: dict[str, list] = {"echo": [], "identifier": [], "angle": [], "meta": [],
+                            "markdown": []}
     for r in repo.db.execute(sql).fetchall():
         o, t = r["original"] or "", r["translation"] or ""
         if echo_violations(o, t):
@@ -137,6 +149,10 @@ def find_repairable(repo, limit: int | None = None) -> dict:
             # is still broken afterwards lost a tag as well, and that needs a model.
             if fixed and fixed != t and not markup_violations(o, fixed):
                 out["angle"].append((r["id"], o, t, fixed))
+        elif markdown_emphasis_violations(o, t):
+            fixed = _strip_markdown(t)
+            if fixed and fixed != t and not renders_as_garbage(o, fixed):
+                out["markdown"].append((r["id"], o, t, fixed))
         elif meta_comment_violations(t):
             fixed = _strip_meta(o, t)
             # The aside has to be the tail and there has to be a translation in front of
@@ -149,7 +165,7 @@ def find_repairable(repo, limit: int | None = None) -> dict:
 def apply_repairs(repo, found: dict, job=None) -> dict:
     """Write the repairs found by `find_repairable`. Returns what changed, by kind."""
     now = time.time()
-    done = {"echo": 0, "identifier": 0, "angle": 0, "meta": 0}
+    done = {"echo": 0, "identifier": 0, "angle": 0, "meta": 0, "markdown": 0}
     for kind, rows in found.items():
         for sid, original, old, new in rows:
             try:

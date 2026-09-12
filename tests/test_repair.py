@@ -45,7 +45,7 @@ def test_applying_writes_the_repair(fakedb):
     fakedb.commit()
     repo = _repo(fakedb)
     done = apply_repairs(repo, find_repairable(repo))
-    assert done == {"echo": 1, "identifier": 1, "angle": 0, "meta": 0}
+    assert done == {"echo": 1, "identifier": 1, "angle": 0, "meta": 0, "markdown": 0}
 
     rows = {r[0]: r for r in fakedb.execute(
         "SELECT id, translation, status, source FROM strings").fetchall()}

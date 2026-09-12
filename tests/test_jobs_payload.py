@@ -198,3 +198,31 @@ def test_the_registry_can_list_a_workers_open_packages():
     assert set(r.offline_jobs_for("W1")) == {"oj1", "oj3"}
     r.finish_offline_job("oj1")
     assert set(r.offline_jobs_for("W1")) == {"oj3"}, "a finished package is not open"
+
+
+def test_dropping_a_package_removes_it_from_disk_even_with_no_record(tmp_path):
+    """Offline packages are persisted so they survive a master restart. Dropping one
+    removed the in-memory record, and delete_offline_package looked the file up THROUGH
+    that record — so with the record gone it deleted nothing, the next master start read
+    the directory, re-queued the file and re-registered the job, and both machines
+    resumed a pass that had been stopped two restarts earlier."""
+    import json
+    from translator.web.worker_registry import WorkerRegistry
+
+    r = WorkerRegistry(persist_dir=tmp_path)
+    pkg = tmp_path / "W1"
+    pkg.mkdir()
+    (pkg / "chunk-a.json").write_text(json.dumps({"chunk_id": "chunk-a",
+                                                  "offline_job_id": "oj-1"}), encoding="utf-8")
+    (pkg / "chunk-b.json").write_text(json.dumps({"chunk_id": "chunk-b",
+                                                  "offline_job_id": "oj-2"}), encoding="utf-8")
+
+    r.delete_offline_package("oj-1")            # no in-memory record for it
+    assert not (pkg / "chunk-a.json").exists()
+    assert (pkg / "chunk-b.json").exists(), "only the one asked for"
+
+
+def test_deleting_an_unknown_package_is_harmless(tmp_path):
+    from translator.web.worker_registry import WorkerRegistry
+    r = WorkerRegistry(persist_dir=tmp_path)
+    r.delete_offline_package("oj-nothing")      # must not raise

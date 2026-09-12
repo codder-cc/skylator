@@ -567,11 +567,36 @@ class WorkerRegistry:
             return list(self._offline_jobs.items())
 
     def delete_offline_package(self, offline_job_id: str) -> None:
-        """Delete the persisted package file for an offline job (call when done=True arrives)."""
+        """Delete the persisted package file for an offline job (call when done=True arrives).
+
+        The in-memory record names the file, and when there is no record this used to do
+        nothing at all — which is how a cancelled package came back. Dropping it removes
+        the record; the next master start reads the directory, finds the file still
+        there, re-queues it and re-registers the job, and both machines resume a pass
+        that was stopped two restarts ago. So a missing record is not a reason to stop:
+        the file itself carries the offline_job_id, and the directory is small.
+        """
         with self._lock:
             oj = self._offline_jobs.get(offline_job_id)
         if oj:
             self._delete_package(oj.get("worker_label", ""), oj.get("chunk_id", ""))
+            return
+        if not self._persist_dir or not self._persist_dir.exists():
+            return
+        for label_dir in self._persist_dir.iterdir():
+            if not label_dir.is_dir():
+                continue
+            for pkg_file in label_dir.glob("*.json"):
+                try:
+                    if json.loads(pkg_file.read_text(encoding="utf-8")).get(
+                            "offline_job_id") != offline_job_id:
+                        continue
+                    pkg_file.unlink()
+                    log.info("Deleted orphaned persisted package %s for %s",
+                             pkg_file.name[:8], label_dir.name)
+                except Exception as exc:
+                    log.warning("Could not read/remove persisted package %s: %s",
+                                pkg_file.name, exc)
 
     def get_offline_job(self, offline_job_id: str) -> dict | None:
         with self._lock:

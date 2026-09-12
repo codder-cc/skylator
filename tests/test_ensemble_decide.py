@@ -1,15 +1,28 @@
 """
-Two opinions against what is stored.
+Two opinions against what is stored, and what they turned out to be worth.
 
-The thresholds here are measured, not chosen — scripts/ensemble_bench.py over
-tests/data/review_control_set.json, 18 known-bad pairs and 10 known-good:
+On the control set — 18 known-bad pairs and 10 known-good — "both agree and both differ
+from what is stored" scored 50% recall at zero false positives. That looked like the
+answer and it was not.
 
-    stems, agree ≥ 0.35, differ < 0.65 → recall 50%, false positives 0%, silent on 12/28
+Reading 26 of the suspicions it raised on the real collection: six were real defects,
+seventeen were shared taste («Кот» → «Кошка», «нитки» → «пряжа», «корм» → «еда») where
+the stored text was fine, and twice the stored text was RIGHT and both models wrong —
+"Snow-Shod Farm" is «Ферма Сноу-Шод», a family name they translated literally, and you
+«приютить» a cat rather than «усыновить» it.
 
-Zero false positives is the property the pass rests on: it must never fire on work that
-was already right, because firing means rewriting it. Fifty percent is against a class
-nothing else here sees at all — the rules catch about an eighth of the real defects, and
-asking one model to judge catches 11–17%.
+Two models agreeing means they share taste, and sometimes that they share a gap. It does
+not mean the stored text is wrong. A control set of 28 could not show that: the failure
+needs a cluster of related strings to appear at all.
+
+What survived is narrower and holds on both sets — the stored text covering FEWER content
+words than both candidates. Omission, not preference. It fired on exactly the two real
+omissions out of 26 and on none of the seventeen preferences.
+
+    agreement alone      50% recall on the control set, ~20% precision on real strings
+    + stored is shorter   6% recall on the control set, 2 for 2 on real strings
+
+Only the second is acted on.
 """
 import pytest
 
@@ -19,10 +32,28 @@ from translator.validation.ensemble_decide import collect, decide, verdict
 
 # ── the rule ─────────────────────────────────────────────────────────────────
 
-def test_two_agreeing_and_both_unlike_the_stored_text_is_a_suspicion():
-    """«Дриульские обмотки для ног» for "Druid Footwraps" — an invented word. Both
-    machines independently said «Обувь друида»."""
-    assert verdict("Дриульские обмотки для ног", "Обувь друида", "Обувь друида") == "suspect"
+def test_the_stored_text_missing_a_word_both_candidates_have_is_an_omission():
+    """"Jorn's Home Faction" stored as «Фракция Жорна» — "Home" is gone, and the name is
+    misspelt. Both machines wrote «Фракция дома Йорна»."""
+    assert verdict("Фракция Жорна",
+                   "Фракция дома Йорна", "Фракция дома Йорна") == "omission"
+
+
+def test_agreement_without_omission_is_reported_and_not_acted_on():
+    """«Дриульские обмотки для ног» → «Обувь друида» is a real improvement, and
+    «Коричневый кот» → «Коричневая кошка» is not. Both look identical to this rule, which
+    is exactly why it does not get to decide: seventeen of twenty-six were the second
+    kind, and two of those would have replaced a correct translation with a wrong one."""
+    assert verdict("Дриульские обмотки для ног", "Обувь друида", "Обувь друида") == "differs"
+    assert verdict("Коричневый кот", "Коричневая кошка", "Коричневая кошка") == "differs"
+
+
+def test_a_family_name_they_would_rather_translate_is_left_alone():
+    """"Snow-Shod Farm" is «Ферма Сноу-Шод». Both machines wanted «Ферма Снежная
+    подкова», and acting on their agreement would have replaced a correct transliteration
+    with a literal translation of somebody's surname."""
+    assert verdict("Ферма Сноу-Шод",
+                   "Ферма «Снежная подкова»", "Ферма Снежный Подков") != "omission"
 
 
 def test_two_agreeing_with_the_stored_text_is_a_confirmation():
@@ -107,35 +138,35 @@ def _seed(fakedb, original, stored, a, b):
 
 
 def test_a_dry_run_writes_nothing(fakedb):
-    repo, _ = _seed(fakedb, "Druid Footwraps", "Дриульские обмотки для ног",
-                    "Обувь друида", "Обувь друида")
+    repo, _ = _seed(fakedb, "Jorn's Home Faction", "Фракция Жорна",
+                    "Фракция дома Йорна", "Фракция дома Йорна")
     out = decide(repo, None, apply=False)
-    assert out["counts"]["suspect"] == 1 and out["counts"]["replaced"] == 0
-    assert fakedb.execute("SELECT translation FROM strings").fetchone()[0] == \
-        "Дриульские обмотки для ног"
+    assert out["counts"]["omission"] == 1 and out["counts"]["replaced"] == 0
+    assert fakedb.execute("SELECT translation FROM strings").fetchone()[0] == "Фракция Жорна"
 
 
 def test_applying_replaces_and_keeps_what_it_replaced(fakedb):
-    repo, sid = _seed(fakedb, "Druid Footwraps", "Дриульские обмотки для ног",
-                      "Обувь друида", "Обувь друида")
+    repo, sid = _seed(fakedb, "Jorn's Home Faction", "Фракция Жорна",
+                      "Фракция дома Йорна", "Фракция дома Йорна")
     out = decide(repo, None, apply=True)
     assert out["counts"]["replaced"] == 1
-    assert fakedb.execute("SELECT translation FROM strings").fetchone()[0] == "Обувь друида"
+    assert fakedb.execute("SELECT translation FROM strings").fetchone()[0] == \
+        "Фракция дома Йорна"
     hist = repo.get_history(sid)
     assert any(h["source"] == "ensemble-replaced"
-               and h["translation"] == "Дриульские обмотки для ног" for h in hist)
+               and h["translation"] == "Фракция Жорна" for h in hist)
 
 
 def test_a_candidate_the_gate_refuses_is_not_written(fakedb):
     """Two models agreeing that the stored text is wrong does not make their answer
     right. It still has to pass everything a delivery passes."""
-    repo, _ = _seed(fakedb, "Druid Footwraps", "Дриульские обмотки для ног",
-                    "Druid Footwraps → Обувь друида", "Druid Footwraps → Обувь друида")
+    repo, _ = _seed(fakedb, "Jorn's Home Faction", "Фракция Жорна",
+                    "Jorn's Home Faction → Фракция дома Йорна",
+                    "Jorn's Home Faction → Фракция дома Йорна")
     out = decide(repo, None, apply=True)
     assert out["counts"]["candidate_refused"] == 1
     assert out["counts"]["replaced"] == 0
-    assert fakedb.execute("SELECT translation FROM strings").fetchone()[0] == \
-        "Дриульские обмотки для ног"
+    assert fakedb.execute("SELECT translation FROM strings").fetchone()[0] == "Фракция Жорна"
 
 
 def test_a_confirmed_string_is_left_exactly_as_it_was(fakedb):
@@ -157,7 +188,9 @@ def test_every_string_goes_to_both_machines():
     src = inspect.getsource(_create_ensemble_job)
     assert "for lbl, backend in backends:" in src
     assert "[(lbl, backend)]" in src, "dispatch_multi partitions across what it is given"
-    assert "len(backends) < 2" in src, "one machine is not an ensemble"
+    assert "len(backends) < 2 and not explicit" in src, (
+        "asking implicitly needs two machines; naming one is how a half-finished "
+        "ensemble is finished, because candidates accumulate per machine in history")
 
 
 def test_candidates_are_not_written_over_the_translation():

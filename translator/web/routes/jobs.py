@@ -1491,11 +1491,17 @@ def _create_ensemble_job(jm, cfg, machines: list | None = None,
     """
     repo     = current_app.config.get("STRING_REPO")
     registry = current_app.config.get("WORKER_REGISTRY")
+    # Naming one machine explicitly is allowed, and is how an ensemble gets assembled
+    # when the second machine is busy or lost its package: the candidates accumulate in
+    # history per machine, so two single-machine runs over the same strings make the same
+    # ensemble as one run over both. Asking for it implicitly still needs two, because
+    # dispatching to one by accident would produce candidates nothing can compare.
+    explicit = bool(machines)
     if not machines:
         machines = [w.label for w in (registry.get_active() if registry else [])]
     backends, _skipped = _resolve_backends(cfg, machines)
-    if not backends or len(backends) < 2:
-        raise ValueError("an ensemble needs two live machines; "
+    if not backends or (len(backends) < 2 and not explicit):
+        raise ValueError("an ensemble needs two live machines, or one named explicitly; "
                          f"found {len(backends or [])}")
 
     def run(job):

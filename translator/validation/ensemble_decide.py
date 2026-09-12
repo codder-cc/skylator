@@ -3,26 +3,43 @@
 Both machines translated the same source, seeing neither each other nor what is stored.
 Their answers are in history as candidates. This compares them.
 
-The rule, and the thresholds, are measured — `scripts/ensemble_bench.py` over
-`tests/data/review_control_set.json`, 18 known-bad pairs and 10 known-good:
+On the control set — 18 known-bad pairs and 10 known-good — agreement between the two
+against the stored text scored 50% recall at zero false positives, and that looked like
+the answer. It is not, and the reason is worth keeping:
 
-    stems, agree ≥ 0.35, differ < 0.65 → recall 50%, false positives 0%, silent on 12/28
+Reading 26 of the suspicions it raised on the real collection, six were real defects
+(«Фракция Жорна» dropping "Home", «Домашние кошки поблизости можно видеть» which is
+ungrammatical, «Хаджиийское» misspelt, «Сумка "Котёнок"» for "Catnap Bag"). Seventeen
+were shared taste — «Кот» → «Кошка», «нитки» → «пряжа», «корм» → «еда» — where the
+stored text was fine. And twice the stored text was RIGHT and both models wrong:
+"Snow-Shod Farm" is «Ферма Сноу-Шод», a family name they translated literally, and you
+«приютить» a cat, not «усыновить» it.
 
-Zero false positives is the property the whole thing rests on: it never fires on work
-that was already right. Fifty percent recall is against a class nothing else here sees at
-all — the deterministic rules catch about an eighth of the real defects, and asking one
-model to judge catches 11–17%.
+So two models agreeing means they share taste, and sometimes that they share a gap. It
+does not mean the stored text is wrong. The control set showed none of this because its
+good examples happened not to be ones the models would rather word differently — a set
+of 28 cannot show a failure mode that needs a cluster of related strings to appear.
 
-What it cannot do is see a mistake both models share. «Dwemer Pot» stays «Дверной
-горшок» because one of them independently writes the same thing, and that is exactly the
-systematic error measured earlier. An ensemble is a check on taste, not on knowledge.
+What survived the reading is narrower and holds on both sets: the stored text covering
+FEWER content words than both candidates. That is omission, not preference, and it fired
+on exactly the two real omissions out of 26 and on none of the seventeen preferences.
+
+    agreement alone     50% recall on the control set, ~20% precision on real strings
+    + stored is shorter  6% recall on the control set, 2 for 2 on real strings
+
+Only the second is acted on. The first is reported and left alone, because acting on it
+churns four strings for every one it mends and damages two in twenty-six.
+
+The other limit, measured earlier and unchanged: an ensemble cannot see a mistake its
+members share. «Dwemer Pot» stays «Дверной горшок» because one of them independently
+writes the same thing.
 """
 from __future__ import annotations
 
 import logging
 import time
 
-from translator.ensemble.similarity import stem_similarity
+from translator.ensemble.similarity import _stems, stem_similarity
 from translator.validation.quality import compute_string_status, renders_as_garbage
 
 log = logging.getLogger(__name__)
@@ -33,19 +50,27 @@ DIFFER_MAX = 0.65
 
 
 def verdict(stored: str, a: str, b: str) -> str:
-    """suspect | clean | undecided — two opinions against what is stored.
+    """omission | differs | clean | undecided — two opinions against what is stored.
 
-    undecided is a real answer and the common one: two translators who disagree with each
-    other have said nothing about the stored text, and guessing from that is how a check
-    starts rewriting correct work.
+    `omission` is the only one acted on: both agree, both differ from what is stored, AND
+    the stored text carries fewer content words than they do. Something is missing from
+    it, and that is a judgement about coverage rather than about wording.
+
+    `differs` is agreement without the omission — reported, never acted on. Two models
+    share taste, and on real strings four out of five of these are «Кот» → «Кошка».
+
+    `undecided` is the common case and a real answer: translators who disagree with each
+    other have said nothing about the stored text.
     """
     if not a or not b or not stored:
         return "undecided"
     if stem_similarity(a, b) < AGREE_MIN:
         return "undecided"
-    if max(stem_similarity(a, stored), stem_similarity(b, stored)) < DIFFER_MAX:
-        return "suspect"
-    return "clean"
+    if max(stem_similarity(a, stored), stem_similarity(b, stored)) >= DIFFER_MAX:
+        return "clean"
+    if len(_stems(stored)) < max(len(_stems(a)), len(_stems(b))):
+        return "omission"
+    return "differs"
 
 
 def collect(repo, job_id: str | None = None) -> dict[int, dict]:
@@ -83,7 +108,7 @@ def decide(repo, terms: dict | None = None, apply: bool = False,
     not make their answer right, so it still has to pass everything a delivery passes.
     """
     found = collect(repo)
-    counts = {"suspect": 0, "clean": 0, "undecided": 0,
+    counts = {"omission": 0, "differs": 0, "clean": 0, "undecided": 0,
               "replaced": 0, "candidate_refused": 0, "too_few_candidates": 0}
     examples: list[tuple] = []
     now = time.time()
@@ -95,7 +120,7 @@ def decide(repo, terms: dict | None = None, apply: bool = False,
             continue
         v = verdict(e["stored"], cands[0], cands[1])
         counts[v] += 1
-        if v != "suspect":
+        if v != "omission":
             continue
         if len(examples) < 12:
             examples.append((e["original"], e["stored"], cands[0], cands[1]))

@@ -66,6 +66,31 @@ def _apply_bsa_localized_strings(cfg, mod_name: str, mod_dir: Path, repo, job) -
             shutil.rmtree(extract_dir, ignore_errors=True)
 
 
+def _drop_visible_damage(rows: list[dict]) -> tuple[list[dict], int]:
+    """Leave a line in English rather than write damage into the game.
+
+    The apply step wrote every non-empty translation, whatever its status. On 22 500
+    flagged strings that is a real choice, and not the same one for all of them: «Бандит»
+    against a glossary asking for «Разбойник» is ordinary Russian and nobody notices,
+    while «⟨H1⟩Ферма Чилфуру⟨/H1⟩» renders the brackets and «Малина (если это название
+    растения…)» puts the model's deliberation in the item list.
+
+    renders_as_garbage() draws that line. A row it names keeps its English original; the
+    translation stays in the database, so a later pass can still fix it and a later apply
+    will ship it.
+    """
+    from translator.validation.quality import renders_as_garbage
+    kept, held = [], 0
+    for r in rows:
+        t = (r.get("translation") or "").strip()
+        if t and renders_as_garbage(r.get("original") or "", t):
+            r = dict(r)
+            r["translation"] = ""
+            held += 1
+        kept.append(r)
+    return kept, held
+
+
 class ApplyPipeline:
     """ESP and BSA/SWF apply pipelines with optional DeployMode filtering."""
 
@@ -110,6 +135,7 @@ class ApplyPipeline:
 
         total = len(esp_files)
         applied = 0
+        withheld = 0
         for i, esp_path in enumerate(esp_files):
             if job.status.value == "cancelled":
                 return
@@ -128,6 +154,11 @@ class ApplyPipeline:
                     job.add_log(f"  SKIP {esp_path.name} — no strings in DB")
                     jm.update_progress(job, i + 1, total, f"Skipped: {esp_path.name}")
                     continue
+                rows, held = _drop_visible_damage(rows)
+                if held:
+                    withheld += held
+                    job.add_log(f"  {held} string(s) left in English — they would render "
+                                f"as damage")
                 n = esp_rewrite(esp_path, esp_path, rows, mod_dir)
                 applied += (1 if n else 0)
                 job.add_log(f"  OK: {esp_path.name} ({n} strings applied)")
@@ -144,7 +175,8 @@ class ApplyPipeline:
                 log.exception("apply_mcm_from_db failed for %s", mod_name)
 
         jm.update_progress(job, total, total, f"Done — {applied} files written")
-        job.result = f"Applied: {mod_name} ({applied} files)"
+        job.result = (f"Applied: {mod_name} ({applied} files"
+                      + (f", {withheld} strings left in English)" if withheld else ")"))
 
         if self._stats_mgr:
             try:

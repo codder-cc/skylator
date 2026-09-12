@@ -530,6 +530,45 @@ def compute_string_status(original: str, translation: str,
     return qs, tok_ok, issues, status
 
 
+def renders_as_garbage(original: str, translation: str) -> list[str]:
+    """Defects that must not reach the game, as opposed to ones that merely should not
+    have been called finished.
+
+    status='needs_review' is one bucket holding two different things, and the apply step
+    has to tell them apart. It writes every non-empty translation into the ESP, so on
+    22 500 flagged strings the choice is between shipping them and leaving those lines in
+    English — and the right answer is not the same for all of them.
+
+    «Бандит» where the glossary asks for «Разбойник» is ordinary Russian and a player
+    reading it notices nothing. «⟨H1⟩Ферма Чилфуру⟨/H1⟩» renders the brackets literally.
+    «Малина (если это название растения, то можно перевести как…)» puts the model's
+    deliberation in the item list. A changed number misinforms — and the English original
+    at least states the right one.
+
+    So: shipped unless the defect is visible as damage in the running game.
+
+        ships          glossary, a stop on a name, a repeated word, a leftover English
+                       word, a low score — readable, merely imperfect
+        does not ship  echo, prompt separator, model commentary, look-alike brackets,
+                       lost markup or tokens, foreign script, mixed alphabets, a
+                       translated identifier, a changed number
+    """
+    if not translation or not translation.strip():
+        return []
+    out = []
+    out += echo_violations(original, translation)
+    out += identifier_violations(original, translation)
+    out += mixed_script_violations(translation)
+    out += number_violations(original, translation)
+    out += foreign_script_violations(translation)
+    out += meta_comment_violations(translation)
+    out += markup_violations(original, translation)
+    tok_ok, tok_issues = validate_tokens(original, translation)
+    if not tok_ok:
+        out += tok_issues
+    return out
+
+
 def _candidate_score(original: str, t: str) -> tuple[int, float]:
     """Comparable rank for picking between two candidates: (would the gate accept it,
     then the score). Empty/missing sorts below everything.

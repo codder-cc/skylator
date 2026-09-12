@@ -177,6 +177,16 @@ def _stems(term: str) -> list[str]:
         syncopated = t[:-3] + t[-2]
         if len(syncopated) >= 4:
             out.append(syncopated)
+    # The same vowel drops in a nominative that ends in a consonant: «Свиток» becomes
+    # «свитка», «свитков»; «Замок» becomes «замка». The prefix cut from the nominative is
+    # «свито», which no oblique form starts with, and 105 strings were held for that one
+    # word. Only when what is left ends in a consonant cluster — otherwise this is just
+    # the prefix rule again with a letter missing.
+    if (len(t) >= 5 and t[-1] not in _VOWELS + "ьй"
+            and t[-2] in _VOWELS and t[-3] not in _VOWELS):
+        syncopated = t[:-2] + t[-1]
+        if len(syncopated) >= 4:
+            out.append(syncopated)
     # A noun ending in a vowel declines by replacing it: «Магия» → магии, магию, магией.
     # The five-character floor above leaves a five-letter word untrimmed, so «магия» was
     # required verbatim and «Укрепление магии» read as a violation — 2 362 strings. This

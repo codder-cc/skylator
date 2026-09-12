@@ -147,3 +147,19 @@ def test_the_report_accepts_the_alternatives_too():
     assert terminology_report(rows, {"Guard": ["Стражник", "Страж"]}) == []
     bad = terminology_report(rows, {"Guard": ["Стражник"]})
     assert bad and bad[0]["expected"] == "Стражник"
+
+
+def test_a_fleeting_vowel_before_a_final_consonant():
+    """The same vowel that drops in «Уровень» → «уровня» drops in «Свиток» → «свитка»,
+    «свитков», and in «Замок» → «замка». The prefix cut from the nominative is «свито»,
+    which no oblique form starts with, and 105 strings were held for that one word."""
+    assert "свитк" in _stems("Свиток")
+    assert "замк" in _stems("Замок")
+    assert any(s in "мудрец свитков" for s in _stems("Свиток"))
+    assert any(s in "полка для свитков" for s in _stems("Свиток"))
+    assert any(s in "в замке" for s in _stems("Замок"))
+
+
+def test_it_does_not_excuse_a_different_word():
+    assert glossary_violations("Scroll", "Пергамент", {"Scroll": "Свиток"})
+    assert glossary_violations("Skyrim", "Сиродил", {"Skyrim": "Скайрим"})

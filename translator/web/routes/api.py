@@ -2501,6 +2501,19 @@ def workers_offline_results(label: str):
                         label, mod_name, key)
             continue
 
+        # What this string said before the delivery. Read here rather than taken from
+        # the result, because the agent does not echo it back and the merge is about to
+        # replace it — and its twins are identified by holding exactly this text.
+        stored_before = ""
+        if _reviewing and repo is not None:
+            try:
+                _row = repo.db.execute(
+                    "SELECT translation FROM strings WHERE mod_name=? AND esp_name=? AND key=?",
+                    (mod_name, esp_name, key)).fetchone()
+                stored_before = (_row["translation"] or "") if _row else ""
+            except Exception:
+                stored_before = ""
+
         try:
             if repo is not None and cfg is not None:
                 string_mgr.save_string(
@@ -2534,6 +2547,19 @@ def workers_offline_results(label: str):
                         dup_filled += _n
                 except Exception:
                     pass
+                # A review answers a string that already had one, so its twins are not
+                # empty — they hold the same wrong text, and the filler above skips them.
+                # Without this, half of what a pass corrects is corrected once and left
+                # standing everywhere else it appears.
+                if _reviewing and stored_before:
+                    try:
+                        _m = repo.apply_correction_to_duplicates(
+                            r.get("string_hash") or "", stored_before, translation,
+                            status or "translated", quality)
+                        if _m:
+                            dup_filled += _m
+                    except Exception:
+                        pass
                 # Durable per-string delivery tracking (host manifest, Phase 3).
                 sid = r.get("string_id")
                 if astore is not None and sid is not None:

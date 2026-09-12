@@ -439,6 +439,44 @@ class StringRepo:
             self.db.commit()
         return cur.rowcount
 
+    def apply_correction_to_duplicates(self, string_hash: str, old_translation: str,
+                                       new_translation: str, status: str,
+                                       quality_score: Optional[int],
+                                       exclude_id: Optional[int] = None) -> int:
+        """Carry a correction to every twin that holds the same wrong text.
+
+        The dedup before dispatch is what makes a review affordable: 10 654 strings with
+        a glossary violation collapse to 5 866 distinct ones, one of each is sent, and
+        the rest are meant to be filled from the answer. But the filler above only
+        touches rows with NO translation — right for a translation pass, where
+        overwriting existing work is the thing to avoid, and exactly wrong for a review,
+        where the twins hold the same wrong text and want the same fix.
+
+        So «Robes of Alteration» → «Мантия алхимии» was corrected once and left standing
+        in every other mod that ships the same robe. Roughly half the glossary violations
+        survived a pass that had already answered them.
+
+        Matching on the old text is what makes this safe: a twin that says something
+        different was translated separately and is not this correction's business.
+        """
+        if not string_hash or not new_translation or not old_translation:
+            return 0
+        if old_translation.strip() == new_translation.strip():
+            return 0
+        sql = """UPDATE strings
+                    SET translation=?, status=?, quality_score=?, updated_at=?,
+                        source='duplicate'
+                  WHERE string_hash=? AND TRIM(translation)=TRIM(?)"""
+        params = [new_translation, status, quality_score, time.time(),
+                  string_hash, old_translation]
+        if exclude_id is not None:
+            sql += " AND id != ?"
+            params.append(exclude_id)
+        with _write_lock:
+            cur = self.db.execute(sql, tuple(params))
+            self.db.commit()
+        return cur.rowcount
+
     # ── Checkpoints (diff-based recovery) ───────────────────────────────────
 
     def create_checkpoint(self, mod_name: str, esp_name: Optional[str] = None) -> str:

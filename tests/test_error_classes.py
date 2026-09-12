@@ -243,3 +243,74 @@ def test_emphasis_the_source_itself_has_is_left_alone():
 def test_it_never_reaches_the_game():
     from translator.validation.quality import renders_as_garbage
     assert renders_as_garbage("The Aedra", "Эйдры и **Даэдра**")
+
+
+# ── this project's own prompt, stored as the answer ──────────────────────────
+#
+# The terminology pass put its requirement in a third column — «source ⇥ stored ⇥ MUST
+# USE: Mace = Булава» — and the model echoed the whole line back. 1 436 strings, 1 280 of
+# them accepted, and not one rule saw them: «MUST USE» is upper case so the
+# leftover-English check skips it, the rest is clean Cyrillic, and the length ratio is
+# unremarkable.
+#
+# Second time prompt furniture has been stored as a translation. The ⇥ separator was the
+# first, 1 922 strings. Any word this project puts in a prompt as a label belongs here
+# the day it is used.
+
+@pytest.mark.parametrize("ru", [
+    "Cyrodilic Iron Mace ⇥ Киродильский железный булава ⇥ MUST USE: Mace = Булава",
+    "MUST USE: Cyrodiil = Сиродил",
+    "Железный кинжал REQUIRED: Iron = Железо",
+])
+def test_prompt_scaffolding_is_damage(ru):
+    from translator.validation.quality import prompt_scaffold_violations
+    assert prompt_scaffold_violations(ru)
+
+
+def test_an_ordinary_translation_carries_none_of_it():
+    from translator.validation.quality import prompt_scaffold_violations
+    assert prompt_scaffold_violations("Железный кинжал") == []
+    assert prompt_scaffold_violations("Ты должен использовать ключ") == [], \
+        "the Russian for 'you must use' is not the label"
+
+
+def test_it_never_reaches_the_game_and_the_gate_refuses_it():
+    from translator.validation.quality import renders_as_garbage
+    en = "Cyrodilic Iron Mace"
+    ru = "Cyrodilic Iron Mace ⇥ Киродильский железный булава ⇥ MUST USE: Mace = Булава"
+    assert renders_as_garbage(en, ru)
+    assert compute_string_status(en, ru)[3] == "needs_review"
+
+
+def test_the_repair_keeps_the_middle_column():
+    """The answer is the stored translation, not the requirement — so stripping the echo
+    on its own makes it worse, because that takes what follows the LAST separator."""
+    from translator.validation.repair import _strip_scaffold
+    from translator.validation.quality import strip_echo, renders_as_garbage
+    en = "Cyrodilic Iron Mace"
+    ru = "Cyrodilic Iron Mace ⇥ Киродильский железный булава ⇥ MUST USE: Mace = Булава"
+    assert strip_echo(en, ru) == "MUST USE: Mace = Булава", "what NOT to do"
+    fixed = strip_echo(en, _strip_scaffold(ru))
+    assert fixed == "Киродильский железный булава"
+    assert not renders_as_garbage(en, fixed)
+
+
+def test_a_line_that_is_all_requirement_has_nothing_to_keep():
+    from translator.validation.repair import _strip_scaffold
+    from translator.validation.quality import strip_echo
+    assert strip_echo("x", _strip_scaffold("MUST USE: Cyrodiil = Сиродил")) == ""
+
+
+def test_the_prompt_no_longer_offers_the_surface():
+    """Forbidding the echo in the prompt text was tried after the ⇥ incident and did not
+    hold: a model that echoes a line echoes all of it. The requirement moved off the
+    line instead."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "remote_worker"))
+    from prompt.builder import build_prompt
+    p = build_prompt(["Dwemer Bowl"], "English", "Russian",
+                     current=["Дверная чаша"], terms=["Dwemer = Двемер"])
+    assert "MUST USE" not in p
+    assert "Required rendering, by line number:" in p
+    assert "1. Dwemer Bowl ⇥ Дверная чаша" in p, "two columns on the line, not three"

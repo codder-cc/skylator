@@ -487,6 +487,27 @@ def markdown_emphasis_violations(original: str, translation: str) -> list[str]:
     return [f"markdown emphasis the source does not have: {m.group(0)[:24]}"]
 
 
+# Scaffolding from the prompt, stored as the answer. The terminology pass put the
+# requirement in a third column — «source ⇥ stored ⇥ MUST USE: Mace = Булава» — and the
+# model echoed the whole line back. 1 436 strings, 1 280 of them accepted, and not one
+# rule saw them: «MUST USE» is upper case so the leftover-English check skips it, the
+# text is clean Cyrillic otherwise, and the length ratio is unremarkable.
+#
+# This is the second time prompt furniture has been stored as a translation — the ⇥
+# separator was the first, 1 922 strings. Any word this project puts in a prompt as a
+# label belongs here the day it is used, and the rule is not "forbid it in the prompt"
+# because that was tried and did not hold.
+_PROMPT_SCAFFOLD_RE = re.compile(
+    r"MUST USE:|REQUIRED:|Strings \(source|numbered translations"
+    r"|\bsource ⇥|стро́ки \(источник", re.IGNORECASE)
+
+
+def prompt_scaffold_violations(translation: str) -> list[str]:
+    """A label from this project's own prompt, stored as the translation."""
+    m = _PROMPT_SCAFFOLD_RE.search(translation or "")
+    return [f"prompt scaffolding in the translation: «{m.group(0)}»"] if m else []
+
+
 def trailing_stop_violations(original: str, translation: str,
                              rec_type: str | None = None,
                              field_type: str | None = None) -> list[str]:
@@ -552,6 +573,7 @@ def compute_string_status(original: str, translation: str,
                       + duplicated_word_violations(original, translation)
                       + runaway_repetition_violations(original, translation)
                       + markdown_emphasis_violations(original, translation)
+                      + prompt_scaffold_violations(translation)
                       + trailing_stop_violations(original, translation,
                                                  rec_type, field_type))
     issues.extend(structural_bad)
@@ -602,6 +624,7 @@ def renders_as_garbage(original: str, translation: str) -> list[str]:
     out += meta_comment_violations(translation)
     out += runaway_repetition_violations(original, translation)
     out += markdown_emphasis_violations(original, translation)
+    out += prompt_scaffold_violations(translation)
     out += markup_violations(original, translation)
     tok_ok, tok_issues = validate_tokens(original, translation)
     if not tok_ok:

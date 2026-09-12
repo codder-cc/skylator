@@ -243,7 +243,12 @@ def test_a_requirement_turns_a_review_into_a_term_fix():
                      current=["Дверная чаша"], terms=["Dwemer = Двемер"])
     assert "must use for one term" in p
     assert "Change ONLY the wrong term" in p
-    assert "1. Dwemer Bowl ⇥ Дверная чаша ⇥ MUST USE: Dwemer = Двемер" in p
+    # The requirement reaches the model but does NOT sit on the numbered line. It did,
+    # as a third column, and the model echoed the whole line back into 1 436 stored
+    # translations. See test_error_classes.py.
+    assert "Required rendering, by line number:\n1. Dwemer = Двемер" in p
+    assert "1. Dwemer Bowl ⇥ Дверная чаша" in p
+    assert "MUST USE" not in p
 
 
 def test_without_a_requirement_it_is_still_an_ordinary_review():

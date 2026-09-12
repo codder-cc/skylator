@@ -110,7 +110,6 @@ along with ⟨NL⟩, ⟨H0⟩⟨H1⟩⟨H2⟩ and {{T0}}{{T1}} — copy them ver
 - Never output the source text, the requirement, an explanation, or the ⇥ separator. \
 Output ONLY the numbered corrected translations.
 {terminology}{preserve}{context_block}
-Strings (source ⇥ stored translation ⇥ required rendering):
 {numbered_texts}"""
 
 
@@ -132,22 +131,33 @@ def _numbered_pairs(texts: list[str], current: list[str]) -> str:
 
 
 def _numbered_terms(texts: list[str], current: list[str], terms: list[str]) -> str:
-    """Source, the stored translation, and the one rendering this line got wrong.
+    """Source and stored translation on the numbered line; requirements in their own block.
 
-    The requirement goes on the line it applies to. A glossary at the top of the batch
-    does not bind — measured on Dwemer, which was in that list and came back «Дверной»
-    anyway. Stated per line it binds 88% of the time against 50% for translating the
-    string again from scratch.
+    The requirement has to reach the model — stated per line it binds 88% of the time
+    against 50% for translating the string again — but it must not sit ON the line. It
+    did, as a third column after ⇥, and the model echoed the whole line back: 1 436
+    strings stored as «Cyrodilic Iron Mace ⇥ Киродильский железный булава ⇥ MUST USE:
+    Mace = Булава», 1 280 of them accepted.
+
+    That is the second time prompt furniture has been stored as a translation. The ⇥
+    separator was the first, 1 922 strings, and the fix then was to forbid it in the
+    prompt text — which did not hold, because a model that echoes a line echoes all of
+    it. Removing the surface works where forbidding it does not: the numbered line now
+    has exactly the two columns the answer is built from, and anything the model copies
+    wholesale is at worst the old review shape that strip_echo already mends.
     """
-    out = []
+    lines, reqs = [], []
     for i, t in enumerate(texts):
         cur = current[i] if i < len(current) else ""
         req = terms[i] if i < len(terms) else ""
-        line = f"{i+1}. {_one_line(t)} ⇥ {_one_line(cur)}"
+        lines.append(f"{i+1}. {_one_line(t)} ⇥ {_one_line(cur)}")
         if req:
-            line += f" ⇥ MUST USE: {_one_line(req)}"
-        out.append(line)
-    return "\n".join(out)
+            reqs.append(f"{i+1}. {_one_line(req)}")
+    block = "\n".join(lines)
+    if reqs:
+        block = ("Required rendering, by line number:\n" + "\n".join(reqs)
+                 + "\n\nStrings:\n" + block)
+    return block
 
 
 def build_prompt(

@@ -33,7 +33,7 @@ import time
 from translator.validation.quality import (
     echo_violations, identifier_violations, looks_like_identifier,
     markdown_emphasis_violations,
-    markup_violations,
+    markup_violations, prompt_scaffold_violations,
     meta_comment_violations, renders_as_garbage, strip_echo,
 )
 
@@ -108,6 +108,19 @@ def _strip_markdown(translation: str) -> str:
     return _MD_RE.sub(lambda m: m.group(1) or m.group(2) or "", translation or "")
 
 
+# The terminology pass put its requirement in a third column — «source ⇥ stored ⇥ MUST
+# USE: Mace = Булава» — and the model echoed the whole line back. The answer is the
+# MIDDLE column, which is why strip_echo alone makes it worse: that takes the last part
+# after the separator, which here is the requirement.
+_SCAFFOLD_TAIL_RE = re.compile(r"\s*(?:⇥|\||→)?\s*(?:MUST USE|REQUIRED)\s*:.*$",
+                               re.IGNORECASE | re.S)
+
+
+def _strip_scaffold(translation: str) -> str:
+    """The line with this project's own prompt label and everything after it removed."""
+    return _SCAFFOLD_TAIL_RE.sub("", translation or "").strip()
+
+
 _SRC_PAREN_TAIL_RE = re.compile(r"[(\[][^)\]]*[)\]]\s*$")
 
 
@@ -141,10 +154,18 @@ def find_repairable(repo, limit: int | None = None) -> dict:
     if limit:
         sql += f" LIMIT {int(limit)}"
     out: dict[str, list] = {"echo": [], "identifier": [], "angle": [], "meta": [],
-                            "markdown": [], "untranslatable": []}
+                            "markdown": [], "untranslatable": [], "scaffold": []}
     for r in repo.db.execute(sql).fetchall():
         o, t = r["original"] or "", r["translation"] or ""
-        if echo_violations(o, t):
+        # Before anything else: this project's own prompt label, stored as the
+        # answer. The requirement is the LAST column and the translation the middle
+        # one, so strip_echo on its own would keep the requirement and throw the
+        # answer away.
+        if prompt_scaffold_violations(t):
+            fixed = strip_echo(o, _strip_scaffold(t))
+            if fixed and fixed != t and not renders_as_garbage(o, fixed):
+                out["scaffold"].append((r["id"], o, t, fixed))
+        elif echo_violations(o, t):
             fixed = strip_echo(o, t)
             if fixed and fixed != t:
                 out["echo"].append((r["id"], o, t, fixed))
@@ -179,7 +200,7 @@ def apply_repairs(repo, found: dict, job=None) -> dict:
     """Write the repairs found by `find_repairable`. Returns what changed, by kind."""
     now = time.time()
     done = {"echo": 0, "identifier": 0, "angle": 0, "meta": 0, "markdown": 0,
-            "untranslatable": 0}
+            "untranslatable": 0, "scaffold": 0}
     for kind, rows in found.items():
         for sid, original, old, new in rows:
             try:

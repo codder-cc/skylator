@@ -2789,6 +2789,45 @@ def workers_ota_step(label: str):
     return jsonify({"ok": True})
 
 
+@bp.route("/workers/<label>/drop-offline", methods=["POST"])
+def workers_drop_offline(label: str):
+    """Tell a worker to stop translating an offline package it is holding.
+
+    Cancelling a job reaches the agents that hold its packages — but only while the
+    master still knows the job. JobManager is in memory, so a master restart forgets it,
+    and the two machines carry on for hours translating work nobody wants, refusing every
+    other request while they do it. The assignment rows survive the restart and name the
+    packages; this is how to act on them.
+
+    Body: {offline_job_id} — or nothing, to drop every package the registry has open for
+    this worker.
+    """
+    import uuid as _uuid
+    registry = current_app.config.get("WORKER_REGISTRY")
+    if registry is None:
+        return jsonify({"error": "Registry not initialized"}), 500
+    if registry.get(label) is None:
+        return jsonify({"error": "Worker not found"}), 404
+
+    wanted = ((request.get_json(silent=True) or {}).get("offline_job_id") or "").strip()
+    targets = [oj_id for oj_id, rec in (registry.offline_jobs_for(label) or {}).items()
+               if not wanted or oj_id == wanted]
+    if wanted and not targets:
+        targets = [wanted]          # the registry may have forgotten it; the agent has not
+
+    for oj_id in targets:
+        registry.enqueue_chunk(label, {"chunk_id": str(_uuid.uuid4()),
+                                       "type": "cancel_offline_job",
+                                       "offline_job_id": oj_id})
+        try:
+            registry.delete_offline_package(oj_id)
+            registry.finish_offline_job(oj_id)
+        except Exception as exc:
+            log.debug("drop-offline: registry cleanup for %s: %s", oj_id[:8], exc)
+        log.info("drop-offline: told %s to drop %s", label, oj_id[:8])
+    return jsonify({"ok": True, "dropped": targets})
+
+
 @bp.route("/workers/<label>/ota-update", methods=["POST"])
 def workers_ota_update(label: str):
     """Trigger OTA update on a remote pull-mode worker.

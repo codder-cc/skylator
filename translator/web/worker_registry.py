@@ -499,6 +499,12 @@ class WorkerRegistry:
 
     # ── Offline job tracking ──────────────────────────────────────────────────
 
+    def offline_jobs_for(self, label: str) -> dict[str, dict]:
+        """{offline_job_id: record} for the packages this worker still has open."""
+        with self._lock:
+            return {k: dict(v) for k, v in self._offline_jobs.items()
+                    if v.get("worker_label") == label and not v.get("finished")}
+
     def register_offline_job(self, offline_job_id: str, host_job_id: str,
                               worker_label: str, total_strings: int,
                               chunk_id: str = "") -> None:

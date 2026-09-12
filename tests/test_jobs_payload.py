@@ -174,3 +174,27 @@ def test_the_bulk_apply_runs_every_mod_and_survives_one_failing():
     assert "for i, mod in enumerate(mod_names)" in src
     assert "except Exception" in src, "one bad mod must not end the run"
     assert "cancelled" in src, "and it has to be interruptible"
+
+
+def test_an_operator_can_drop_a_package_the_master_has_forgotten():
+    """Cancelling a job reaches the agents holding its packages — but only while the
+    master still knows the job, and JobManager is in memory. After a restart the two
+    machines carried on for hours translating a cancelled pass, refusing everything else
+    meanwhile, and there was no way to reach them."""
+    import inspect
+    from translator.web.routes import api as api_rt
+    src = inspect.getsource(api_rt.workers_drop_offline)
+    assert "cancel_offline_job" in src
+    assert "offline_jobs_for" in src, "with no id, drop everything open for that worker"
+    assert "the registry may have forgotten it" in src, "an id must work regardless"
+
+
+def test_the_registry_can_list_a_workers_open_packages():
+    from translator.web.worker_registry import WorkerRegistry
+    r = WorkerRegistry()
+    r.register_offline_job("oj1", "host1", "W1", 10)
+    r.register_offline_job("oj2", "host1", "W2", 10)
+    r.register_offline_job("oj3", "host2", "W1", 10)
+    assert set(r.offline_jobs_for("W1")) == {"oj1", "oj3"}
+    r.finish_offline_job("oj1")
+    assert set(r.offline_jobs_for("W1")) == {"oj3"}, "a finished package is not open"

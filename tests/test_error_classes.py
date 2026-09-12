@@ -314,3 +314,22 @@ def test_the_prompt_no_longer_offers_the_surface():
     assert "MUST USE" not in p
     assert "Required rendering, by line number:" in p
     assert "1. Dwemer Bowl ⇥ Дверная чаша" in p, "two columns on the line, not three"
+
+
+def test_every_label_this_project_puts_in_a_prompt_is_in_the_rule():
+    """The rule is only worth anything if it lists what the prompts actually say. Twice
+    now a label has been stored as a translation, and both times it was a label nothing
+    was watching for."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "remote_worker"))
+    from prompt.builder import build_prompt
+    from translator.validation.quality import prompt_scaffold_violations
+
+    p = build_prompt(["Dwemer Bowl"], "English", "Russian",
+                     current=["Дверная чаша"], terms=["Dwemer = Двемер"])
+    # Any line of the prompt that labels a column or a block would, if echoed, arrive as
+    # a translation. The headings are what a model copies; check each is caught.
+    for label in ("Required rendering, by line number:",):
+        assert label in p, "the prompt changed; update this list and the rule together"
+        assert prompt_scaffold_violations(label), f"{label!r} could be stored unnoticed"

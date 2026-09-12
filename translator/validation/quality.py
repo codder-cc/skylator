@@ -498,7 +498,7 @@ def markdown_emphasis_violations(original: str, translation: str) -> list[str]:
 # label belongs here the day it is used, and the rule is not "forbid it in the prompt"
 # because that was tried and did not hold.
 _PROMPT_SCAFFOLD_RE = re.compile(
-    r"MUST USE:|REQUIRED:|Strings \(source|numbered translations"
+    r"MUST USE:|REQUIRED:|Required rendering|Strings \(source|numbered translations"
     r"|\bsource ⇥|стро́ки \(источник", re.IGNORECASE)
 
 

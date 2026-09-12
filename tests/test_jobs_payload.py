@@ -132,3 +132,21 @@ def test_a_long_running_job_record_stays_bounded(jm, tmp_path):
     jm._persist()
     size = (tmp_path / "jobs.json").stat().st_size
     assert size < 300_000, f"one job record is {size/1e6:.2f} MB on disk"
+
+
+# ── cancelling a dispatched job has to reach the machines ────────────────────
+
+def test_cancel_tells_the_agent_to_drop_the_package():
+    """Dropping the queued chunk only stops a package the agent has not taken yet. One it
+    already holds is in its own durable store, and it keeps translating — for hours, on
+    work nobody wants, refusing every other request meanwhile. That is how a bench run
+    got HTTP 409 from both machines minutes after its job was cancelled.
+
+    The agent has handled a cancel_offline_job chunk all along (remote_server.py); the
+    master never sent one."""
+    import inspect
+    from translator.web.routes import jobs as jobs_rt
+    src = inspect.getsource(jobs_rt.cancel_job)
+    assert "cancel_offline_job" in src
+    assert "worker_label" in src, "the chunk has to be addressed to the agent holding it"
+    assert "finished" in src, "a package already delivered needs no cancelling"

@@ -209,10 +209,28 @@ def cancel_job(job_id: str):
     jm.cancel(job_id)
     # Clean up any offline packages queued/pending for this job
     if job and registry:
+        import uuid as _uuid
         for offline_job_id in (job.params.get("offline_job_ids") or []):
             oj_rec = registry.get_offline_job(offline_job_id)
             if oj_rec and oj_rec.get("chunk_id"):
                 registry.cancel_queued_chunk(oj_rec["chunk_id"])
+            # Dropping the queued chunk only stops a package the agent has not taken yet.
+            # One it already holds is in its own store and it keeps translating — for
+            # hours, on work nobody wants, refusing everything else meanwhile. The agent
+            # has understood cancel_offline_job all along; nothing ever sent it.
+            label = (oj_rec or {}).get("worker_label")
+            if label and not (oj_rec or {}).get("finished"):
+                try:
+                    registry.enqueue_chunk(label, {
+                        "chunk_id": str(_uuid.uuid4()),
+                        "type": "cancel_offline_job",
+                        "offline_job_id": offline_job_id,
+                    })
+                    log.info("cancel: told %s to drop offline job %s",
+                             label, offline_job_id[:8])
+                except Exception as exc:
+                    log.warning("cancel: could not reach %s to drop %s: %s",
+                                label, offline_job_id[:8], exc)
             registry.delete_offline_package(offline_job_id)
             registry.finish_offline_job(offline_job_id)
     return jsonify({"ok": True})

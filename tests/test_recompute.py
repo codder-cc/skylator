@@ -165,3 +165,27 @@ def test_the_mark_only_settles_a_row_whose_answer_is_the_source(setup, tmp_path)
 
     got = _row(db, "WB_Dremora_Hair")
     assert got["translation"] == "WB_Dremora_Hair", "a translated identifier is still undone"
+
+
+def test_it_walks_the_database_not_the_mods_directory(tmp_path, monkeypatch):
+    """A recompute re-judges rows, and a row belongs to a mod_name in the store — which
+    is not always a folder on disk under that exact name. Walking the directory silently
+    skipped whole mods: 1 217 settled record names stayed in review through three full
+    runs because the folders holding them were never visited."""
+    monkeypatch.setattr("translator.web.job_manager.JobManager", _JM)
+    db = TranslationDB(tmp_path / "w.db")
+    repo = StringRepo(db)
+    db.execute("INSERT INTO strings (mod_name, esp_name, key, original, translation,"
+               " status, quality_score) VALUES (?,?,?,?,?,?,?)",
+               ("A Mod With No Folder", "m.esp", "k1", "Variable07", "Variable07",
+                "needs_review", 50))
+    db.execute("UPDATE strings SET source='untranslatable'")
+    db.commit()
+
+    cfg = _Cfg()
+    cfg.paths.mods_dir = tmp_path / "empty"      # nothing on disk at all
+    cfg.paths.mods_dir.mkdir()
+    RecomputePipeline(cfg, repo).run(_Job(), None)
+
+    got = db.execute("SELECT status, quality_score FROM strings").fetchone()
+    assert got[0] == "translated" and got[1] == 100

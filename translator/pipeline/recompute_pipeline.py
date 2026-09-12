@@ -73,8 +73,16 @@ class RecomputePipeline:
         job.add_log(f"Glossary: {len(terms)} term(s) enforced"
                     if terms else "Glossary: NOT loaded — terminology will not be checked")
 
-        mods_dir = self._cfg.paths.mods_dir
-        mod_names = [mod_name] if mod_name else [p.name for p in mods_dir.iterdir() if p.is_dir()]
+        # The database, not the mods directory. A recompute re-judges rows, and a row
+        # belongs to a mod_name in the store — which is not always a folder on disk under
+        # that exact name. Walking the directory silently skipped whole mods: 1 217
+        # settled record names stayed in review through three full runs because the
+        # folders holding them were never visited.
+        if mod_name:
+            mod_names = [mod_name]
+        else:
+            mod_names = [r[0] for r in repo.db.execute(
+                "SELECT DISTINCT mod_name FROM strings ORDER BY mod_name").fetchall()]
 
         total = len(mod_names)
         updated = skipped = 0

@@ -12,7 +12,10 @@ from translator.config import get_config
 
 # Load Skyrim terminology overrides once
 _TERMS_PATH = Path(__file__).parent.parent.parent / "data" / "skyrim_terms.json"
-_TERMS: dict[str, str] = {}
+# A glossary value may be a list of accepted renderings; a prompt asks for the first.
+from translator.validation.terminology import canonical
+
+_TERMS: dict = {}
 
 def _load_terms():
     global _TERMS
@@ -31,7 +34,7 @@ def _terms_block(tgt_lang: str) -> str:
     """Legacy: fixed first-30 terms for local prompt templates."""
     if not _TERMS:
         return ""
-    lines = [f"  {en} → {ru}" for en, ru in list(_TERMS.items())[:30]]
+    lines = [f"  {en} → {canonical(ru)}" for en, ru in list(_TERMS.items())[:30]]
     return (
         f"\nKey terminology ({tgt_lang}):\n" + "\n".join(lines) + "\n"
     )
@@ -62,7 +65,7 @@ def _terms_relevant(current_texts: list[str], max_entries: int = 10) -> str:
     if not relevant:
         return ""
 
-    lines = [f"  {en} → {ru}" for en, ru in relevant[:max_entries]]
+    lines = [f"  {en} → {canonical(ru)}" for en, ru in relevant[:max_entries]]
     return "Terminology:\n" + "\n".join(lines)
 
 

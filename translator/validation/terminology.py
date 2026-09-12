@@ -34,20 +34,20 @@ def terminology_report(rows: list[dict], terms: dict, max_examples: int = 3) -> 
     translated = [r for r in rows
                   if r.get("status") == "translated" and (r.get("translation") or "").strip()]
     report = []
-    for en, ru in (terms or {}).items():
-        if not en or not ru:
+    for en, value in (terms or {}).items():
+        forms = [f.lower().strip() for f in accepted_forms(value)]
+        if not en or not forms:
             continue
         matching = [r for r in translated if _contains_word(r.get("original") or "", en)]
         if not matching:
             continue
         # The EXPECTED term is checked by substring, not whole-word: Russian inflects names
         # (Вайтран → Вайтрана/Вайтране), so the stem appearing anywhere means it was applied.
-        ru_stem = ru.lower().strip()
         violations = [r for r in matching
-                      if ru_stem not in (r.get("translation") or "").lower()]
+                      if not any(f in (r.get("translation") or "").lower() for f in forms)]
         if violations:
             report.append({
-                "term": en, "expected": ru,
+                "term": en, "expected": canonical(value),
                 "total": len(matching), "violations": len(violations),
                 "examples": [{"original": v.get("original"), "translation": v.get("translation")}
                              for v in violations[:max_examples]],
@@ -85,6 +85,36 @@ def terminology_summary(rows: list[dict], terms: dict) -> dict:
 _FILENAME_RE = re.compile(r"\.(esp|esm|esl|bsa|txt|json|swf|pex|dds|nif)\b", re.I)
 
 
+# A glossary entry may name more than one acceptable rendering. Skyrim's Russian has
+# several, and demanding one of them reported correct work in the tens of thousands:
+#
+#   Magicka      «магия» is Bethesda's own word for it            2 362 strings
+#   Guard        «страж» inside a name — "Honor Guard"            1 995
+#   Dragonborn   «Драконорождённый» stands beside «Довакин»       1 630
+#   Boots        «ботинки» is not wrong                           1 015
+#   Companion    «спутник» generically, «Соратник» for the guild    897
+#   Inn          «гостиница»                                        627
+#
+# So a value is either a string — one rendering, as before — or a list, whose first entry
+# is the canonical one to put in a prompt and the rest are accepted without complaint.
+# This is enforcement, not preference: the list says what is not a defect, and the first
+# entry says what to ask for.
+
+def accepted_forms(value) -> list[str]:
+    """Every rendering a glossary entry accepts."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        return [v for v in value if isinstance(v, str) and v.strip()]
+    return []
+
+
+def canonical(value) -> str:
+    """The rendering to ask a model for. Empty when the entry is unusable."""
+    forms = accepted_forms(value)
+    return forms[0] if forms else ""
+
+
 
 # Russian inflects, and a glossary entry is one form of a word. "Железо" is the noun; a
 # sword made of it is "Железный", and "Здоровье" becomes "здоровья". Matching the entry
@@ -114,21 +144,51 @@ _RU_ENDINGS = ("ого", "ому", "ыми", "ими", "ая", "ое", "ые", "
                "ах", "ям", "ев", "ов", "а", "я", "о", "е", "ы", "и", "у", "ю", "ь", "й")
 
 
-def _stem(term: str) -> str:
-    """Drop a trailing inflection so a glossary entry matches its declined forms.
+_VOWELS = "аеёиоуыэюя"
+
+
+def _stems(term: str) -> list[str]:
+    """Prefixes that a glossary entry's declined forms all start with.
 
     Conservative: only trims single words over five characters and never below five, so a
     short name stays exact rather than shrinking into something that matches half the text.
+
+    A prefix, not a suffix-stripping rule. Russian inflection changes the tail in ways a
+    fixed ending list does not cover — "Торговец" becomes "торговца", "Еда" becomes "едой"
+    — and each miss reports correct work as a violation.
+
+    One prefix is not always enough. Russian has a fleeting vowel: the last vowel of the
+    stem disappears when an ending is added, so «Уровень» becomes «уровня» and «Камень»
+    becomes «камня». A prefix taken off the nominative reads «урове», which no oblique
+    form starts with, and every one of them was reported. 590 strings on the live
+    collection were that word alone. So the syncopated prefix is a candidate too.
     """
     t = (term or "").lower().strip()
     if " " in t:
-        return t                      # multi-word terms are matched whole (report only)
-    # A prefix, not a suffix-stripping rule. Russian inflection changes the tail in ways a
-    # fixed ending list does not cover — "Торговец" becomes "торговца", "Еда" becomes
-    # "едой" — and each miss reports correct work as a violation. Dropping the last two
-    # characters covers the common cases; the floor of four keeps a prefix specific enough
-    # not to match unrelated words.
-    return t[:max(_PREFIX_CHARS, len(t) - 2)]
+        return [t]                    # multi-word terms are matched whole (report only)
+    out = [t[:max(_PREFIX_CHARS, len(t) - 2)]]
+    # «уровень» → «уровн»: drop the vowel before the final consonant, then cut the ending.
+    # Four characters is enough here where five is the floor above, because this prefix
+    # ends in a consonant cluster — «камн» belongs to камня/камне/камнем and to nothing
+    # else, while a four-letter prefix cut from the front of a word need not.
+    # Only for a nominative in ь/й. Applied to a word ending in a vowel it invents
+    # things: «булава» came out as «булв», which belongs to no form of the word.
+    if len(t) >= 5 and t[-1] in "ьй" and t[-2] not in _VOWELS and t[-3] in _VOWELS:
+        syncopated = t[:-3] + t[-2]
+        if len(syncopated) >= 4:
+            out.append(syncopated)
+    # A noun ending in a vowel declines by replacing it: «Магия» → магии, магию, магией.
+    # The five-character floor above leaves a five-letter word untrimmed, so «магия» was
+    # required verbatim and «Укрепление магии» read as a violation — 2 362 strings. This
+    # prefix can be one character shorter because it is the whole word bar its ending,
+    # not an arbitrary cut. It can match a longer relative — «маги» is also the start of
+    # «магистр» — and that is the right way to be wrong: a missed violation costs
+    # nothing, a false one costs somebody a review.
+    if len(t) >= 5 and t[-1] in "ьй" + _VOWELS:
+        shortened = t[:-1]
+        if len(shortened) >= 4:
+            out.append(shortened)
+    return list(dict.fromkeys(out))
 
 
 _TOKEN_RE = re.compile(r"<[^>]*>|\{[^}]*\}|\[[A-Za-z][^\]]*\]|%\w+")
@@ -162,16 +222,21 @@ def glossary_violations(original: str, translation: str, terms: dict) -> list[tu
     original = _strip_tokens(original)
     low_translation = _strip_tokens(translation).lower()
     out = []
-    for en, ru in terms.items():
-        if not en or not ru:
+    for en, value in terms.items():
+        forms = accepted_forms(value)
+        if not en or not forms:
             continue
-        if not _is_enforceable(ru):
+        # Being specific enough to DEMAND and being able to SATISFY are two different
+        # questions, and conflating them is what kept «Магия» from counting. A five-letter
+        # word is too ambiguous to require — but when the translation contains it, the
+        # term was applied, and the entry is satisfied whatever its length.
+        if not any(_is_enforceable(f) for f in forms):
             continue
         if not _contains_word(original, en):
             continue
-        if _stem(ru) in low_translation:
+        if any(s in low_translation for f in forms for s in _stems(f)):
             continue
-        out.append((en, ru))
+        out.append((en, canonical(value)))
     return out
 
 

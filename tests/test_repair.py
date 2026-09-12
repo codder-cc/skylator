@@ -45,7 +45,7 @@ def test_applying_writes_the_repair(fakedb):
     fakedb.commit()
     repo = _repo(fakedb)
     done = apply_repairs(repo, find_repairable(repo))
-    assert done == {"echo": 1, "identifier": 1}
+    assert done == {"echo": 1, "identifier": 1, "angle": 0, "meta": 0}
 
     rows = {r[0]: r for r in fakedb.execute(
         "SELECT id, translation, status, source FROM strings").fetchall()}
@@ -75,3 +75,84 @@ def test_a_dry_run_changes_nothing(fakedb):
     found = find_repairable(repo)
     assert found["echo"]
     assert fakedb.execute("SELECT translation FROM strings").fetchone()[0] == "Bed → Кровать"
+
+
+# ── angle brackets the model replaced with look-alikes ───────────────────────
+#
+# 745 on the live collection, and three different accidents wearing one shape:
+#
+#   291  a real tag with its brackets swapped     ⟨font face='$Hand'⟩
+#   448  ⟨H0⟩…⟨/H0⟩ around a line whose source has no markup at all
+#     6  ⟨H1⟩ where the source DOES have tags — the mask never got undone
+#
+# ⟨H#⟩ is this project's own mask for an HTML tag, put on before the model sees the text
+# and taken off after. A source with no tags has nothing at index 0, so those came from
+# the model and there was nothing to map them back to.
+
+def test_a_swapped_bracket_is_put_back():
+    from translator.validation.repair import _restore_brackets
+    from translator.validation.quality import markup_violations
+    en = "<font face='$Hand'>Go there"
+    ru = "⟨font face='$Hand'⟩Иди туда"
+    fixed = _restore_brackets(en, ru)
+    assert fixed == "<font face='$Hand'>Иди туда"
+    assert markup_violations(en, fixed) == []
+
+
+def test_an_invented_wrapper_is_removed():
+    from translator.validation.repair import _restore_brackets
+    from translator.validation.quality import markup_violations
+    en = "A friendly rivalry is good."
+    ru = "⟨H0⟩Дружеское соперничество полезно.⟨/H0⟩"
+    fixed = _restore_brackets(en, ru)
+    assert fixed == "Дружеское соперничество полезно."
+    assert markup_violations(en, fixed) == []
+
+
+def test_a_mask_that_was_never_undone_is_left_to_a_model():
+    """Which tag ⟨H1⟩ stands for is not derivable from the line, and guessing <p> where
+    the source had <font> writes a different document."""
+    from translator.validation.repair import _restore_brackets
+    en, ru = "<p align='center'>Title", "⟨H1⟩Заголовок"
+    assert _restore_brackets(en, ru) == ru
+
+
+def test_the_project_newline_token_survives():
+    from translator.validation.repair import _restore_brackets
+    assert _restore_brackets("Line one", "Строка ⟨NL⟩ вторая") == "Строка ⟨NL⟩ вторая"
+
+
+def test_a_source_that_has_them_too_is_left_alone():
+    from translator.validation.repair import _restore_brackets
+    assert _restore_brackets("⟨already⟩ here", "⟨уже⟩ тут") == "⟨уже⟩ тут"
+
+
+# ── the model's deliberation stored as the answer ────────────────────────────
+
+import pytest
+
+
+@pytest.mark.parametrize("stored, want", [
+    ("Малина (если это название растения, то можно перевести как «Малина», "
+     "но в Skyrim часто оставляют как есть. Для точности: «Малина»)", "Малина"),
+    ("Жёлтый Архангел (если это название растения, можно перевести как «Жёлтый Архангел»)",
+     "Жёлтый Архангел"),
+])
+def test_the_aside_comes_off_the_end(stored, want):
+    from translator.validation.repair import _strip_meta
+    assert _strip_meta(stored) == want
+
+
+def test_a_translation_with_no_aside_is_untouched():
+    from translator.validation.repair import _strip_meta
+    assert _strip_meta("Обычный перевод") == "Обычный перевод"
+
+
+def test_an_answer_that_is_all_aside_is_not_repairable():
+    """«Извините, но…» is a refusal, not a translation with a comment stuck on it. There
+    is nothing in front to keep, so the repair leaves it for the model pass."""
+    from translator.validation.repair import _strip_meta
+    from translator.validation.quality import meta_comment_violations
+    stored = "Извините, но я не могу это перевести"
+    assert _strip_meta(stored) == stored
+    assert meta_comment_violations(_strip_meta(stored)), "still flagged, still queued"

@@ -45,7 +45,8 @@ def test_applying_writes_the_repair(fakedb):
     fakedb.commit()
     repo = _repo(fakedb)
     done = apply_repairs(repo, find_repairable(repo))
-    assert done == {"echo": 1, "identifier": 1, "angle": 0, "meta": 0, "markdown": 0}
+    assert done == {"echo": 1, "identifier": 1, "angle": 0, "meta": 0, "markdown": 0,
+                    "untranslatable": 0}
 
     rows = {r[0]: r for r in fakedb.execute(
         "SELECT id, translation, status, source FROM strings").fetchall()}
@@ -169,3 +170,43 @@ def test_a_parenthetical_the_source_itself_has_is_not_an_aside():
     assert _strip_meta(en, ru) == ru
     assert _strip_meta("Bounty [see notes]", "Награда [примечание: см. заметки]") == \
         "Награда [примечание: см. заметки]"
+
+
+# ── a record name copied through is the right answer, not a defect ───────────
+
+def test_an_identifier_copied_through_is_settled_not_queued(fakedb):
+    """1 217 strings sat in review holding «Variable07» → «Variable07», which is correct.
+    Nothing named them: identifier_violations only fires when a record name came back
+    TRANSLATED, and the score takes 50 off any translation equal to its source without
+    knowing this one should be. Every pass re-translated them and got the same answer."""
+    a = fakedb.insert_string("M", "e.esp", "k1", "Variable07", "Variable07", "needs_review")
+    b = fakedb.insert_string("M", "e.esp", "k2", "mq6trigger4050", "mq6trigger4050",
+                             "needs_review")
+    fakedb.commit()
+    repo = _repo(fakedb)
+    done = apply_repairs(repo, find_repairable(repo))
+    assert done["untranslatable"] == 2
+
+    rows = {r[0]: r for r in fakedb.execute(
+        "SELECT id, translation, status, source, quality_score FROM strings")}
+    for sid in (a, b):
+        assert rows[sid][1] == rows[sid][1]          # unchanged text
+        assert rows[sid][2] == "translated"
+        assert rows[sid][3] == "untranslatable", "so no later pass spends a machine on it"
+        assert rows[sid][4] == 100
+
+
+def test_an_ordinary_word_copied_through_is_still_a_miss(fakedb):
+    """"Drop Zone" left in English is work not done, and must stay queued."""
+    fakedb.insert_string("M", "e.esp", "k1", "Drop Zone", "Drop Zone", "needs_review")
+    fakedb.commit()
+    repo = _repo(fakedb)
+    assert find_repairable(repo)["untranslatable"] == []
+
+
+def test_a_row_already_settled_is_not_revisited(fakedb):
+    fakedb.insert_string("M", "e.esp", "k1", "Variable07", "Variable07", "translated")
+    fakedb.execute("UPDATE strings SET source='untranslatable'")
+    fakedb.commit()
+    repo = _repo(fakedb)
+    assert find_repairable(repo)["untranslatable"] == []

@@ -31,7 +31,8 @@ import re
 import time
 
 from translator.validation.quality import (
-    echo_violations, identifier_violations, markdown_emphasis_violations,
+    echo_violations, identifier_violations, looks_like_identifier,
+    markdown_emphasis_violations,
     markup_violations,
     meta_comment_violations, renders_as_garbage, strip_echo,
 )
@@ -129,12 +130,18 @@ def find_repairable(repo, limit: int | None = None) -> dict:
     Reads only. The report is worth looking at before thousands of rows change, which is
     why applying is a separate call rather than a flag with a safe default.
     """
+    # A row where the translation equals the source used to be excluded here, which is
+    # why the identifier passthrough below never saw one: those rows ARE the ones where
+    # the two are equal. Still excluded when it is already settled — a row marked
+    # untranslatable has nothing left to do.
     sql = ("SELECT id, original, translation FROM strings "
-           "WHERE TRIM(translation) <> '' AND translation <> original")
+           "WHERE TRIM(translation) <> '' "
+           "AND (translation <> original OR (status='needs_review' "
+           "                                 AND COALESCE(source,'') <> 'untranslatable'))")
     if limit:
         sql += f" LIMIT {int(limit)}"
     out: dict[str, list] = {"echo": [], "identifier": [], "angle": [], "meta": [],
-                            "markdown": []}
+                            "markdown": [], "untranslatable": []}
     for r in repo.db.execute(sql).fetchall():
         o, t = r["original"] or "", r["translation"] or ""
         if echo_violations(o, t):
@@ -149,6 +156,12 @@ def find_repairable(repo, limit: int | None = None) -> dict:
             # is still broken afterwards lost a tag as well, and that needs a model.
             if fixed and fixed != t and not markup_violations(o, fixed):
                 out["angle"].append((r["id"], o, t, fixed))
+        elif looks_like_identifier(o) and t.strip() == o.strip():
+            # Copied through unchanged, which is the right answer for a record name — and
+            # it was being held anyway, because the score takes 50 off a translation that
+            # equals its source and nothing told it this one should. 1 217 strings, every
+            # pass re-translating them and getting the same answer back.
+            out["untranslatable"].append((r["id"], o, t, o))
         elif markdown_emphasis_violations(o, t):
             fixed = _strip_markdown(t)
             if fixed and fixed != t and not renders_as_garbage(o, fixed):
@@ -165,14 +178,15 @@ def find_repairable(repo, limit: int | None = None) -> dict:
 def apply_repairs(repo, found: dict, job=None) -> dict:
     """Write the repairs found by `find_repairable`. Returns what changed, by kind."""
     now = time.time()
-    done = {"echo": 0, "identifier": 0, "angle": 0, "meta": 0, "markdown": 0}
+    done = {"echo": 0, "identifier": 0, "angle": 0, "meta": 0, "markdown": 0,
+            "untranslatable": 0}
     for kind, rows in found.items():
         for sid, original, old, new in rows:
             try:
                 repo.insert_history(sid, old, "translated", None, f"repair:{kind}", None, None)
             except Exception as exc:                     # history is a courtesy, not a gate
                 log.debug("repair: could not record history for %s: %s", sid, exc)
-            if kind == "identifier":
+            if kind in ("identifier", "untranslatable"):
                 # A record name is not translatable, and saying so stops the next sweep
                 # from spending a machine on it and getting this wrong again.
                 repo.db.execute(

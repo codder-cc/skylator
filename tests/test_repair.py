@@ -132,20 +132,22 @@ def test_a_source_that_has_them_too_is_left_alone():
 import pytest
 
 
-@pytest.mark.parametrize("stored, want", [
-    ("Малина (если это название растения, то можно перевести как «Малина», "
+@pytest.mark.parametrize("en, stored, want", [
+    ("Raspberry",
+     "Малина (если это название растения, то можно перевести как «Малина», "
      "но в Skyrim часто оставляют как есть. Для точности: «Малина»)", "Малина"),
-    ("Жёлтый Архангел (если это название растения, можно перевести как «Жёлтый Архангел»)",
+    ("Yellow Archangel",
+     "Жёлтый Архангел (если это название растения, можно перевести как «Жёлтый Архангел»)",
      "Жёлтый Архангел"),
 ])
-def test_the_aside_comes_off_the_end(stored, want):
+def test_the_aside_comes_off_the_end(en, stored, want):
     from translator.validation.repair import _strip_meta
-    assert _strip_meta(stored) == want
+    assert _strip_meta(en, stored) == want
 
 
 def test_a_translation_with_no_aside_is_untouched():
     from translator.validation.repair import _strip_meta
-    assert _strip_meta("Обычный перевод") == "Обычный перевод"
+    assert _strip_meta("An ordinary line", "Обычный перевод") == "Обычный перевод"
 
 
 def test_an_answer_that_is_all_aside_is_not_repairable():
@@ -154,5 +156,16 @@ def test_an_answer_that_is_all_aside_is_not_repairable():
     from translator.validation.repair import _strip_meta
     from translator.validation.quality import meta_comment_violations
     stored = "Извините, но я не могу это перевести"
-    assert _strip_meta(stored) == stored
-    assert meta_comment_violations(_strip_meta(stored)), "still flagged, still queued"
+    assert _strip_meta("Translate me", stored) == stored
+    assert meta_comment_violations(stored), "still flagged, still queued"
+
+
+def test_a_parenthetical_the_source_itself_has_is_not_an_aside():
+    """"start (note, quest unfinished)" is «начало (примечание: квест не завершён)», and
+    the bracket is the author's, not the model's. A dry run caught this on its way to
+    writing 259 rows — stripping it would have deleted the string's own content."""
+    from translator.validation.repair import _strip_meta
+    en, ru = "start (note, quest unfinished)", "начало (примечание: квест не завершён)"
+    assert _strip_meta(en, ru) == ru
+    assert _strip_meta("Bounty [see notes]", "Награда [примечание: см. заметки]") == \
+        "Награда [примечание: см. заметки]"

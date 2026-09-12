@@ -96,10 +96,20 @@ def _restore_brackets(original: str, translation: str) -> str:
     return out
 
 
-def _strip_meta(translation: str) -> str:
-    """The answer with the model's aside taken off the end."""
-    out = _META_TAIL_RE.sub("", translation or "").strip()
-    return out
+_SRC_PAREN_TAIL_RE = re.compile(r"[(\[][^)\]]*[)\]]\s*$")
+
+
+def _strip_meta(original: str, translation: str) -> str:
+    """The answer with the model's aside taken off the end.
+
+    The source is consulted first. "start (note, quest unfinished)" is translated as
+    «начало (примечание: квест не завершён)» and the parenthetical is the author's, not
+    the model's — stripping it deletes the string's own content. A dry run over the
+    collection caught that on its way to writing 259 rows.
+    """
+    if _SRC_PAREN_TAIL_RE.search((original or "").strip()):
+        return translation
+    return _META_TAIL_RE.sub("", translation or "").strip()
 
 
 def find_repairable(repo, limit: int | None = None) -> dict:
@@ -128,7 +138,7 @@ def find_repairable(repo, limit: int | None = None) -> dict:
             if fixed and fixed != t and not markup_violations(o, fixed):
                 out["angle"].append((r["id"], o, t, fixed))
         elif meta_comment_violations(t):
-            fixed = _strip_meta(t)
+            fixed = _strip_meta(o, t)
             # The aside has to be the tail and there has to be a translation in front of
             # it. «Извините, но я не могу это перевести» is all aside and no answer.
             if fixed and fixed != t and not renders_as_garbage(o, fixed):

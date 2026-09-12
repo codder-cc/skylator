@@ -171,7 +171,11 @@ def create_job():
     elif job_type == "fetch_nexus" and mod_names:
         job = _create_fetch_nexus_job(jm, cfg, mod_names[0])
     elif job_type == "apply_mod" and mod_names:
-        job = _create_apply_mod_job(jm, cfg, mod_names[0], options)
+        # One job per call, however many mods were asked for. Passing the whole
+        # collection and watching it apply the first name in the list is a silent
+        # no-op for 1 944 of them.
+        job = (_create_apply_mod_job(jm, cfg, mod_names[0], options) if len(mod_names) == 1
+               else _create_apply_all_job(jm, cfg, mod_names, options))
     elif job_type == "translate_bsa" and mod_names:
         job = _create_translate_bsa_job(jm, cfg, mod_names[0], options)
     elif job_type == "translate_strings" and mod_names:
@@ -963,6 +967,53 @@ def _create_apply_mod_job(jm, cfg, mod_name: str, options: dict):
         name     = f"Apply ESP: {mod_name}",
         job_type = "apply_mod",
         params   = {"mod_name": mod_name, "dry_run": dry_run},
+        fn       = run,
+    )
+
+
+def _create_apply_all_job(jm, cfg, mod_names: list, options: dict):
+    """Write the translations of many mods into their ESPs, in one detachable job.
+
+    The per-mod builder takes one name, and the dispatch handed it mod_names[0] — so a
+    request carrying the whole collection applied one mod and reported success. This runs
+    the list.
+
+    No per-mod checkpoint: 1 945 of them is a checkpoint table larger than the work it
+    protects, and the real safety net is elsewhere — every ESP is copied to the backup
+    directory before it is rewritten, by the writer itself, and the database is not
+    touched by an apply at all.
+    """
+    dry_run   = options.get("dry_run", False)
+    repo      = current_app.config.get("STRING_REPO")
+    stats_mgr = current_app.config.get("STATS_MGR")
+    scanner   = current_app.config.get("SCANNER")
+
+    def run(job):
+        from translator.web.job_manager import JobManager
+        from translator.web.workers import apply_mod_worker
+        jm_ = JobManager.get()
+        total = len(mod_names)
+        ok = failed = 0
+        for i, mod in enumerate(mod_names):
+            if job.status.value == "cancelled":
+                job.add_log(f"Cancelled after {i} mod(s)")
+                break
+            jm_.update_progress(job, i, total, mod)
+            try:
+                apply_mod_worker(job, cfg, mod, dry_run=dry_run, repo=repo)
+                ok += 1
+            except Exception as exc:
+                failed += 1
+                job.add_log(f"ERROR {mod}: {exc}")
+        jm_.update_progress(job, total, total, "Done")
+        job.result = f"Applied {ok} mod(s)" + (f", {failed} failed" if failed else "")
+        job.add_log(job.result)
+        post_job_hook(scanner, stats_mgr)     # None → refresh every mod's counts
+
+    return jm.create(
+        name     = f"Apply ESP: {len(mod_names)} mods",
+        job_type = "apply_mod",
+        params   = {"mods": mod_names, "dry_run": dry_run},
         fn       = run,
     )
 

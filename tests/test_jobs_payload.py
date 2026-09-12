@@ -150,3 +150,27 @@ def test_cancel_tells_the_agent_to_drop_the_package():
     assert "cancel_offline_job" in src
     assert "worker_label" in src, "the chunk has to be addressed to the agent holding it"
     assert "finished" in src, "a package already delivered needs no cancelling"
+
+
+# ── applying many mods ───────────────────────────────────────────────────────
+
+def test_a_list_of_mods_does_not_apply_only_the_first():
+    """The dispatch handed the per-mod builder mod_names[0], so a request carrying the
+    whole collection applied one mod and reported success — a silent no-op for the other
+    1 944."""
+    import inspect
+    from translator.web.routes import jobs as jobs_rt
+    src = inspect.getsource(jobs_rt.create_job)
+    i = src.index('job_type == "apply_mod"')
+    branch = src[i:i + 400]
+    assert "_create_apply_all_job" in branch
+    assert "len(mod_names) == 1" in branch
+
+
+def test_the_bulk_apply_runs_every_mod_and_survives_one_failing():
+    import inspect
+    from translator.web.routes.jobs import _create_apply_all_job
+    src = inspect.getsource(_create_apply_all_job)
+    assert "for i, mod in enumerate(mod_names)" in src
+    assert "except Exception" in src, "one bad mod must not end the run"
+    assert "cancelled" in src, "and it has to be interruptible"

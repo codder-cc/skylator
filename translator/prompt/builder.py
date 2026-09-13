@@ -5,6 +5,7 @@ Produces numbered-list prompts compatible with parse_numbered_output().
 
 from __future__ import annotations
 import json
+import re
 import threading
 from pathlib import Path
 
@@ -40,6 +41,32 @@ def _terms_block(tgt_lang: str) -> str:
     )
 
 
+_STOPWORDS = frozenset(
+    "the a an of and or to in on at for from with by is are was were be been it its "
+    "this that these those you your my his her their our not no as if but so then"
+    .split())
+
+
+def _content_words(text: str) -> set:
+    """Слова, по которым имеет смысл искать совпадение."""
+    return {w for w in re.split(r"[^A-Za-z0-9']+", (text or "").lower())
+            if len(w) > 2 and w not in _STOPWORDS}
+
+
+def _all_terms() -> dict:
+    """Курируемый глоссарий и реестр официальных имён — один источник на всех.
+
+    Раньше в промпт ехали только 204 курируемые записи, и про «Драконий Предел» модель
+    не знала ничего: ей было велено придумать имя самой. Теперь рядом лежат 7 030 имён
+    официальной локализации, и придумывать нечего.
+    """
+    try:
+        from translator.validation.terminology import load_terms
+        return load_terms()
+    except Exception:
+        return _TERMS
+
+
 def _terms_relevant(current_texts: list[str], max_entries: int = 10) -> str:
     """
     Return Skyrim terminology entries relevant to current_texts.
@@ -48,17 +75,19 @@ def _terms_relevant(current_texts: list[str], max_entries: int = 10) -> str:
     translated are included.  This is used to inject the glossary into the
     context string so remote backends also benefit.
     """
-    if not _TERMS or not current_texts:
+    terms = _all_terms()
+    if not terms or not current_texts:
         return ""
 
-    query_words: set[str] = set()
-    for t in current_texts:
-        query_words.update(w.lower() for w in t.split() if len(w) > 2)
+    # Стоп-слова выкидываются с обеих сторон. Со 204 курируемыми записями это было
+    # неважно, а с 7 030 именами «Protecting the Bloodline» попадает в блок к строке
+    # «Leave the Warrens» по слову «the» и вытесняет «The Warrens».
+    query_words = {w for t in current_texts for w in _content_words(t)}
 
     def _score(item: tuple[str, str]) -> int:
-        return len(set(w.lower() for w in item[0].split()) & query_words)
+        return len(_content_words(item[0]) & query_words)
 
-    scored = [(k, v, _score((k, v))) for k, v in _TERMS.items()]
+    scored = [(k, v, _score((k, v))) for k, v in terms.items()]
     relevant = [(k, v) for k, v, s in scored if s > 0]
     relevant.sort(key=lambda x: -_score(x))
 

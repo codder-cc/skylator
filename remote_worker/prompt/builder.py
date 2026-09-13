@@ -20,6 +20,9 @@ the translation MUST also contain exactly N sentences or N items.
 appears — translate the word or phrase after each ~ just like any other text.
 - Translate ALL words including proper nouns, NPC names, item names, ingredient names, and \
 place names — do NOT leave them in English unless they are untranslatable brand tokens.
+- When a name appears in the terminology block, use THAT rendering exactly. It is the name \
+the player already sees on the map and in the base game; a different rendering of the same \
+place or item is an error even when it reads well on its own.
 - Preserve formatting tokens and variable placeholders (<Alias=...>, %1, [PlayerName]) exactly.
 - ⟨NL⟩ represents a newline — preserve every ⟨NL⟩ exactly where it appears.
 - ⟨H0⟩, ⟨H1⟩, ⟨H2⟩… are HTML formatting tokens — keep each one exactly in place, \

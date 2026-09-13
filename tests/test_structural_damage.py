@@ -173,3 +173,23 @@ def test_the_separator_character_alone_is_damage():
 
 def test_a_separator_the_source_carries_is_not_the_prompt_leaking():
     assert echo_violations("Press ⇥ to continue", "Нажми ⇥ чтобы продолжить") == []
+
+
+def test_a_token_starting_with_a_digit_is_a_record_name_at_any_length():
+    """`0Brows`, `0Hair1`, `0Lashes`, `1F`, `18CD`. The eight-character floor is there to
+    keep "Bed" out, and it was hiding these — 24 of them in the collection, every one a
+    head-part or a hex id. No English word begins with a digit."""
+    for t in ("0Brows", "0Hair1", "0Eyes", "0Lashes", "0Harkon", "1F", "18CD", "3d4000"):
+        assert looks_like_identifier(t), t
+
+
+@pytest.mark.parametrize("text, why", [
+    ("4E 181", "a date has a space in it"),
+    ("25", "digits alone are not a name"),
+    ("3.5", "nor a version"),
+    ("Bed", "the floor still keeps short words out"),
+    ("fx", "two lower-case letters are not a record name"),
+    ("Нордский меч", "not ASCII"),
+])
+def test_and_these_are_still_not(text, why):
+    assert not looks_like_identifier(text), why

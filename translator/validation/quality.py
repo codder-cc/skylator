@@ -195,6 +195,9 @@ _MIXED_SCRIPT_WORD_RE = re.compile(r"\b(?=\w*[А-Яа-яЁё])(?=\w*[A-Za-z])\w{
 _CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")
 
 
+_DIGIT_FIRST_ID_RE = re.compile(r"^\d[A-Za-z0-9_]*[A-Za-z][A-Za-z0-9_]*$")
+
+
 def looks_like_identifier(text: str) -> bool:
     """A name for the engine rather than a line for the player.
 
@@ -204,7 +207,15 @@ def looks_like_identifier(text: str) -> bool:
     English sentence looks like that.
     """
     t = (text or "").strip()
-    if not t or " " in t or len(t) < 8 or not t.isascii():
+    if not t or " " in t or not t.isascii():
+        return False
+    # A token that starts with a digit and carries letters is a record name whatever its
+    # length: `0Brows`, `0Hair1`, `0Lashes`, `1F`, `18CD`. No English word begins with a
+    # digit, so the eight-character floor below — which is there to keep "Bed" out — was
+    # only hiding these. 24 of them in the collection, every one a head-part or a hex id.
+    if _DIGIT_FIRST_ID_RE.match(t):
+        return True
+    if len(t) < 8:
         return False
     if "_" in t:
         return True

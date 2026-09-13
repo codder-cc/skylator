@@ -81,9 +81,8 @@ class StringManager:
             self._terms = {}
             try:
                 from translator.config import get_config
-                path = get_config().paths.skyrim_terms
-                if path and Path(path).exists():
-                    self._terms = json.loads(Path(path).read_text(encoding="utf-8"))
+                from translator.validation.terminology import load_terms
+                self._terms = load_terms(get_config().paths.skyrim_terms)
             except Exception as exc:
                 log.warning("glossary: could not load terms, enforcement is off: %s", exc)
         return self._terms

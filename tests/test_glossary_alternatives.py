@@ -75,7 +75,9 @@ def test_the_fleeting_rule_does_not_invent_forms():
     """Applied to a word ending in a vowel it produced «булв», which belongs to no form
     of «булава»."""
     assert "булв" not in _stems("Булава")
-    assert _stems("Булава") == ["булав"]
+    # кортеж, а не список: результат лежит в lru_cache, и отдавать оттуда
+    # изменяемый объект — значит позволить вызывающему испортить кеш.
+    assert _stems("Булава") == ("булав",)
 
 
 # ── what must no longer be reported ──────────────────────────────────────────

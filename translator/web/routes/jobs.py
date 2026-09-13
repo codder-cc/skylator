@@ -1585,15 +1585,8 @@ def _create_ensemble_decide_job(jm, cfg, apply: bool = False):
 def _load_glossary(cfg) -> dict:
     """The curated glossary, or {} — a missing file turns the term scope into a no-op
     rather than failing the dispatch."""
-    import json
-    from pathlib import Path
-    try:
-        path = cfg.paths.skyrim_terms if cfg else None
-        if path and Path(path).exists():
-            return json.loads(Path(path).read_text(encoding="utf-8"))
-    except Exception as exc:
-        log.warning("terms scope: could not load glossary: %s", exc)
-    return {}
+    from translator.validation.terminology import load_terms
+    return load_terms(cfg.paths.skyrim_terms if cfg else None)
 
 
 # Where a terminology fix stops being worth its compute. Measured on the 11 724

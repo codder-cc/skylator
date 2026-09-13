@@ -13,6 +13,7 @@ the DB rows for a mod (or the whole store).
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 
 
 def _contains_word(haystack: str, needle: str) -> bool:
@@ -147,7 +148,8 @@ _RU_ENDINGS = ("ого", "ому", "ыми", "ими", "ая", "ое", "ые", "
 _VOWELS = "аеёиоуыэюя"
 
 
-def _stems(term: str) -> list[str]:
+@lru_cache(maxsize=100_000)
+def _stems(term: str) -> tuple[str, ...]:
     """Prefixes that a glossary entry's declined forms all start with.
 
     Conservative: only trims single words over five characters and never below five, so a
@@ -198,7 +200,7 @@ def _stems(term: str) -> list[str]:
         shortened = t[:-1]
         if len(shortened) >= 4:
             out.append(shortened)
-    return list(dict.fromkeys(out))
+    return tuple(dict.fromkeys(out))
 
 
 _TOKEN_RE = re.compile(r"<[^>]*>|\{[^}]*\}|\[[A-Za-z][^\]]*\]|%\w+")
@@ -212,6 +214,61 @@ def _strip_tokens(text: str) -> str:
 def _is_untranslatable_name(original: str) -> bool:
     """Filenames and plugin names keep their English form; a glossary hit there is noise."""
     return bool(_FILENAME_RE.search(original or ""))
+
+
+# The curated glossary is 204 entries and a linear scan over it costs nothing. The
+# registry of official vanilla names is 14 168, and a scan over that is 6.5 billion
+# word-searches across a recompute of the whole collection — minutes become days.
+#
+# So: an index from the first word of a term to the terms starting with it. A term can
+# only be present if its first word is, which makes the index a superset filter — the
+# per-term test below is unchanged and decides exactly as it did, it is simply not asked
+# about terms the source cannot contain.
+_INDEX_CACHE: dict[int, dict[str, tuple[str, ...]]] = {}
+_INDEX_MIN_TERMS = 400          # ниже этого перебор дешевле, чем индекс
+_WORD_SPLIT_RE = re.compile(r"[^A-Za-z0-9']+")
+
+
+def _first_word(term: str) -> str:
+    parts = _WORD_SPLIT_RE.split((term or "").strip().lower(), 1)
+    return parts[0] if parts else ""
+
+
+def _term_index(terms: dict):
+    """{первое слово: (позиция, термин, значение)} — или None, когда словарь мал.
+
+    Позиция хранится, чтобы порядок результата не зависел от того, какое слово источника
+    нашлось первым: `req_terms` берёт первые три нарушения, и порядок в них должен быть
+    порядком словаря, как при переборе.
+    """
+    if len(terms) < _INDEX_MIN_TERMS:
+        return None
+    key = id(terms)
+    cached = _INDEX_CACHE.get(key)
+    if cached is not None:
+        return cached
+    index: dict[str, list[tuple[int, str, object]]] = {}
+    for pos, (en, value) in enumerate(terms.items()):
+        fw = _first_word(en)
+        if fw:
+            index.setdefault(fw, []).append((pos, en, value))
+    built = {k: tuple(v) for k, v in index.items()}
+    _INDEX_CACHE.clear()             # один словарь за раз; кеш не должен расти молча
+    _INDEX_CACHE[key] = built
+    return built
+
+
+def _candidate_terms(original: str, terms: dict):
+    """Термины, которые вообще могут стоять в этом источнике, в порядке словаря."""
+    index = _term_index(terms)
+    if index is None:
+        return terms.items()
+    words = {w for w in _WORD_SPLIT_RE.split((original or "").lower()) if w}
+    found: list[tuple[int, str, object]] = []
+    for w in words:
+        found.extend(index.get(w, ()))
+    found.sort(key=lambda t: t[0])
+    return [(en, value) for _pos, en, value in found]
 
 
 def glossary_violations(original: str, translation: str, terms: dict) -> list[tuple[str, str]]:
@@ -232,7 +289,7 @@ def glossary_violations(original: str, translation: str, terms: dict) -> list[tu
     original = _strip_tokens(original)
     low_translation = _strip_tokens(translation).lower()
     out = []
-    for en, value in terms.items():
+    for en, value in _candidate_terms(original, terms):
         forms = accepted_forms(value)
         if not en or not forms:
             continue
@@ -328,3 +385,56 @@ def audit_stored(repo, terms: dict, mod_name: str | None = None,
         "by_mod": dict(sorted(by_mod.items(), key=lambda kv: -kv[1])[:25]),
         "examples": examples,
     }
+
+
+# ── Один загрузчик на всех ────────────────────────────────────────────────────
+#
+# Глоссарий грузился в трёх местах — в воротах записи, в пересчёте и в сборке джоба —
+# тремя копиями одного и того же кода. Это ровно тот узор, который уже однажды стоил
+# двух копий compute_string_status, расходившихся год.
+#
+# Источников теперь два, и они разной природы:
+#
+#   data/skyrim_terms.json    204 записи, курируемые вручную, со списками допустимых
+#                             форм. Это предпочтения проекта.
+#   data/vanilla_names.json   7 030 имён из официальной локализации Skyrim. Это не
+#                             предпочтение, а то, что игрок видит в базовой игре, и
+#                             голосовать тут не о чем.
+#
+# Курируемый выигрывает при совпадении ключа: он знает про несколько допустимых форм
+# («Магия» и «Магикка»), а реестр знает одну.
+
+_TERMS_CACHE: dict[str, dict] = {}
+
+
+def load_terms(curated_path=None, vanilla_path=None, use_cache: bool = True) -> dict:
+    """Глоссарий и реестр официальных имён, слитые в один словарь.
+
+    Отсутствующий файл выключает свою половину, а не роняет вызывающего: проверка
+    терминологии должна деградировать в тишину, а не в исключение посреди записи.
+    """
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    curated = Path(curated_path) if curated_path else root / "data" / "skyrim_terms.json"
+    vanilla = Path(vanilla_path) if vanilla_path else root / "data" / "vanilla_names.json"
+    key = f"{curated}|{vanilla}"
+    if use_cache and key in _TERMS_CACHE:
+        return _TERMS_CACHE[key]
+
+    merged: dict = {}
+    for path, what in ((vanilla, "реестр официальных имён"), (curated, "глоссарий")):
+        try:
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    merged.update(data)          # курируемый читается вторым и выигрывает
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "terminology: %s не загружен (%s): %s", what, path.name, exc)
+    if use_cache:
+        _TERMS_CACHE.clear()
+        _TERMS_CACHE[key] = merged
+    return merged

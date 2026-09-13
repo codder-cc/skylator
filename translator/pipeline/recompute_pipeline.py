@@ -44,12 +44,9 @@ class RecomputePipeline:
     def _load_terms(self) -> dict:
         """The curated glossary, or {} — a missing file turns terminology checking off
         rather than failing the run, and the job log says which happened."""
-        import json
-        from pathlib import Path
         try:
-            path = self._cfg.paths.skyrim_terms
-            if path and Path(path).exists():
-                return json.loads(Path(path).read_text(encoding="utf-8"))
+            from translator.validation.terminology import load_terms
+            return load_terms(self._cfg.paths.skyrim_terms)
         except Exception as exc:
             log.warning("recompute: could not load glossary, enforcement is off: %s", exc)
         return {}

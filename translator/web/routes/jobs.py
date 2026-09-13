@@ -1688,8 +1688,8 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
             where.append(f"LENGTH(original) >= {int(min_chars)}")
         if max_len:
             where.append(f"LENGTH(original) < {int(max_len)}")
-        sql = f"SELECT id, mod_name, esp_name, key, original, translation, rec_type " \
-              f"FROM strings WHERE {' AND '.join(where)}"
+        sql = f"SELECT id, mod_name, esp_name, key, original, translation, rec_type, " \
+              f"field_type FROM strings WHERE {' AND '.join(where)}"
         if limit:
             sql += f" LIMIT {int(limit)}"
 
@@ -1703,7 +1703,11 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                     "rec_type": r["rec_type"] or ""}
             if fixing_terms:
                 from translator.validation.terminology import glossary_violations
-                bad = glossary_violations(r["original"], r["translation"], terms_map)
+                # Тип поля обязателен: имя из реестра требуется только там, где оно и
+                # есть имя. Без него этот проход не увидел бы ни одного из 14 164
+                # расхождений в именах — ровно ту работу, ради которой он и нужен.
+                bad = glossary_violations(r["original"], r["translation"], terms_map,
+                                          r["rec_type"], r["field_type"])
                 if not bad:
                     skipped_no_violation += 1
                     continue        # flagged for something else; a term fix cannot help it

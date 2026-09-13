@@ -126,11 +126,37 @@ def test_a_translation_delivery_still_loses_a_tie():
     assert out["translation"] == "на наковальне"
 
 
-def test_a_review_delivery_wins_a_tie():
+def test_a_review_delivery_does_NOT_win_a_tie():
+    """Этот тест закреплял противоположное, и это стоило 23 073 строк.
+
+    Довод был такой: ревьюер видел сохранённый текст и получил указание менять его
+    только когда он неверен, значит при равном счёте его ответ позднее и лучше
+    осведомлён. Довод неверен. Ничья означает, что у системы нет доводов ни за, ни
+    против, и предпочесть поздний ответ — не суждение, а подбрасывание монеты над уже
+    принятой работой.
+
+    Чем это кончилось: "Yes" переведён «Да» 30 августа и заменён на «Нет» 6 сентября.
+    Оба проходят все правила, оба дают 100. 254 кнопки в паке стали означать обратное
+    себе. Проход, ради которого дверь открыли, исправлял 0,23% того, что трогал.
+    """
     from translator.validation.quality import pick_better
     out = pick_better("at a forge", "на наковальне", "в кузнице", prefer_b_on_tie=True)
-    assert out["chose"] == "b"
-    assert out["translation"] == "в кузнице"
+    assert out["chose"] == "a"
+    assert out["translation"] == "на наковальне"
+
+
+def test_the_real_yes_no_case():
+    """Та самая строка, с которой всё и вскрылось."""
+    from translator.validation.quality import pick_better
+    assert pick_better("Yes", "Да", "Нет", prefer_b_on_tie=True)["translation"] == "Да"
+
+
+def test_a_clean_answer_still_beats_a_flagged_one():
+    """Дверь для настоящих исправлений не закрылась: вердикт ворот стоит ПЕРЕД счётом,
+    поэтому чистый ответ бьёт повреждённый и без всякой ничьей."""
+    from translator.validation.quality import pick_better
+    out = pick_better("Bed", "Bed → Кровать", "Кровать")
+    assert out["chose"] == "b" and out["translation"] == "Кровать"
 
 
 def test_a_review_delivery_still_loses_when_it_is_worse():
@@ -141,7 +167,7 @@ def test_a_review_delivery_still_loses_when_it_is_worse():
     assert out["chose"] == "a"
 
 
-def test_the_write_gate_passes_the_preference_through(fakedb, tmp_path):
+def test_the_write_gate_keeps_stored_work_on_a_tie(fakedb, tmp_path):
     from translator.data_manager.string_manager import StringManager
     from translator.db.repo import StringRepo
     sm = StringManager(StringRepo(fakedb), tmp_path)
@@ -152,9 +178,10 @@ def test_the_write_gate_passes_the_preference_through(fakedb, tmp_path):
                    translation="в кузнице", merge=True)
     assert fakedb.execute("SELECT translation FROM strings").fetchone()[0] == "на наковальне"
 
+    # И с prefer_incoming тоже: ничья ничего не доказывает, кто бы её ни принёс.
     sm.save_string(mod_name="M", esp_name="e.esp", key="k1", original="at a forge",
                    translation="в кузнице", merge=True, prefer_incoming=True)
-    assert fakedb.execute("SELECT translation FROM strings").fetchone()[0] == "в кузнице"
+    assert fakedb.execute("SELECT translation FROM strings").fetchone()[0] == "на наковальне"
 
 
 # ── the flagged scope is blind, and that is the point ────────────────────────

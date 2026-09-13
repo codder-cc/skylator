@@ -797,22 +797,33 @@ def pick_better(original: str, a: str | None, b: str | None,
     re-translation (e.g. on a bigger-model agent) only WIN if it actually scores higher, so
     quality is monotonic across passes. Returns {translation, quality_score, status, chose}.
 
-    `prefer_b_on_tie` is for a review delivery, and without it a review pass is a very
-    expensive no-op. The score counts tokens, markup and length; it cannot tell a forge
-    from an anvil. So correcting "at a forge" from «на наковальне» to «в кузнице» leaves
-    the score at 100 on both sides, the strict comparison keeps the stored text, and the
-    fix is discarded — which is exactly the class of error the pass exists to find. A
-    reviewer saw the stored text and was asked to change it only when it was wrong, so on
-    equal scores its answer is the later and better-informed one. A lower score still
-    loses: this widens the door, it does not remove it.
+    `prefer_b_on_tie` existed so a review delivery could land a meaning fix: the score
+    counts tokens, markup and length and cannot tell a forge from an anvil, so correcting
+    «на наковальне» to «в кузнице» ties at 100 and the strict comparison keeps the stored
+    text. The argument was that a reviewer saw the stored text and was told to change it
+    only when it was wrong, so on equal scores its answer is better-informed.
 
-    An answer the gate accepts beats one the gate refuses, tie-break or not — see
-    _candidate_score. That is what lets a re-translation of a flagged string land: the
-    stored text carries a defect an exact rule can name, so a clean answer wins on the
-    verdict and never has to argue about the score.
+    It is not. A tie means the system has no evidence either way, and preferring the
+    later answer is not a judgement — it is a coin toss applied to work that was already
+    accepted. What that cost, measured on the collection:
+
+        23 073 accepted translations replaced by an equal-scoring one, no reason recorded
+
+    Among them, "Yes" was translated «Да» on 30 August and replaced with «Нет» on
+    6 September. Both pass every rule, both score 100, and the later one turned 254
+    buttons across the pack into the opposite of themselves. The pass this door was
+    opened for corrected 0.23% of what it touched.
+
+    So the flag now does nothing and the parameter is kept only so callers need not
+    change. A tie keeps what is stored.
+
+    Landing a fix on a string that IS broken never needed this: an answer the gate
+    accepts beats one it refuses, tie-break or not — see _candidate_score. That is what
+    lets a re-translation of a flagged string win, on the verdict, without arguing about
+    the score.
     """
     sa, sb = _candidate_score(original, a), _candidate_score(original, b)
-    b_wins = (sb >= sa) if prefer_b_on_tie else (sb > sa)
+    b_wins = sb > sa
     winner = b if b_wins else a
     chose  = "b" if b_wins else "a"
     if not winner:

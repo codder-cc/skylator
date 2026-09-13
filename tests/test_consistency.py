@@ -149,3 +149,64 @@ def test_the_report_says_what_frequency_cannot_decide(fakedb):
     r = report(find_name_clusters(StringRepo(fakedb)))
     assert r["need_decision"] == 1
     assert r["no_frequency_signal"] == 1, "каждый вариант по одному разу — сигнала нет"
+
+
+# ── две кнопки одной записи с одним переводом ────────────────────────────────
+#
+#     Yes  →  «Нет»
+#     No   →  «Нет»
+#
+# Игрок жмёт «Нет» и получает согласие. Каждая строка по отдельности безупречна: «Нет» —
+# нормальное русское слово, токены целы, длина верна, счёт 100. Неверна только связь
+# между ними, и compute_string_status этого увидеть не может по устройству.
+#
+# 287 записей в корпусе, 250 из них MESG/ITXT — списки кнопок. И все 254 «Yes» → «Нет»
+# произошли от ОДНОЙ ошибки модели 6 сентября: разнос по двойникам скопировал её в 253
+# других мода. Дедуп усиливает и верную работу, и неверную.
+
+from translator.validation.consistency import (  # noqa: E402
+    UNAMBIGUOUS, find_collapsed_records, fix_unambiguous_buttons,
+)
+
+
+def _button(fakedb, form_id, original, translation, idx):
+    return fakedb.insert_string("M", "e.esp", f"({form_id!r}, 'MESG', 'ITXT', {idx}, 0)",
+                                original, translation, "translated",
+                                rec_type="MESG", field_type="ITXT")
+
+
+def test_two_buttons_with_one_translation_are_found(fakedb):
+    _button(fakedb, "0300AAAA", "Yes", "Нет", 5)
+    _button(fakedb, "0300AAAA", "No", "Нет", 6)
+    fakedb.execute("UPDATE strings SET form_id='0300AAAA'")
+    fakedb.commit()
+    found = find_collapsed_records(StringRepo(fakedb))
+    assert len(found) == 1
+    assert found[0]["n_src"] == 2 and found[0]["n_dst"] == 1
+
+
+def test_buttons_that_differ_are_left_alone(fakedb):
+    _button(fakedb, "0300BBBB", "Yes", "Да", 5)
+    _button(fakedb, "0300BBBB", "No", "Нет", 6)
+    fakedb.execute("UPDATE strings SET form_id='0300BBBB'")
+    fakedb.commit()
+    assert find_collapsed_records(StringRepo(fakedb)) == []
+
+
+def test_yes_is_corrected_and_no_is_not_touched(fakedb):
+    a = _button(fakedb, "0300CCCC", "Yes", "Нет", 5)
+    b = _button(fakedb, "0300CCCC", "No", "Нет", 6)
+    fakedb.commit()
+    repo = StringRepo(fakedb)
+    assert fix_unambiguous_buttons(repo, dry=True) == {"yes": 1}
+    fix_unambiguous_buttons(repo, dry=False)
+    rows = {r["id"]: r["translation"] for r in
+            fakedb.execute("SELECT id, translation FROM strings").fetchall()}
+    assert rows[a] == "Да"
+    assert rows[b] == "Нет", "верный перевод трогать нельзя"
+
+
+def test_ok_is_deliberately_not_in_the_list():
+    """45 строк пишут «ОК» кириллицей, 37 «OK» латиницей, и обе формы правильны.
+    Это единообразие, а не верность, и выбирать за коллекцию тут нечем."""
+    assert "ok" not in UNAMBIGUOUS

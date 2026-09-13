@@ -191,3 +191,92 @@ def report(clusters: list[Cluster]) -> dict:
         "decision_rows": sum(c.total for c in decide),
         "no_frequency_signal": sum(1 for c in decide if max(c.variants.values()) == 1),
     }
+
+
+# ── две кнопки одной записи с одним переводом ────────────────────────────────
+#
+#     Yes  →  «Нет»
+#     No   →  «Нет»
+#
+# Игрок жмёт «Нет» и получает согласие. Обе строки по отдельности безупречны: «Нет» —
+# нормальное русское слово, токены целы, длина верна, счёт 100. Неверна только связь
+# между ними, поэтому compute_string_status этого увидеть не может — он видит одну
+# строку.
+#
+# Замер на живом корпусе: 287 записей, где разные источники получили один и тот же
+# перевод. 250 из них MESG/ITXT — это списки кнопок, то есть худшее место для такой
+# ошибки.
+#
+# Отдельно стоит запомнить, КАК одна ошибка стала 254 строками: модель ошиблась один
+# раз 6 сентября, и разнос по двойникам скопировал ответ в 253 других мода. Дедуп —
+# усилитель и для верной работы, и для неверной, и во втором случае он превращает
+# единичный промах в класс.
+
+_BUTTON_FIELDS = ("ITXT",)
+
+
+def find_collapsed_records(repo, only_buttons: bool = False) -> list[dict]:
+    """Записи, где два разных источника получили один перевод.
+
+    Группировка по (мод, файл, form_id, тип поля) — это одна запись игры, и внутри неё
+    список кнопок или стадий обязан различаться, раз различаются источники.
+    """
+    where = ["status='translated'", "TRIM(COALESCE(translation,'')) <> ''",
+             "translation <> original"]
+    if only_buttons:
+        where.append("field_type IN (%s)" % ",".join("'%s'" % f for f in _BUTTON_FIELDS))
+    sql = f"""SELECT mod_name, esp_name, form_id, field_type, rec_type,
+                     COUNT(DISTINCT original) AS n_src,
+                     COUNT(DISTINCT translation) AS n_dst
+              FROM strings WHERE {' AND '.join(where)}
+              GROUP BY mod_name, esp_name, form_id, field_type
+              HAVING n_src > 1 AND n_dst < n_src"""
+    return [dict(r) for r in repo.db.execute(sql).fetchall()]
+
+
+# «Yes» и «No» решать не нужно: это не вопрос вкуса и не вопрос контекста. Список
+# держится маленьким намеренно — сюда попадает только то, у чего один правильный ответ
+# в любом окружении.
+UNAMBIGUOUS = {
+    "yes": "Да",
+    "no": "Нет",
+    "cancel": "Отмена",
+}
+# «OK» сюда не входит намеренно: 45 строк пишут «ОК» кириллицей, 37 — «OK» латиницей,
+# и обе формы правильны. Это вопрос единообразия, а не верности, и авторитета выбрать
+# за коллекцию у этого модуля нет.
+
+
+def fix_unambiguous_buttons(repo, dry: bool = True) -> dict:
+    """Привести кнопки с единственным правильным ответом в порядок.
+
+    Только там, где перевод сейчас НЕ тот: «No → Нет» уже верно и не трогается.
+    """
+    import time
+
+    from translator.validation.quality import compute_string_status
+
+    now = time.time()
+    changed: dict[str, int] = {}
+    for src, want in UNAMBIGUOUS.items():
+        rows = repo.db.execute(
+            "SELECT id, original, translation, rec_type, field_type FROM strings "
+            "WHERE LOWER(TRIM(original))=? AND TRIM(COALESCE(translation,'')) <> '' "
+            "AND TRIM(translation) <> ?", (src, want)).fetchall()
+        for r in rows:
+            changed[src] = changed.get(src, 0) + 1
+            if dry:
+                continue
+            qs, _tok, _issues, status = compute_string_status(
+                r["original"], want, None, r["rec_type"], r["field_type"])
+            try:
+                repo.insert_history(r["id"], r["translation"], "translated", None,
+                                    "consistency:button", None, None)
+            except Exception as exc:
+                log.debug("button fix: history for %s: %s", r["id"], exc)
+            repo.db.execute(
+                "UPDATE strings SET translation=?, status=?, quality_score=?, "
+                "updated_at=? WHERE id=?", (want, status, qs, now, r["id"]))
+    if not dry:
+        repo.db.commit()
+    return changed

@@ -137,9 +137,51 @@ _MIN_ENFORCED_TERM = 6
 _PREFIX_CHARS      = 5
 
 
+# Фразу тоже можно требовать — просто не целиком.
+#
+# «Тёмное Братство» становится «Тёмного Братства», и искать фразу целиком бесполезно:
+# склоняется каждое слово. Поэтому многословное имя было исключено из проверки вовсе — и
+# это оставило реестр официальных имён работающим на 1%: из 7 030 записей проверялись 73,
+# потому что почти каждое имя в русском состоит из двух слов. «Elven Battleaxe →
+# Эльфийская секира» не проверялось никогда.
+#
+# Правильный вопрос не «стоит ли фраза целиком», а «есть ли в переводе каждое её слово».
+# Стеммы слов ищутся по отдельности и в любом порядке: «Эльфийская секира» считается
+# применённой в «Эльфийской секиры», «секира эльфийская» и «эльфийскую секиру».
+_PHRASE_SPLIT_RE = re.compile(r"[^А-Яа-яЁё0-9]+")
+# Служебные слова не несут имени: требовать «из» бессмысленно, а его отсутствие —
+# не нарушение.
+_RU_FUNCTION = frozenset("из в на с со от для и у к по о об до над под при за без".split())
+
+
+def _phrase_words(ru: str) -> list[str]:
+    """Значащие слова имени — те, по которым его можно узнать."""
+    return [w for w in _PHRASE_SPLIT_RE.split((ru or "").lower())
+            if len(w) >= 3 and w not in _RU_FUNCTION]
+
+
 def _is_enforceable(ru: str) -> bool:
+    """Достаточно ли имя определённо, чтобы его ТРЕБОВАТЬ.
+
+    Одно слово — как прежде: не короче шести букв, иначе оно слишком общее.
+    Несколько — требуется, когда хотя бы одно значащее слово достаточно длинное; фраза из
+    коротких общих слов («Зал войны») требованием быть не может.
+    """
     t = (ru or "").strip()
-    return len(t) >= _MIN_ENFORCED_TERM and " " not in t and "-" not in t
+    if not t:
+        return False
+    if " " not in t and "-" not in t:
+        return len(t) >= _MIN_ENFORCED_TERM
+    words = _phrase_words(t)
+    return len(words) >= 2 and any(len(w) >= _MIN_ENFORCED_TERM for w in words)
+
+
+def _phrase_satisfied(ru: str, low_translation: str) -> bool:
+    """Есть ли в переводе каждое значащее слово имени — в любой форме и любом порядке."""
+    words = _phrase_words(ru)
+    if not words:
+        return False
+    return all(any(st in low_translation for st in _stems(w)) for w in words)
 
 _RU_ENDINGS = ("ого", "ому", "ыми", "ими", "ая", "ое", "ые", "ый", "ий", "ой", "ом",
                "ах", "ям", "ев", "ов", "а", "я", "о", "е", "ы", "и", "у", "ю", "ь", "й")
@@ -271,8 +313,48 @@ def _candidate_terms(original: str, terms: dict):
     return [(en, value) for _pos, en, value in found]
 
 
-def glossary_violations(original: str, translation: str, terms: dict) -> list[tuple[str, str]]:
+# Ключи, пришедшие из реестра официальных имён, а не из курируемого глоссария.
+#
+# Разница в том, ГДЕ их можно требовать, и она существенная. Реестр — это имена:
+# «Shock Damage → Урон электричеством» верно как название эффекта и неверно внутри
+# описания заклинания, где по-русски пишут «наносит урона молнией». Курируемая запись
+# вроде Skyrim или Dwemer — имя собственное, и требовать её можно везде.
+#
+# Без этого разделения реестр давал 1 205 «нарушений» на 20 000 строк, и заметная часть
+# была придиркой к правильной прозе.
+#
+# Признак живёт на самом словаре, а не в глобальной переменной: глобальная делала
+# поведение зависимым от того, звал ли кто-то раньше load_terms, и один тест начинал
+# менять результат другого.
+
+
+class TermSet(dict):
+    """Словарь терминов, помнящий, какие из них пришли из реестра имён."""
+
+    __slots__ = ("registry",)
+
+    def __init__(self, *a, registry=(), **kw):
+        super().__init__(*a, **kw)
+        self.registry = frozenset(registry)
+
+# Типы записей, у которых FULL — это имя. Список держится здесь, а не берётся из
+# consistency.py, чтобы проверка терминологии от неё не зависела.
+_NAME_RECORDS = frozenset(("NPC_", "LCTN", "CELL", "WEAP", "ARMO", "ALCH", "MISC", "INGR",
+                           "BOOK", "QUST", "SPEL", "KEYM", "AMMO", "ENCH", "MGEF", "ACTI"))
+
+
+def _is_name_field(rec_type, field_type) -> bool:
+    return field_type == "FULL" and (rec_type or "") in _NAME_RECORDS
+
+
+def glossary_violations(original: str, translation: str, terms: dict,
+                        rec_type: str | None = None,
+                        field_type: str | None = None) -> list[tuple[str, str]]:
     """Glossary terms present in `original` whose expected translation is missing.
+
+    `rec_type` / `field_type` решают, требовать ли имя из реестра. Без них реестр молчит:
+    назвать «урона молнией» нарушением в описании заклинания — это не проверка, а её
+    порча, а отличить описание от названия предмета по одному тексту нельзя.
 
     Returns [(english_term, expected_russian), ...], empty when the translation is clean,
     the inputs are empty, or the string is a name that should stay in English.
@@ -286,6 +368,7 @@ def glossary_violations(original: str, translation: str, terms: dict) -> list[tu
     # Game tokens are copied verbatim by design — <Alias=Jarl> is a runtime placeholder,
     # not the word "Jarl". Matching inside one reports a violation for text the translator
     # was never allowed to touch.
+    registry = getattr(terms, "registry", frozenset())
     original = _strip_tokens(original)
     low_translation = _strip_tokens(translation).lower()
     out = []
@@ -299,9 +382,13 @@ def glossary_violations(original: str, translation: str, terms: dict) -> list[tu
         # term was applied, and the entry is satisfied whatever its length.
         if not any(_is_enforceable(f) for f in forms):
             continue
+        if en in registry and not _is_name_field(rec_type, field_type):
+            continue               # имя из реестра требуется только в поле имени
         if not _contains_word(original, en):
             continue
-        if any(s in low_translation for f in forms for s in _stems(f)):
+        if any(_phrase_satisfied(f, low_translation) if (" " in f or "-" in f)
+               else any(st in low_translation for st in _stems(f))
+               for f in forms):
             continue
         out.append((en, canonical(value)))
     return out
@@ -424,11 +511,18 @@ def load_terms(curated_path=None, vanilla_path=None, use_cache: bool = True) -> 
         return _TERMS_CACHE[key]
 
     merged: dict = {}
+    registry_keys: set[str] = set()
     for path, what in ((vanilla, "реестр официальных имён"), (curated, "глоссарий")):
         try:
             if path.exists():
                 data = json.loads(path.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
+                    if path == vanilla:
+                        registry_keys.update(data)
+                    else:
+                        # Ключ, который есть в обоих, курируемый: у него список форм,
+                        # и требовать его можно везде, как любое имя собственное.
+                        registry_keys.difference_update(data)
                     merged.update(data)          # курируемый читается вторым и выигрывает
         except Exception as exc:
             import logging

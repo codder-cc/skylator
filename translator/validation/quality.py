@@ -721,7 +721,8 @@ def compute_string_status(original: str, translation: str,
     glossary_ok = True
     if terms:
         from translator.validation.terminology import glossary_violations
-        bad = glossary_violations(original, translation, terms)
+        bad = glossary_violations(original, translation, terms,
+                                  rec_type, field_type)
         if bad:
             glossary_ok = False
             issues.extend(f"glossary: {en} should be {ru}" for en, ru in bad[:5])

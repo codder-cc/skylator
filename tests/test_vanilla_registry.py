@@ -130,3 +130,84 @@ def test_the_index_gives_the_same_answer_as_a_scan():
         T._INDEX_MIN_TERMS = old
         T._INDEX_CACHE.clear()
     assert with_index == scanned
+
+
+# ── фраза требуется по словам, а не целиком ──────────────────────────────────
+#
+# Многословное имя было исключено из проверки вовсе: «Тёмное Братство» становится
+# «Тёмного Братства», и фраза целиком не находится. Это оставило реестр работающим на
+# 1% — 73 записи из 7 030, потому что почти каждое имя в русском из двух слов.
+# «Elven Battleaxe → Эльфийская секира» не проверялось никогда.
+
+T_PHRASE = {"Elven Battleaxe": "Эльфийская секира"}
+
+
+def test_a_two_word_name_is_now_enforced():
+    from translator.validation.terminology import _is_enforceable
+    assert _is_enforceable("Эльфийская секира")
+
+
+@pytest.mark.parametrize("ru", [
+    "Эльфийской секиры пламени",   # склонение обоих слов
+    "Секира эльфийская",           # другой порядок
+    "эльфийскую секиру",           # винительный
+])
+def test_declension_and_word_order_are_not_violations(ru):
+    assert glossary_violations("Elven Battleaxe", ru, T_PHRASE, "WEAP", "FULL") == []
+
+
+def test_the_old_name_is_a_violation():
+    assert glossary_violations("Elven Battleaxe of Flames",
+                               "Эльфийский Боевой Топор Пламени",
+                               T_PHRASE, "WEAP", "FULL")
+
+
+def test_a_phrase_of_short_common_words_is_not_specific_enough():
+    from translator.validation.terminology import _is_enforceable
+    assert not _is_enforceable("Зал войны")
+
+
+# ── реестр требуется только в поле имени ─────────────────────────────────────
+#
+# «Shock Damage → Урон электричеством» верно как название эффекта и неверно внутри
+# описания заклинания, где по-русски пишут «наносит урона молнией». Без этого
+# разделения реестр давал 1 205 придирок на 20 000 строк.
+
+def _registry(**pairs):
+    """Словарь терминов, помеченный как пришедший из реестра имён."""
+    from translator.validation.terminology import TermSet
+    return TermSet(pairs, registry=pairs)
+
+
+def test_a_registry_name_binds_in_a_name_field():
+    terms = _registry(**{"Shock Damage": "Урон электричеством"})
+    assert glossary_violations("Shock Damage", "Урон молнией", terms, "MGEF", "FULL")
+
+
+def test_the_same_name_is_silent_in_prose():
+    terms = _registry(**{"Shock Damage": "Урон электричеством"})
+    assert glossary_violations(
+        "Lightning strikes, dealing shock damage to Health",
+        "Молния поражает, нанося урона молнией по здоровью", terms, "MGEF", "DNAM") == []
+
+
+def test_without_a_field_the_registry_stays_quiet():
+    """Отличить описание от названия по одному тексту нельзя, поэтому молчание."""
+    terms = _registry(**{"Shock Damage": "Урон электричеством"})
+    assert glossary_violations("Shock Damage", "Урон молнией", terms) == []
+
+
+def test_a_curated_entry_binds_everywhere():
+    """Skyrim — имя собственное; оно не из реестра и требуется в любом поле."""
+    terms = load_terms()
+    assert "Skyrim" not in getattr(terms, "registry", frozenset())
+    assert glossary_violations("Travel across Skyrim", "Путешествие по Сиродилу",
+                               {"Skyrim": "Скайрим"})
+
+
+def test_the_marker_lives_on_the_dictionary_not_in_a_global():
+    """Глобальная переменная делала поведение зависимым от того, звал ли кто-то раньше
+    load_terms, и один тест начинал менять результат другого."""
+    plain = {"Shock Damage": "Урон электричеством"}
+    assert glossary_violations("Shock Damage", "Урон молнией", plain, "MGEF", "FULL")
+    assert glossary_violations("Shock Damage", "Урон молнией", plain) 

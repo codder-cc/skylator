@@ -2581,6 +2581,10 @@ def workers_offline_results(label: str):
                     # cannot tell a forge from an anvil; without this the whole pass
                     # cannot land a single meaning fix.
                     prefer_incoming=_reviewing,
+                    # The record type reaches the gate so the full-stop-on-a-name
+                    # check can run; without it that check stands down.
+                    rec_type=r.get("rec_type") or None,
+                    field_type=r.get("field_type") or None,
                 )
                 mods_touched.add(mod_name)
                 saved_count += 1

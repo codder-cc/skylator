@@ -127,8 +127,13 @@ def test_full_chaos_agent_and_master_crash_zero_loss():
         agent.mark_delivered(max_seq)
 
         # ── Invariants: 0 lost, 0 duplicated ─────────────────────────────
-        total      = db.execute("SELECT COUNT(*) FROM strings WHERE mod_name=? AND status='translated'", (MOD,)).fetchone()[0]
-        distinct   = db.execute("SELECT COUNT(DISTINCT key) FROM strings WHERE mod_name=? AND status='translated'", (MOD,)).fetchone()[0]
+        # Presence, not verdict. This test is about delivery — nothing lost, nothing
+        # applied twice — and the fixture's "Hello 3" → «перевод_7» trips the
+        # changed-number rule, correctly. Asserting status='translated' here would make
+        # a quality rule able to break a delivery test.
+        got = "TRIM(translation) <> ''"
+        total      = db.execute(f"SELECT COUNT(*) FROM strings WHERE mod_name=? AND {got}", (MOD,)).fetchone()[0]
+        distinct   = db.execute(f"SELECT COUNT(DISTINCT key) FROM strings WHERE mod_name=? AND {got}", (MOD,)).fetchone()[0]
         any_pending= db.execute("SELECT COUNT(*) FROM strings WHERE mod_name=? AND status='pending'", (MOD,)).fetchone()[0]
         assert total == N and distinct == N          # every string translated exactly once
         assert any_pending == 0                       # nothing lost
@@ -166,9 +171,14 @@ def test_partial_result_collectable_when_agent_dies_for_good():
         rows = agent.undelivered(limit=10_000)
         saved, _, max_seq, _ = apply_pulled_results(sm, astore, LABEL, [_to_pulled(x) for x in rows])
 
-        translated = db.execute("SELECT COUNT(*) FROM strings WHERE mod_name=? AND status='translated'", (MOD,)).fetchone()[0]
-        pending    = db.execute("SELECT COUNT(*) FROM strings WHERE mod_name=? AND status='pending'", (MOD,)).fetchone()[0]
-        assert translated == produced            # all produced work is safe on the master
+        # Presence, not verdict — see the note in the chaos test above. What is being
+        # tested is that produced work survives and unproduced work stays dispatchable.
+        got = "TRIM(translation) <> ''"
+        delivered = db.execute(f"SELECT COUNT(*) FROM strings WHERE mod_name=? AND {got}",
+                               (MOD,)).fetchone()[0]
+        pending   = db.execute("SELECT COUNT(*) FROM strings WHERE mod_name=? AND status='pending'",
+                               (MOD,)).fetchone()[0]
+        assert delivered == produced             # all produced work is safe on the master
         assert pending == N - produced           # remainder is pending → re-dispatchable
-        assert translated + pending == N         # nothing vanished
+        assert delivered + pending == N          # nothing vanished
         agent.close(); db.close()

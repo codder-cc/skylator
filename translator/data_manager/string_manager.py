@@ -105,6 +105,8 @@ class StringManager:
         produced_at: Optional[float] = None,
         merge: bool = False,
         prefer_incoming: bool = False,
+        rec_type: Optional[str] = None,
+        field_type: Optional[str] = None,
     ) -> SaveResult:
         """Single write entry point for ALL string types.
 
@@ -128,39 +130,30 @@ class StringManager:
         computed_status = status
 
         if translation:
-            if computed_qs is None or computed_status is None:
-                if original and translation:
-                    qs, _, _, st = compute_string_status(original, translation)
-                    if computed_qs is None:
-                        computed_qs = qs
-                    if computed_status is None:
-                        computed_status = st
-                else:
-                    # MCM/BSA/SWF with no original — mark translated if translation exists
-                    if computed_qs is None:
-                        computed_qs = None
-                    if computed_status is None:
-                        computed_status = "translated"
-
-            # Enforced whatever the caller claimed. An agent computes its own status and
-            # has no glossary, so a delivery arrives asserting "translated" — which is how
-            # 352 strings recorded Skyrim as Сиродил, a different province, and counted as
-            # finished. A term the glossary fixes is not a stylistic choice, so the string
-            # goes to review instead of being accepted.
-            if original and computed_status == "translated":
-                from translator.validation.quality import markup_violations
-                broken = markup_violations(original, translation)
-                if broken:
-                    computed_status = "needs_review"
-                    log.debug("markup: %s/%s → review (%s)", mod_name, key, broken[0])
-                terms = self._glossary()
-                if terms:
-                    from translator.validation.terminology import glossary_violations
-                    bad = glossary_violations(original, translation, terms)
-                    if bad:
-                        computed_status = "needs_review"
-                        log.debug("glossary: %s/%s → review (%s)", mod_name, key,
-                                  ", ".join(f"{en}->{ru}" for en, ru in bad[:3]))
+            if original:
+                # Judged here, from the text, whatever the caller claimed. The caller is
+                # usually an agent, which computes its own status from its own copy of
+                # the rules — an older copy, without the glossary, and it arrives
+                # asserting "translated".
+                #
+                # This block used to keep the caller's status whenever one was supplied
+                # and only re-check markup and the glossary on top. Every other rule was
+                # therefore skipped at the write gate: echo, identifiers, numbers,
+                # foreign script, model commentary, repeated words, markdown, prompt
+                # scaffolding, runaway repetition. They took effect only when a recompute
+                # happened to run afterwards, which is why each pass left damage the
+                # recompute found later — 265 strings reading «Dragonbone Mace ⇥ Кистен
+                # из Драконьей Кости» sat accepted with the echo rule live and refusing
+                # them on demand.
+                #
+                # One judgement, one place. A caller's status is not evidence.
+                computed_qs, _tok, _issues, computed_status = compute_string_status(
+                    original, translation, self._glossary(), rec_type, field_type)
+            else:
+                # MCM/BSA/SWF have no original to judge against; a translation is all the
+                # evidence there is.
+                if computed_status is None:
+                    computed_status = "translated"
         else:
             computed_qs = None
             computed_status = "pending"

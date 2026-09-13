@@ -81,21 +81,41 @@ class TestSaveStringBasic:
         assert result.quality_score is not None
         assert 0 <= result.quality_score <= 100
 
-    def test_explicit_quality_bypasses_computation(self, fakedb):
-        mgr = make_manager(fakedb)
-        result = mgr.save_string(
-            "Mod", "Mod.esp", "k1", "Привет", original="Hello",
-            quality_score=42,
-        )
-        assert result.quality_score == 42
+    def test_a_claimed_status_does_not_override_the_gate(self, fakedb):
+        """These two tests used to assert the opposite — that a caller's status and score
+        win — and that is the hole they locked in.
 
-    def test_explicit_status_bypasses_computation(self, fakedb):
+        The caller is normally an agent, which computes its own status from its own copy
+        of the rules: an older copy, and one with no glossary. So a delivery arrives
+        asserting "translated" and the gate never ran. Markup and the glossary were
+        re-checked on top as a patch; every other rule was skipped — echo, identifiers,
+        numbers, foreign script, model commentary, repeated words, markdown, prompt
+        scaffolding. They only took effect if a recompute happened to run later, which is
+        how 265 strings reading «Dragonbone Mace ⇥ Кистен из Драконьей Кости» sat
+        accepted while the echo rule refused them on demand.
+        """
         mgr = make_manager(fakedb)
         result = mgr.save_string(
             "Mod", "Mod.esp", "k1", "Привет", original="Hello",
-            status="needs_review",
+            status="needs_review", quality_score=42,
+        )
+        assert result.status == "translated", "a clean translation is accepted on its merits"
+        assert result.quality_score != 42, "the score is measured, not accepted"
+
+    def test_a_claimed_translated_does_not_get_damage_in(self, fakedb):
+        mgr = make_manager(fakedb)
+        result = mgr.save_string(
+            "Mod", "Mod.esp", "k1", "Bed → Кровать", original="Bed",
+            status="translated", quality_score=100,
         )
         assert result.status == "needs_review"
+
+    def test_without_an_original_there_is_nothing_to_judge_against(self, fakedb):
+        """MCM and BSA strings carry no source. A translation is all the evidence there
+        is, and the caller's word is what there is to go on."""
+        mgr = make_manager(fakedb)
+        result = mgr.save_string("Mod", "Mod.esp", "mcm:k1", "Привет", original="")
+        assert result.status == "translated"
 
 
 # ── save_string: empty translation ───────────────────────────────────────────
@@ -214,3 +234,48 @@ class TestApproveString:
         repo = StringRepo(fakedb)
         row = repo.get_string_by_id(result.string_id)
         assert row["status"] == "translated"
+
+
+class TestTheGateIsTheOnlyJudge:
+    """Every rule, at the write gate — not two of them with the rest left to a later
+    recompute."""
+
+    def test_each_structural_rule_reaches_a_delivery(self, fakedb):
+        mgr = make_manager(fakedb)
+        for i, (en, ru, why) in enumerate([
+            ("Bed", "Bed → Кровать", "echo"),
+            ("WB_Dremora_Hair", "Волосы дреморы", "a translated identifier"),
+            ("Sorcerer", "Сорcerer", "mixed alphabets"),
+            ("Deal 25 damage.", "Наносит 20 урона.", "a changed number"),
+            ("Is that supposed to be a threat?", "Это supposed to быть угрозой?",
+             "a leftover English word"),
+            ("Raspberry", "Малина (если это название растения, можно перевести как «Малина»)",
+             "model commentary"),
+            ("Blazing Fireball", "Огненный огненный шар", "a repeated word"),
+            ("The Aedra", "Эйдры и **Даэдра**", "markdown emphasis"),
+            ("Iron Mace", "Iron Mace ⇥ Железный молот ⇥ MUST USE: Mace = Булава",
+             "prompt scaffolding"),
+            ("Rrrrrrrrgh!", "Р" * 56, "a runaway repeat"),
+            ("Beats the work.", "Это лучше, чем на不定期ная работа.", "foreign script"),
+        ]):
+            # The agent asserts the delivery is finished, the way a real one does.
+            r = mgr.save_string("Mod", "Mod.esp", f"k{i}", ru, original=en,
+                                status="translated", quality_score=100)
+            assert r.status == "needs_review", why
+
+    def test_a_full_stop_on_a_name_needs_the_record_type(self, fakedb):
+        mgr = make_manager(fakedb)
+        a = mgr.save_string("Mod", "Mod.esp", "k1", "Вампирская сила.",
+                            original="Vampiric Strength", status="translated",
+                            rec_type="MGEF", field_type="FULL")
+        assert a.status == "needs_review"
+        b = mgr.save_string("Mod", "Mod.esp", "k2", "Вампирская сила.",
+                            original="Vampiric Strength", status="translated")
+        assert b.status == "translated", "without the record it declines to judge"
+
+    def test_the_delivery_path_hands_the_record_over(self):
+        import inspect
+        from translator.web.routes import api as api_rt
+        src = inspect.getsource(api_rt)
+        i = src.index("prefer_incoming=_reviewing,")
+        assert "rec_type=" in src[i:i + 400]

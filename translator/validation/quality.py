@@ -519,6 +519,72 @@ def prompt_scaffold_violations(translation: str) -> list[str]:
     return [f"prompt scaffolding in the translation: «{m.group(0)}»"] if m else []
 
 
+# An English word left standing in a Russian string, decided from the collection rather
+# than from a heuristic about capitalisation.
+#
+# latin_leftover_violations below asks "does it start with a lower-case letter", because
+# DLC, III, MageFur and Jaysus Swords are names the source carries and must stay. That
+# keeps the false positives away and lets every capitalised leftover through: «Пост
+# Septimus Signus», «из Soul Cairn», «каждый Skyshard», «заклинание Healing Hands» — all
+# accepted, none of them seen.
+#
+# The collection already answers the question. For every Latin word in a source whose
+# translation is Russian: how often is the word still there afterwards. 25 927 of the
+# 26 329 words seen five times or more survive under 2% of the time — this pack
+# translates them. 46 survive over 95% — MCM, DLC, III, MageFur, voice-type ids. Between
+# 30% and 70% there are 40 words, so the line is drawn through empty space.
+#
+# data/translated_vocabulary.txt is that measurement, 20 602 words. A word not in it is
+# not judged: an unknown word may be a name from a mod the measurement never saw.
+_VOCAB_PATH = "translated_vocabulary.txt"
+_TRANSLATED_VOCAB: set[str] | None = None
+_LATIN_WORD_RE = re.compile(r"(?<![A-Za-z'’])[A-Za-z]{3,}(?![A-Za-z])")
+
+
+def _translated_vocabulary() -> set[str]:
+    global _TRANSLATED_VOCAB
+    if _TRANSLATED_VOCAB is None:
+        from pathlib import Path
+        p = Path(__file__).resolve().parents[2] / "data" / _VOCAB_PATH
+        try:
+            _TRANSLATED_VOCAB = {
+                ln.strip().lower() for ln in p.read_text(encoding="utf-8").splitlines()
+                if ln.strip() and not ln.startswith("#")}
+        except Exception as exc:
+            log.warning("vocabulary: not loaded, the check is off: %s", exc)
+            _TRANSLATED_VOCAB = set()
+    return _TRANSLATED_VOCAB
+
+
+def untranslated_word_violations(original: str, translation: str,
+                                 terms: dict | None = None) -> list[str]:
+    """English words in the translation that this collection is known to translate.
+
+    Words the source keeps deliberately are excluded three ways: the vocabulary itself
+    only holds words measured as translated, a glossary entry whose required rendering is
+    English is honoured, and game tokens are stripped before looking.
+    """
+    if not translation:
+        return []
+    bare = _strip_all_tokens(translation)
+    if not _CYRILLIC_RE.search(bare):
+        return []                      # not a Russian string; nothing to be left behind
+    vocab = _translated_vocabulary()
+    if not vocab:
+        return []
+    keep = set()
+    for en, ru in (terms or {}).items():
+        # «Thu'um = Thu'um» — a term whose required rendering is the English word.
+        for form in (ru if isinstance(ru, (list, tuple)) else [ru]):
+            if isinstance(form, str) and form.isascii():
+                keep.update(w.lower() for w in _LATIN_WORD_RE.findall(form))
+    bad = [w for w in dict.fromkeys(_LATIN_WORD_RE.findall(bare))
+           if w.lower() in vocab and w.lower() not in keep]
+    if not bad:
+        return []
+    return ["untranslated word: " + ", ".join(bad[:4])]
+
+
 def trailing_stop_violations(original: str, translation: str,
                              rec_type: str | None = None,
                              field_type: str | None = None) -> list[str]:
@@ -585,6 +651,7 @@ def compute_string_status(original: str, translation: str,
                       + runaway_repetition_violations(original, translation)
                       + markdown_emphasis_violations(original, translation)
                       + prompt_scaffold_violations(translation)
+                      + untranslated_word_violations(original, translation, terms)
                       + trailing_stop_violations(original, translation,
                                                  rec_type, field_type))
     issues.extend(structural_bad)

@@ -176,7 +176,10 @@ def create_job():
                                            machines = options.get("machines"),
                                            scope    = options.get("scope", "all"),
                                            limit    = options.get("limit"),
-                                           max_chars = options.get("max_chars"))
+                                           max_chars = options.get("max_chars"),
+                                           min_chars = options.get("min_chars"),
+                                           max_len   = options.get("max_len"),
+                                           max_tokens = options.get("max_tokens"))
         except ValueError as exc:
             return jsonify({"error": str(exc), "ok": False}), 400
     elif job_type == "validate" and mod_names:
@@ -1604,7 +1607,10 @@ _TERMFIX_MAX_CHARS = 1200
 
 def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                              scope: str = "all", limit: int | None = None,
-                             max_chars: int | None = None):
+                             max_chars: int | None = None,
+                             min_chars: int | None = None,
+                             max_len: int | None = None,
+                             max_tokens: int | None = None):
     """Send stored translations back to the fleet to be checked and corrected.
 
     A review is a translation job with the answer already filled in: the package carries
@@ -1634,6 +1640,14 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
     stored text, so there is nothing good to churn, and the merge gate ranks an answer it
     accepts above one it refuses — so a clean re-translation lands and a re-translation
     carrying the same defect does not.
+
+    Length is a dispatch decision, not a detail. The answer is generated under one
+    token ceiling for the whole job, and the default 2 048 is about 4 000 Cyrillic
+    characters — so a 24 454-character book comes back at 6 249 ending «…Даже». 217
+    strings in the collection are cut that way and 13 of them are stored as finished
+    work. `min_chars` / `max_len` split the corpus by source length and `max_tokens`
+    gives the long half a ceiling that fits, which is the difference between mending a
+    book and truncating it a second time.
 
     `terms` exists because blind is not enough for terminology. Of the 390 strings a
     blind pass could not fix, 357 repeated the same glossary violation: the model writes
@@ -1672,6 +1686,15 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
             # Never seen by the current rules: the legacy import and everything a twin
             # was copied onto rather than translated.
             where.append("(translated_by IS NULL OR source='duplicate')")
+        # A long text and a short one cannot go in the same job. The answer is generated
+        # under one token ceiling for the whole dispatch, and at the default 2 048 — about
+        # 4 000 Cyrillic characters — a book comes back cut off mid-sentence: 217 of them
+        # in the collection, 13 stored as finished work. So the caller splits the corpus
+        # by length and gives the long half a ceiling that fits it.
+        if min_chars:
+            where.append(f"LENGTH(original) >= {int(min_chars)}")
+        if max_len:
+            where.append(f"LENGTH(original) < {int(max_len)}")
         sql = f"SELECT id, mod_name, esp_name, key, original, translation, rec_type " \
               f"FROM strings WHERE {' AND '.join(where)}"
         if limit:
@@ -1715,14 +1738,22 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
             job.result = "nothing to review"
             return
         mods = [(mod, strs, "") for mod, strs in by_mod.items()]
-        dispatch_multi(job, mods, InferenceParams(), backends, registry, jm, repo, cfg)
+        params = InferenceParams(max_tokens=int(max_tokens) if max_tokens else None)
+        if max_tokens:
+            job.add_log(f"Output ceiling raised to {int(max_tokens)} tokens for this "
+                        f"dispatch — at the default 2 048 a book comes back cut off")
+        dispatch_multi(job, mods, params, backends, registry, jm, repo, cfg)
 
     return jm.create(
-        name     = ("Re-translate flagged strings (blind)" if scope == "flagged"
-                    else "Fix terminology on flagged strings" if scope == "terms"
-                    else f"Review stored translations ({scope})"),
+        name     = (("Re-translate flagged strings (blind)" if scope == "flagged"
+                     else "Fix terminology on flagged strings" if scope == "terms"
+                     else f"Review stored translations ({scope})")
+                    + (f" [{min_chars or 0}-{max_len or '∞'} chars]"
+                       if (min_chars or max_len) else "")),
         job_type = "translate_strings",
-        params   = {"review": scope != "flagged", "scope": scope},
+        params   = {"review": scope != "flagged", "scope": scope,
+                    "min_chars": min_chars, "max_len": max_len,
+                    "max_tokens": max_tokens},
         fn       = run,
     )
 

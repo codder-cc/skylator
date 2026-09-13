@@ -585,6 +585,41 @@ def untranslated_word_violations(original: str, translation: str,
     return ["untranslated word: " + ", ".join(bad[:4])]
 
 
+# A sentence that was never finished because generation ran out of tokens. Everything
+# here is a closer — an end mark, a quote, a bracket, or the punctuation a line may
+# legitimately trail off on.
+_SENTENCE_CLOSERS = ".!?…»\"'）)]>*_-–—:;,"
+_TRUNCATION_MIN_LEN = 400      # below this a short answer is a style, not a cut
+_TRUNCATION_MAX_RATIO = 0.7    # above this the answer is whole, however it ends
+
+
+def truncation_violations(original: str, translation: str) -> list[str]:
+    """An answer that stops in the middle of a sentence the source finishes.
+
+    A 24 454-character book came back as 6 249 characters ending «…Даже». The model hit
+    its output ceiling — 2 048 tokens, about 4 000 Cyrillic characters — and what it had
+    got to was stored as finished work at a perfect score.
+
+    Nothing saw it. The score only penalises a ratio under 0.2, and every other rule
+    looks at what IS in the translation rather than at what is missing from it. 217
+    strings in the collection, 13 of them accepted and in the game as half a book.
+
+    Three things have to hold together, because each alone is ordinary: the source is
+    long, the answer is much shorter, and the source ends on a closing mark where the
+    answer does not. Russian is routinely shorter than English and a name has no full
+    stop; neither of those is a cut.
+    """
+    o = _strip_all_tokens(original or "").strip()
+    t = _strip_all_tokens(translation or "").strip()
+    if len(o) < _TRUNCATION_MIN_LEN or not t:
+        return []
+    if len(t) / len(o) >= _TRUNCATION_MAX_RATIO:
+        return []
+    if o[-1] not in _SENTENCE_CLOSERS or t[-1] in _SENTENCE_CLOSERS:
+        return []
+    return [f"cut off mid-sentence at {len(t) / len(o):.0%} of the source: …{t[-40:]}"]
+
+
 def trailing_stop_violations(original: str, translation: str,
                              rec_type: str | None = None,
                              field_type: str | None = None) -> list[str]:
@@ -652,6 +687,7 @@ def compute_string_status(original: str, translation: str,
                       + markdown_emphasis_violations(original, translation)
                       + prompt_scaffold_violations(translation)
                       + untranslated_word_violations(original, translation, terms)
+                      + truncation_violations(original, translation)
                       + trailing_stop_violations(original, translation,
                                                  rec_type, field_type))
     issues.extend(structural_bad)

@@ -190,6 +190,16 @@ _RU_ENDINGS = ("ого", "ому", "ыми", "ими", "ая", "ое", "ые", "
 _VOWELS = "аеёиоуыэюя"
 
 
+# «ё» и «е» — одна буква для сравнения.
+#
+# Официальная локализация Bethesda не использует «ё» вообще, а наши переводы используют.
+# Без этой нормализации «Тяжёлая броня» не совпадает с «Тяжелая броня», и глоссарий
+# объявляет нарушением тот же самый текст. То же и внутри корпуса: «Чёрный» против
+# «Черный».
+def _fold_yo(text: str) -> str:
+    return (text or "").replace("ё", "е").replace("Ё", "Е")
+
+
 @lru_cache(maxsize=100_000)
 def _stems(term: str) -> tuple[str, ...]:
     """Prefixes that a glossary entry's declined forms all start with.
@@ -207,9 +217,9 @@ def _stems(term: str) -> tuple[str, ...]:
     form starts with, and every one of them was reported. 590 strings on the live
     collection were that word alone. So the syncopated prefix is a candidate too.
     """
-    t = (term or "").lower().strip()
+    t = _fold_yo((term or "").lower().strip())
     if " " in t:
-        return [t]                    # multi-word terms are matched whole (report only)
+        return (t,)                   # multi-word terms are matched whole (report only)
     out = [t[:max(_PREFIX_CHARS, len(t) - 2)]]
     # «уровень» → «уровн»: drop the vowel before the final consonant, then cut the ending.
     # Four characters is enough here where five is the floor above, because this prefix
@@ -370,7 +380,7 @@ def glossary_violations(original: str, translation: str, terms: dict,
     # was never allowed to touch.
     registry = getattr(terms, "registry", frozenset())
     original = _strip_tokens(original)
-    low_translation = _strip_tokens(translation).lower()
+    low_translation = _fold_yo(_strip_tokens(translation).lower())
     out = []
     for en, value in _candidate_terms(original, terms):
         forms = accepted_forms(value)
@@ -528,6 +538,7 @@ def load_terms(curated_path=None, vanilla_path=None, use_cache: bool = True) -> 
             import logging
             logging.getLogger(__name__).warning(
                 "terminology: %s не загружен (%s): %s", what, path.name, exc)
+    merged = TermSet(merged, registry=registry_keys)
     if use_cache:
         _TERMS_CACHE.clear()
         _TERMS_CACHE[key] = merged

@@ -249,3 +249,36 @@ def test_applying_the_gloss_repair_writes_it(fakedb):
     assert done["gloss"] == 1
     row = fakedb.execute("SELECT translation FROM strings WHERE id=?", (sid,)).fetchone()
     assert row["translation"] == "Ключ от поместья Блэк-Бриар"
+
+
+# ── an asset name that came back unchanged ───────────────────────────────────
+
+
+def test_a_head_part_name_copied_through_is_settled(fakedb):
+    """HDPT is the one type this pack does not translate — 70% of it is copied through,
+    against 0-7% everywhere else. «KSSMP Sky201» coming back unchanged is the answer."""
+    sid = fakedb.insert_string("M", "e.esp", "k1", "KSSMP Sky201", "KSSMP Sky201",
+                               "needs_review", rec_type="HDPT")
+    fakedb.commit()
+    repo = _repo(fakedb)
+    assert [r[0] for r in find_repairable(repo)["untranslatable"]] == [sid]
+    apply_repairs(repo, find_repairable(repo))
+    row = fakedb.execute("SELECT status, source FROM strings WHERE id=?", (sid,)).fetchone()
+    assert row["status"] == "translated" and row["source"] == "untranslatable"
+
+
+def test_a_head_part_with_a_real_translation_is_not_touched(fakedb):
+    """«Hallgarth Horn 01» → «Рог Халгарта 01» — a head part with a readable name,
+    translated correctly. The rule only fires on one that came back unchanged."""
+    fakedb.insert_string("M", "e.esp", "k1", "Hallgarth Horn 01", "Рог Халгарта 01",
+                         "translated", rec_type="HDPT")
+    fakedb.commit()
+    assert find_repairable(_repo(fakedb))["untranslatable"] == []
+
+
+def test_an_ordinary_record_copied_through_is_still_a_miss(fakedb):
+    """The same shape in a WEAP record is a weapon nobody translated."""
+    fakedb.insert_string("M", "e.esp", "k1", "Ebony Mace", "Ebony Mace",
+                         "needs_review", rec_type="WEAP")
+    fakedb.commit()
+    assert find_repairable(_repo(fakedb))["untranslatable"] == []

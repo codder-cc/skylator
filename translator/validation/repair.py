@@ -19,6 +19,10 @@ rather than queued for somebody to decide one at a time:
     (Aerin's House Key)». Only when the bracket holds the whole source: one holding a
     part of it is carrying content that never got translated, and dropping that loses
     the content instead of mending it.
+  * a head-part name that came back unchanged — «KSSMP Sky201». HDPT is the one
+    record type this collection does not translate, 70% of it copied through against
+    0-7% everywhere else, so unchanged is the answer and it is settled rather than
+    queued again.
   * the model's deliberation stored as the answer — «Малина (если это название растения,
     то можно перевести как «Малина», но в Skyrim часто оставляют как есть…)». The
     translation is the part in front of the aside, and the repair is refused when
@@ -168,6 +172,21 @@ def _strip_gloss(original: str, translation: str) -> str:
     return _GLOSS_RE.sub("", t).strip()
 
 
+def _is_asset_name(original: str, rec_type: str | None) -> bool:
+    """A head-part name that came back unchanged is the answer, not a miss.
+
+    HDPT is the one record type this collection does not translate: 70% of its 16 468
+    strings are copied through, against 0-7% for every other type with content in it,
+    and 1 154 are already settled as untranslatable. Reading all 66 distinct names still
+    churning in review says why — «KSSMP Sky201», «_Fuse00 InqHairPony ScalpFemale»,
+    «Beard01». Mesh and mod prefixes, none of it prose anybody reads.
+
+    Only when it came back unchanged. «Hallgarth Horn 01» → «Рог Халгарта 01» is a head
+    part with a readable name and a correct translation, and this must not reach it.
+    """
+    return (rec_type or "") == "HDPT" and bool((original or "").strip())
+
+
 def find_repairable(repo, limit: int | None = None) -> dict:
     """{kind: [(id, original, old_translation, new_translation), ...]} — a dry run.
 
@@ -178,7 +197,7 @@ def find_repairable(repo, limit: int | None = None) -> dict:
     # why the identifier passthrough below never saw one: those rows ARE the ones where
     # the two are equal. Still excluded when it is already settled — a row marked
     # untranslatable has nothing left to do.
-    sql = ("SELECT id, original, translation FROM strings "
+    sql = ("SELECT id, original, translation, rec_type FROM strings "
            "WHERE TRIM(translation) <> '' "
            "AND (translation <> original OR (status='needs_review' "
            "                                 AND COALESCE(source,'') <> 'untranslatable'))")
@@ -209,7 +228,8 @@ def find_repairable(repo, limit: int | None = None) -> dict:
             # is still broken afterwards lost a tag as well, and that needs a model.
             if fixed and fixed != t and not markup_violations(o, fixed):
                 out["angle"].append((r["id"], o, t, fixed))
-        elif looks_like_identifier(o) and t.strip() == o.strip():
+        elif t.strip() == o.strip() and (looks_like_identifier(o)
+                                         or _is_asset_name(o, r["rec_type"])):
             # Copied through unchanged, which is the right answer for a record name — and
             # it was being held anyway, because the score takes 50 off a translation that
             # equals its source and nothing told it this one should. 1 217 strings, every

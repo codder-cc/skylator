@@ -224,13 +224,15 @@ class _FakeDB:
                 for r in self.execute("SELECT folder_name, priority FROM mods").fetchall()}
 
     def insert_string(self, mod_name, esp_name, key, original, translation="",
-                      status="pending"):
+                      status="pending", rec_type=None, field_type=None):
         """Helper to seed a string row, returns the row id."""
         conn = self._connect()
         cur = conn.execute(
-            """INSERT INTO strings (mod_name, esp_name, key, original, translation, status)
-               VALUES (?,?,?,?,?,?)""",
-            (mod_name, esp_name, key, original, translation or "", status),
+            """INSERT INTO strings (mod_name, esp_name, key, original, translation, status,
+                                    rec_type, field_type)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (mod_name, esp_name, key, original, translation or "", status,
+             rec_type, field_type),
         )
         conn.commit()
         return cur.lastrowid

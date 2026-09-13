@@ -261,7 +261,7 @@ def build_prompt(
 
 _QWEN_SYSTEM = (
     "You are a professional video game translator specializing in "
-    "The Elder Scrolls V: Skyrim (Нолвус modpack). "
+    "The Elder Scrolls V: Skyrim (Nolvus modpack). "
     "You produce complete, accurate, natural-sounding Russian translations that fit "
     "Skyrim's lore and UI conventions. "
     "You NEVER summarize, shorten, or omit any part of the source text — "

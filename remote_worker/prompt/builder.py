@@ -29,7 +29,7 @@ translate only the text around them.
 
 _DEFAULT_SYSTEM = (
     "You are a professional video game translator specializing in "
-    "The Elder Scrolls V: Skyrim (Нолвус modpack). "
+    "The Elder Scrolls V: Skyrim (Nolvus modpack). "
     "You produce complete, accurate, natural-sounding Russian translations that fit "
     "Skyrim's lore and UI conventions. "
     "You NEVER summarize, shorten, or omit any part of the source text — "
@@ -67,7 +67,7 @@ Output ONLY the numbered translations."""
 
 _REVIEW_SYSTEM = (
     "You are a senior reviewer of Russian translations for "
-    "The Elder Scrolls V: Skyrim (Нолвус modpack). "
+    "The Elder Scrolls V: Skyrim (Nolvus modpack). "
     "You are given translations that were produced earlier and accepted without review. "
     "Your job is to return each one corrected where it is wrong and untouched where it is "
     "right — never to paraphrase acceptable work."
@@ -83,7 +83,7 @@ Strings (source ⇥ stored translation):
 
 _TERMFIX_SYSTEM = (
     "You are a terminology editor for Russian translations of "
-    "The Elder Scrolls V: Skyrim (Нолвус modpack). "
+    "The Elder Scrolls V: Skyrim (Nolvus modpack). "
     "Each line carries a translation that renders one term with the wrong word. "
     "You correct that word and leave the rest of the sentence exactly as it is."
 )

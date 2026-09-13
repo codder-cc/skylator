@@ -585,6 +585,31 @@ def untranslated_word_violations(original: str, translation: str,
     return ["untranslated word: " + ", ".join(bad[:4])]
 
 
+def developer_note_violations(original: str, translation: str,
+                              rec_type: str | None = None,
+                              field_type: str | None = None) -> list[str]:
+    """A quest-stage note the mod author wrote to themselves, translated anyway.
+
+    A CNAM on a quest stage that opens with «;» is the Creation Kit convention for a
+    developer comment. The player never sees it. 212 of them in the collection, every
+    single one a QUST/CNAM — the marker does not appear anywhere else — and 200 came
+    back translated, 176 of those stored as finished work.
+
+    Harmless where it is «;herbalist asks for help». Not harmless where the note is an
+    instruction with code in it: «;Copy paste AT LEAST this on the papyrus fragment on
+    the right: (Alias_Trigger.GetReference()…» was stored as «…ХОТЯ МЕНЬШЕ ЭТОГО…»,
+    which is both wrong and addressed to somebody who has to act on it.
+    """
+    if rec_type != "QUST" or field_type != "CNAM":
+        return []
+    o = (original or "").lstrip()
+    if not o.startswith(";") or not translation:
+        return []
+    if translation.strip() == (original or "").strip():
+        return []
+    return ["a developer note the player never sees, translated"]
+
+
 # A sentence that was never finished because generation ran out of tokens. Everything
 # here is a closer — an end mark, a quote, a bracket, or the punctuation a line may
 # legitimately trail off on.
@@ -688,6 +713,8 @@ def compute_string_status(original: str, translation: str,
                       + prompt_scaffold_violations(translation)
                       + untranslated_word_violations(original, translation, terms)
                       + truncation_violations(original, translation)
+                      + developer_note_violations(original, translation,
+                                                rec_type, field_type)
                       + trailing_stop_violations(original, translation,
                                                  rec_type, field_type))
     issues.extend(structural_bad)

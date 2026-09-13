@@ -43,7 +43,7 @@ from translator.validation.quality import (
     markdown_emphasis_violations,
     markup_violations, prompt_scaffold_violations,
     meta_comment_violations, renders_as_garbage, strip_echo,
-    untranslated_word_violations,
+    untranslated_word_violations, developer_note_violations,
 )
 
 log = logging.getLogger(__name__)
@@ -197,7 +197,7 @@ def find_repairable(repo, limit: int | None = None) -> dict:
     # why the identifier passthrough below never saw one: those rows ARE the ones where
     # the two are equal. Still excluded when it is already settled — a row marked
     # untranslatable has nothing left to do.
-    sql = ("SELECT id, original, translation, rec_type FROM strings "
+    sql = ("SELECT id, original, translation, rec_type, field_type FROM strings "
            "WHERE TRIM(translation) <> '' "
            "AND (translation <> original OR (status='needs_review' "
            "                                 AND COALESCE(source,'') <> 'untranslatable'))")
@@ -239,6 +239,10 @@ def find_repairable(repo, limit: int | None = None) -> dict:
             fixed = _strip_markdown(t)
             if fixed and fixed != t and not renders_as_garbage(o, fixed):
                 out["markdown"].append((r["id"], o, t, fixed))
+        elif developer_note_violations(o, t, r["rec_type"], r["field_type"]):
+            # A «;» note on a quest stage is written for the mod author, not the player.
+            # The right translation of a note nobody reads is the note.
+            out["untranslatable"].append((r["id"], o, t, o))
         elif untranslated_word_violations(o, t):
             # A word simply left standing needs a model. The one shape that does not is
             # the source echoed in brackets behind a finished answer.

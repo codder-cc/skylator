@@ -45,8 +45,7 @@ def test_applying_writes_the_repair(fakedb):
     fakedb.commit()
     repo = _repo(fakedb)
     done = apply_repairs(repo, find_repairable(repo))
-    assert done == {"echo": 1, "identifier": 1, "angle": 0, "meta": 0, "markdown": 0,
-                    "untranslatable": 0, "scaffold": 0}
+    assert done == dict.fromkeys(done, 0) | {"echo": 1, "identifier": 1}
 
     rows = {r[0]: r for r in fakedb.execute(
         "SELECT id, translation, status, source FROM strings").fetchall()}
@@ -210,3 +209,43 @@ def test_a_row_already_settled_is_not_revisited(fakedb):
     fakedb.commit()
     repo = _repo(fakedb)
     assert find_repairable(repo)["untranslatable"] == []
+
+
+# ── the source repeated in brackets ──────────────────────────────────────────
+
+
+def test_a_bracketed_echo_of_the_whole_source_comes_off(fakedb):
+    sid = fakedb.insert_string("M", "e.esp", "k1", "Aerin's House Key",
+                               "Ключ от дома Эрин (Aerin's House Key)", "translated")
+    fakedb.commit()
+    found = find_repairable(_repo(fakedb))
+    assert [r[0] for r in found["gloss"]] == [sid]
+    assert found["gloss"][0][3] == "Ключ от дома Эрин"
+
+
+def test_a_bracket_holding_only_part_of_the_source_is_left_to_a_model(fakedb):
+    """«Песочница Изобель (Forge)» — "Forge" never got translated. Dropping the bracket
+    would lose it rather than mend anything, so this one is not repairable here."""
+    fakedb.insert_string("M", "e.esp", "k1", "Isobel Sandbox Forge",
+                         "Песочница Изобель (Forge)", "translated")
+    fakedb.commit()
+    assert find_repairable(_repo(fakedb))["gloss"] == []
+
+
+def test_a_bracket_the_source_itself_has_is_the_authors(fakedb):
+    fakedb.insert_string("M", "e.esp", "k1", "Sleep (Skyrim Unbound)",
+                         "Сон (Skyrim Unbound)", "translated")
+    fakedb.commit()
+    assert find_repairable(_repo(fakedb))["gloss"] == []
+
+
+def test_applying_the_gloss_repair_writes_it(fakedb):
+    sid = fakedb.insert_string("M", "e.esp", "k1", "Black-Briar Manor Key",
+                               "Ключ от поместья Блэк-Бриар (Black-Briar Manor Key)",
+                               "needs_review")
+    fakedb.commit()
+    repo = _repo(fakedb)
+    done = apply_repairs(repo, find_repairable(repo))
+    assert done["gloss"] == 1
+    row = fakedb.execute("SELECT translation FROM strings WHERE id=?", (sid,)).fetchone()
+    assert row["translation"] == "Ключ от поместья Блэк-Бриар"

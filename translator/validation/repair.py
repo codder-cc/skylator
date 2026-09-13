@@ -15,6 +15,10 @@ rather than queued for somebody to decide one at a time:
     <p align='center'>. The character it replaced is known, and the repair is only
     accepted when putting it back mends the markup: a line still broken afterwards lost
     a tag as well and needs a model.
+  * the source repeated in brackets behind a finished answer — «Ключ от дома Эрин
+    (Aerin's House Key)». Only when the bracket holds the whole source: one holding a
+    part of it is carrying content that never got translated, and dropping that loses
+    the content instead of mending it.
   * the model's deliberation stored as the answer — «Малина (если это название растения,
     то можно перевести как «Малина», но в Skyrim часто оставляют как есть…)». The
     translation is the part in front of the aside, and the repair is refused when
@@ -35,6 +39,7 @@ from translator.validation.quality import (
     markdown_emphasis_violations,
     markup_violations, prompt_scaffold_violations,
     meta_comment_violations, renders_as_garbage, strip_echo,
+    untranslated_word_violations,
 )
 
 log = logging.getLogger(__name__)
@@ -137,6 +142,32 @@ def _strip_meta(original: str, translation: str) -> str:
     return _META_TAIL_RE.sub("", translation or "").strip()
 
 
+# The source repeated in brackets after the answer: «Ключ от дома Эрин (Aerin's House
+# Key)». It renders in game, and it is nothing the reader needs.
+_GLOSS_RE = re.compile(r"\s*[(\[][^()\[\]]*[A-Za-z]{3,}[^()\[\]]*[)\]]")
+_GLOSS_WORD_RE = re.compile(r"(?<![A-Za-z'’])[A-Za-z]{3,}(?![A-Za-z])")
+
+
+def _strip_gloss(original: str, translation: str) -> str:
+    """The answer with a redundant echo of the source in brackets taken off.
+
+    Only when the bracket holds the WHOLE source. «Песочница Изобель (Forge)» keeps a
+    part of the source that never got translated, and dropping it loses that content
+    rather than mending anything — 135 of the 249 bracketed rows are that shape and
+    belong to a model, not here. The 114 that remain are pure repetition.
+
+    A source with brackets of its own is left alone: those brackets are the author's.
+    """
+    o, t = original or "", translation or ""
+    if "(" in o or "[" in o or not _GLOSS_RE.search(t):
+        return t
+    src = {w.lower() for w in _GLOSS_WORD_RE.findall(o)}
+    inside = {w.lower() for m in _GLOSS_RE.findall(t) for w in _GLOSS_WORD_RE.findall(m)}
+    if not src or len(src & inside) < len(src) * 0.8:
+        return t
+    return _GLOSS_RE.sub("", t).strip()
+
+
 def find_repairable(repo, limit: int | None = None) -> dict:
     """{kind: [(id, original, old_translation, new_translation), ...]} — a dry run.
 
@@ -154,7 +185,8 @@ def find_repairable(repo, limit: int | None = None) -> dict:
     if limit:
         sql += f" LIMIT {int(limit)}"
     out: dict[str, list] = {"echo": [], "identifier": [], "angle": [], "meta": [],
-                            "markdown": [], "untranslatable": [], "scaffold": []}
+                            "markdown": [], "untranslatable": [], "scaffold": [],
+                            "gloss": []}
     for r in repo.db.execute(sql).fetchall():
         o, t = r["original"] or "", r["translation"] or ""
         # Before anything else: this project's own prompt label, stored as the
@@ -187,6 +219,13 @@ def find_repairable(repo, limit: int | None = None) -> dict:
             fixed = _strip_markdown(t)
             if fixed and fixed != t and not renders_as_garbage(o, fixed):
                 out["markdown"].append((r["id"], o, t, fixed))
+        elif untranslated_word_violations(o, t):
+            # A word simply left standing needs a model. The one shape that does not is
+            # the source echoed in brackets behind a finished answer.
+            fixed = _strip_gloss(o, t)
+            if (fixed and fixed != t and not renders_as_garbage(o, fixed)
+                    and not untranslated_word_violations(o, fixed)):
+                out["gloss"].append((r["id"], o, t, fixed))
         elif meta_comment_violations(t):
             fixed = _strip_meta(o, t)
             # The aside has to be the tail and there has to be a translation in front of
@@ -199,8 +238,8 @@ def find_repairable(repo, limit: int | None = None) -> dict:
 def apply_repairs(repo, found: dict, job=None) -> dict:
     """Write the repairs found by `find_repairable`. Returns what changed, by kind."""
     now = time.time()
-    done = {"echo": 0, "identifier": 0, "angle": 0, "meta": 0, "markdown": 0,
-            "untranslatable": 0, "scaffold": 0}
+    # Counted from what was found, so adding a kind above does not KeyError down here.
+    done = {kind: 0 for kind in found}
     for kind, rows in found.items():
         for sid, original, old, new in rows:
             try:

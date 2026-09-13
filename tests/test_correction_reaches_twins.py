@@ -117,3 +117,45 @@ def test_the_delivery_path_reads_the_old_text_before_the_merge_replaces_it():
     carry = src.index("apply_correction_to_duplicates", read)
     assert read < merge < carry, "read the old text, then merge, then carry it to the twins"
     assert "SELECT translation FROM strings" in src[read:merge]
+
+
+# ── двойник судится по тексту, а не по заявлению агента ──────────────────────
+#
+# Разнос по двойникам писал `status or "translated"` — статус, присланный агентом, —
+# прямо в базу, минуя ворота. Это второй путь записи, обходивший ровно то, ради чего
+# save_string существует. Найдено чтением выборки: 1 257 строк вида
+# «Have you been in Dawnstar long? ⇥ Вы давно в Данстар?» лежали принятыми, хотя
+# правило на эхо промпта есть и срабатывает.
+
+def test_a_twin_carrying_prompt_echo_is_not_accepted(fakedb):
+    from translator.validation.quality import compute_string_status
+    echoed = "Have you been in Dawnstar long? ⇥ Вы давно в Данстар?"
+    _q, _t, _i, status = compute_string_status(
+        "Have you been in Dawnstar long?", echoed, {})
+    assert status == "needs_review", (
+        "правило на эхо должно отвергать этот текст — если оно молчит, вся проверка "
+        "ниже бессмысленна")
+
+
+def test_the_status_written_to_a_twin_comes_from_the_text(fakedb):
+    """Проверка самого разноса: статус двойника должен считаться из текста."""
+    from translator.db.repo import StringRepo
+    from translator.validation.quality import compute_string_status
+
+    src = "Have you been in Dawnstar long?"
+    good = "Вы давно в Данстаре?"
+    echoed = f"{src} ⇥ {good}"
+
+    a = fakedb.insert_string("M", "e.esp", "k1", src, "старый перевод", "needs_review")
+    fakedb.execute("UPDATE strings SET string_hash='h1' WHERE id=?", (a,))
+    b = fakedb.insert_string("M2", "e.esp", "k2", src, "старый перевод", "needs_review")
+    fakedb.execute("UPDATE strings SET string_hash='h1' WHERE id=?", (b,))
+    fakedb.commit()
+
+    repo = StringRepo(fakedb)
+    q, _t, _i, status = compute_string_status(src, echoed, {})
+    repo.apply_correction_to_duplicates("h1", "старый перевод", echoed, status, q)
+
+    rows = fakedb.execute("SELECT status FROM strings WHERE string_hash='h1'").fetchall()
+    assert {r["status"] for r in rows} == {"needs_review"}, (
+        "двойник получил статус, которого его текст не заслуживает")

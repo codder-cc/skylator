@@ -2588,13 +2588,20 @@ def workers_offline_results(label: str):
                 )
                 mods_touched.add(mod_name)
                 saved_count += 1
-                # Fill identical still-pending strings from this one result (see
-                # StringRepo.apply_to_pending_duplicates): 42% of a real backlog is
-                # repeated text, and re-translating it is pure waste.
+                # Судить текст, а не верить агенту. Два разноса по двойникам ниже писали
+                # `status or "translated"` — то есть заявление агента, а агент всегда
+                # говорит «готово», — прямо в базу, минуя ворота. Это второй путь записи,
+                # и он обходил ровно то, ради чего save_string и существует: 1 257 строк
+                # с эхом промпта «Have you been in Dawnstar long? ⇥ Вы давно в Данстар?»
+                # лежали принятыми, притом что правило на них есть и срабатывает.
+                from translator.validation.quality import compute_string_status as _css
+                _dup_q, _t, _i, _dup_status = _css(
+                    original, translation, string_mgr._glossary(),
+                    r.get("rec_type") or None, r.get("field_type") or None)
                 try:
                     _n = repo.apply_to_pending_duplicates(
                         r.get("string_hash") or "", translation,
-                        status or "translated", quality)
+                        _dup_status, _dup_q)
                     if _n:
                         dup_filled += _n
                 except Exception:
@@ -2607,7 +2614,7 @@ def workers_offline_results(label: str):
                     try:
                         _m = repo.apply_correction_to_duplicates(
                             r.get("string_hash") or "", stored_before, translation,
-                            status or "translated", quality)
+                            _dup_status, _dup_q)
                         if _m:
                             dup_filled += _m
                     except Exception:

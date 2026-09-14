@@ -385,12 +385,47 @@ class StringRepo:
             conditions.append("key LIKE 'swf:%'")
         where = " AND ".join(conditions)
         with _write_lock:
+            touched = [r["id"] for r in self.db.execute(
+                f"SELECT id FROM strings WHERE {where}", params).fetchall()]
             cur = self.db.execute(
                 f"UPDATE strings SET translation=REPLACE(translation,?,?), updated_at=? WHERE {where}",
                 [find, replace_with, time.time()] + params,
             )
             self.db.commit()
+        # Текст правил человек, и он остаётся его — ручная правка сильнее любого правила.
+        # Но СТАТУС после замены был прежним, то есть строка с оценкой 100 держала свои
+        # сто баллов, что бы замена ни записала. Это тот же обход ворот, что и в починке:
+        # текст поменялся, суждение о нём — нет. Пересчитываем только суждение.
+        self._rejudge(touched)
         return cur.rowcount
+
+    def _rejudge(self, ids: list) -> None:
+        """Пересчитать статус и оценку для перечисленных строк, не меняя их текст."""
+        if not ids:
+            return
+        try:
+            from translator.validation.quality import compute_string_status
+            from translator.validation.terminology import load_terms
+            terms = load_terms()
+        except Exception as exc:
+            log.warning("rejudge: точка суждения недоступна (%s)", exc)
+            return
+        now = time.time()
+        for chunk_start in range(0, len(ids), 500):
+            chunk = ids[chunk_start:chunk_start + 500]
+            ph = ",".join("?" * len(chunk))
+            rows = self.db.execute(
+                f"SELECT id, original, translation, rec_type, field_type FROM strings "
+                f"WHERE id IN ({ph})", tuple(chunk)).fetchall()
+            with _write_lock:
+                for r in rows:
+                    qs, _tok, _iss, status = compute_string_status(
+                        r["original"], r["translation"], terms,
+                        r["rec_type"], r["field_type"])
+                    self.db.execute(
+                        "UPDATE strings SET status=?, quality_score=?, updated_at=? "
+                        "WHERE id=?", (status, qs, now, r["id"]))
+                self.db.commit()
 
     def sync_duplicates(self, mod_name: str, original: str,
                         translation: str, status: str,

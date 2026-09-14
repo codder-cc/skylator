@@ -176,12 +176,91 @@ def _is_enforceable(ru: str) -> bool:
     return len(words) >= 2 and any(len(w) >= _MIN_ENFORCED_TERM for w in words)
 
 
+# Настоящая морфология вместо пятибуквенного префикса.
+#
+# _stems писался потому, что морфологии под рукой не было: пятибуквенный префикс плюс три
+# правила про беглые гласные. Он честно работает на транслитерированных именах — «Скайрим»,
+# «Вайтран» — и промахивается на обычных словах, где меняется не только хвост. «Ремонт
+# лёгкой брони» объявлялся нарушением «Light Armor → Лёгкая броня», потому что «лёгкой» и
+# «брони» не начинаются с «лёгка» и «броня».
+#
+# Замер: из 11 359 нарушений по стеммеру 729 — такие. Это 729 строк, которые ушли бы на
+# машину переделывать верный текст.
+#
+# Поэтому проверяются ОБА способа, и достаточно любого. Морфология видит склонение точно,
+# префикс подстраховывает там, где словаря нет: выдуманные имена модов, «Сталгримовая».
+# Шире — значит меньше ложных срабатываний, а цена ложного здесь выше цены пропуска:
+# пропуск ничего не стоит, ложное отправляет хорошую работу человеку или машине.
+_MORPH = None
+_MORPH_TRIED = False
+
+
+def _morph():
+    """pymorphy3, если он есть. Отсутствие выключает половину проверки, а не всю."""
+    global _MORPH, _MORPH_TRIED
+    if not _MORPH_TRIED:
+        _MORPH_TRIED = True
+        try:
+            import pymorphy3
+            _MORPH = pymorphy3.MorphAnalyzer()
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).info(
+                "terminology: pymorphy3 недоступен, сверка идёт только по префиксу: %s", exc)
+    return _MORPH
+
+
+@lru_cache(maxsize=300_000)
+def _lemma(word: str) -> frozenset:
+    """ВСЕ возможные леммы слова, а не самая вероятная.
+
+    parse()[0] берёт один разбор, и для омонимичной формы он бывает не тот: «брони» это
+    и «броня», и «бронь» (бронирование), а самой вероятной pymorphy считает вторую. При
+    сравнении по одной лемме «Лёгкая броня» переставала находиться в «лёгкой брони» —
+    то есть морфология начинала врать ровно там, где её добавляли.
+
+    Совпадением считается пересечение множеств: слово то же, если хоть один его разбор
+    сходится с разбором искомого.
+    """
+    m = _morph()
+    if m is None:
+        return frozenset((word,))
+    try:
+        return frozenset(p.normal_form for p in m.parse(word)) or frozenset((word,))
+    except Exception:
+        return frozenset((word,))
+
+
+_RU_WORD_RE = re.compile(r"[А-Яа-яЁё]+")
+
+
+@lru_cache(maxsize=100_000)
+def _text_lemmas(text: str) -> frozenset:
+    out: set = set()
+    for w in _RU_WORD_RE.findall((text or "").lower()):
+        out |= _lemma(w)
+    return frozenset(out)
+
+
+def _lemma_satisfied(ru: str, translation: str) -> bool:
+    """Каждое значащее слово имени присутствует в переводе в какой-нибудь форме."""
+    if _morph() is None:
+        return False
+    words = _phrase_words(ru)
+    if not words:
+        return False
+    have = _text_lemmas(translation)
+    return all(_lemma(w) & have for w in words)
+
+
 def _phrase_satisfied(ru: str, low_translation: str) -> bool:
     """Есть ли в переводе каждое значащее слово имени — в любой форме и любом порядке."""
     words = _phrase_words(ru)
     if not words:
         return False
-    return all(any(st in low_translation for st in _stems(w)) for w in words)
+    if all(any(st in low_translation for st in _stems(w)) for w in words):
+        return True
+    return _lemma_satisfied(ru, low_translation)
 
 _RU_ENDINGS = ("ого", "ому", "ыми", "ими", "ая", "ое", "ые", "ый", "ий", "ой", "ом",
                "ах", "ям", "ев", "ов", "а", "я", "о", "е", "ы", "и", "у", "ю", "ь", "й")
@@ -397,7 +476,8 @@ def glossary_violations(original: str, translation: str, terms: dict,
         if not _contains_word(original, en):
             continue
         if any(_phrase_satisfied(f, low_translation) if (" " in f or "-" in f)
-               else any(st in low_translation for st in _stems(f))
+               else (any(st in low_translation for st in _stems(f))
+                     or _lemma_satisfied(f, low_translation))
                for f in forms):
             continue
         out.append((en, canonical(value)))

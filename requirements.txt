@@ -36,3 +36,4 @@ truststore>=0.9.0         # verify TLS against the OS trust store (AV/proxy TLS 
 # ── Dev / testing ──────────────────────────────────────────────────────────────
 pytest>=8.3.0
 pytest-timeout>=2.3.0   # per-test timeout safety net (see pyproject [tool.pytest])
+pymorphy3

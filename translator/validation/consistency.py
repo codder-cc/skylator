@@ -93,17 +93,45 @@ def casing_only(cluster: Cluster) -> str | None:
     """Канонический вариант, если варианты различаются ТОЛЬКО оформлением.
 
     «Теневой Атронах» и «Теневой атронах» — одни и те же буквы в одном и том же порядке;
-    разное только то, как коллекция пишет имена. Выбирается то, что чаще, и это
-    безопасно именно потому, что смысл у вариантов один.
+    разное только то, как коллекция пишет имена.
 
-    Возвращает None везде, где буквы различаются: там решение за моделью или человеком,
-    и частотность его не заменяет.
+    Раньше выигрывало то, что чаще. Это была ошибка замера: частотность считается по
+    корпусу, а корпус целиком переведён моделями с одной и той же привычкой писать
+    каждое слово с заглавной. Большинство здесь не свидетельство, а та же самая ошибка,
+    повторённая много раз, — и правило послушно закрепляло «Теневой Атронах».
+
+    Спрашивается официальная локализация, а где она молчит — берётся написание
+    предложением: первое слово с заглавной, остальные строчные. Так пишет русский язык
+    и так пишет базовая игра («Коллегия бардов», «Зал доблести», «Даэдрический лук»).
+    Слово, которое ВСЕ варианты пишут с заглавной, не понижается: это имя собственное
+    внутри названия.
     """
     if len(cluster.variants) < 2:
         return None
     if len({_casefold_key(v) for v in cluster.variants}) != 1:
         return None
-    return cluster.ranked[0][0]
+    try:
+        from translator.validation.authority import load_official
+        official = load_official().get(cluster.original.strip())
+    except Exception:
+        official = None
+    if official and _casefold_key(official) == _casefold_key(cluster.ranked[0][0]):
+        return official
+    # Слово, стоящее с заглавной во ВСЕХ вариантах, — имя собственное, его не трогаем.
+    variants = list(cluster.variants)
+    always_upper = set()
+    for i, w in enumerate(variants[0].split(" ")):
+        if i and all(len(v.split(" ")) > i and v.split(" ")[i][:1].isupper()
+                     for v in variants):
+            always_upper.add(i)
+    words = variants[0].split(" ")
+    out = []
+    for i, w in enumerate(words):
+        if i == 0 or i in always_upper or not w[:1].isupper():
+            out.append(w)
+        else:
+            out.append(w[:1].lower() + w[1:])
+    return " ".join(out)
 
 
 def find_name_clusters(repo, min_len: int = MIN_LEN, max_len: int = MAX_LEN) -> list[Cluster]:

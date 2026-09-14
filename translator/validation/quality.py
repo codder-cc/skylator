@@ -513,6 +513,34 @@ _PROMPT_SCAFFOLD_RE = re.compile(
     r"|\bsource ⇥|стро́ки \(источник", re.IGNORECASE)
 
 
+# Два варианта перевода, сохранённые как ответ. Найдено чтением выборки:
+#
+#     Jagged Crown (replica) → «Остроконечная Корона (реплика) → Зубчатая Корона (реплика)»
+#
+# Модель не выбрала и выдала оба, разделитель остался внутри. Правило про эхо это не
+# ловит: оно требует, чтобы СЛЕВА от разделителя стоял источник, а здесь слева русский
+# текст. На корпусе 147 таких строк, 90 из них приняты.
+#
+# Разделитель, присутствующий в самом источнике, не считается: «А → Б» в описании
+# механики законно, и таких 41.
+_VARIANT_SEP_RE = re.compile(r"⇥|→|->|=>")
+_CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")
+
+
+def variant_choice_violations(original: str, translation: str) -> list[str]:
+    """Модель выдала два варианта вместо одного."""
+    t = translation or ""
+    if not _VARIANT_SEP_RE.search(t) or _VARIANT_SEP_RE.search(original or ""):
+        return []
+    parts = [p.strip() for p in _VARIANT_SEP_RE.split(t) if p.strip()]
+    if len(parts) != 2:
+        return []
+    a, b = parts
+    if not (_CYRILLIC_RE.search(a) and _CYRILLIC_RE.search(b)):
+        return []          # другая сторона не перевод — это разбирает правило про эхо
+    return [f"two variants kept instead of one: {a[:26]} / {b[:26]}"]
+
+
 def prompt_scaffold_violations(translation: str) -> list[str]:
     """A label from this project's own prompt, stored as the translation."""
     m = _PROMPT_SCAFFOLD_RE.search(translation or "")
@@ -763,6 +791,21 @@ def compute_string_status(original: str, translation: str,
     """
     if not translation or not translation.strip():
         return 0, False, [], "pending"
+    # Официальная локализация — не кандидат на проверку, а сам эталон. Из 3 499 строк,
+    # выровненных по ней, наши правила отвергли 453: требовали «Мельница» там, где
+    # Half-Moon Mill официально «лесопилка», считали «OghmaInfinium» идентификатором,
+    # находили потерю отрицания в «The town guards can't help you?» → «А что городские
+    # стражники?». Каждая такая строка — это мы переспариваем текст, который русский
+    # игрок видит в базовой игре, и отправляем человека подтверждать Bethesda.
+    #
+    # Проверять здесь нечего: пара пришла из таблицы, выровненной по id строки, без
+    # модели и без голосования.
+    try:
+        from translator.validation.authority import load_official
+        if load_official().get((original or "").strip()) == translation.strip():
+            return 100, True, [], "translated"
+    except Exception:
+        pass
     tok_ok, tok_issues = validate_tokens(original, translation)
     qs = quality_score(original, translation)
     issues = list(tok_issues)
@@ -782,6 +825,7 @@ def compute_string_status(original: str, translation: str,
                       + runaway_repetition_violations(original, translation)
                       + markdown_emphasis_violations(original, translation)
                       + prompt_scaffold_violations(translation)
+                      + variant_choice_violations(original, translation)
                       + untranslated_word_violations(original, translation, terms)
                       + truncation_violations(original, translation)
                       + polarity_violations(original, translation)

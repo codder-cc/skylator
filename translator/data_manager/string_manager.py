@@ -106,6 +106,7 @@ class StringManager:
         prefer_incoming: bool = False,
         rec_type: Optional[str] = None,
         field_type: Optional[str] = None,
+        form_id: Optional[str] = None,
     ) -> SaveResult:
         """Single write entry point for ALL string types.
 
@@ -156,6 +157,40 @@ class StringManager:
         else:
             computed_qs = None
             computed_status = "pending"
+
+        # ── Официальная локализация: авторитет выше машинного текста ────────────
+        # Раньше выравнивание по официальной таблице было скриптом, который проходил по
+        # корпусу разом. Скрипт — это снимок: всё, что агенты доставят после него, снимок
+        # не видит. «Fort Dawnguard» был верен с марта, подтверждён выравниванием в 13:46
+        # и затёрт доставкой агента в 13:52. За один день так разошлись 410 строк.
+        # Правило стоит здесь, потому что здесь — единственный путь записи.
+        if translation and original:
+            try:
+                from translator.validation.authority import load_official, official_override
+                _table = load_official()
+                _official = None
+                if original.strip() in _table:
+                    # FormID решает, переопределяет ли запись ванильную, а вызывающие его
+                    # не передают. Один индексный SELECT — но только для тех источников,
+                    # что вообще есть в таблице, то есть для доли процента записей.
+                    _fid = form_id
+                    if _fid is None:
+                        _row = self._repo.db.execute(
+                            "SELECT form_id FROM strings WHERE mod_name=? AND esp_name=? "
+                            "AND key=?", (mod_name, esp_name, key)).fetchone()
+                        _fid = _row["form_id"] if _row else None
+                    _official = official_override(original, translation, _fid, source, _table)
+            except Exception as exc:
+                log.warning("authority: правило не отработало для %s/%s: %s", mod_name, key, exc)
+                _official = None
+            if _official:
+                log.info("authority: %s/%s — официальное %r вместо %r",
+                         mod_name, key, _official[:40], translation.strip()[:40])
+                translation = _official
+                computed_qs, _tok, _issues, computed_status = compute_string_status(
+                    original, translation, self._glossary(), rec_type, field_type)
+                source = "vanilla"
+                merge = False          # таблица не соревнуется с хранимым текстом
 
         # ── Merge against what is already stored (agent deliveries only) ────────
         if merge and translation:

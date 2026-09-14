@@ -2595,12 +2595,22 @@ def workers_offline_results(label: str):
                 # с эхом промпта «Have you been in Dawnstar long? ⇥ Вы давно в Данстар?»
                 # лежали принятыми, притом что правило на них есть и срабатывает.
                 from translator.validation.quality import compute_string_status as _css
+                _dup_text = translation
+                # Размножение идёт сырым SQL по всем двойникам, мимо ворот записи, а
+                # значит и мимо таблицы авторитета. Двойники делят один английский
+                # источник, поэтому ответ таблицы у них общий — кроме ветки, которая
+                # смотрит на FormID; её берёт на себя прогон authority_sweep.
+                try:
+                    from translator.validation.authority import official_override as _oo
+                    _dup_text = _oo(original, translation, None, "ai") or translation
+                except Exception:
+                    pass
                 _dup_q, _t, _i, _dup_status = _css(
-                    original, translation, string_mgr._glossary(),
+                    original, _dup_text, string_mgr._glossary(),
                     r.get("rec_type") or None, r.get("field_type") or None)
                 try:
                     _n = repo.apply_to_pending_duplicates(
-                        r.get("string_hash") or "", translation,
+                        r.get("string_hash") or "", _dup_text,
                         _dup_status, _dup_q)
                     if _n:
                         dup_filled += _n
@@ -2613,7 +2623,7 @@ def workers_offline_results(label: str):
                 if _reviewing and stored_before:
                     try:
                         _m = repo.apply_correction_to_duplicates(
-                            r.get("string_hash") or "", stored_before, translation,
+                            r.get("string_hash") or "", stored_before, _dup_text,
                             _dup_status, _dup_q)
                         if _m:
                             dup_filled += _m

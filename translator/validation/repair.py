@@ -39,7 +39,9 @@ import re
 import time
 
 from translator.validation.quality import (
+    compute_string_status,
     echo_violations, identifier_violations, looks_like_identifier,
+    variant_choice_violations, pick_better,
     markdown_emphasis_violations,
     markup_violations, prompt_scaffold_violations,
     meta_comment_violations, renders_as_garbage, strip_echo,
@@ -71,6 +73,8 @@ _REAL_TAG_RE      = re.compile(r"</?[A-Za-z][A-Za-z0-9]{0,12}(?:\s[^<>]{0,80})?/
 # The deliberation, stored as the answer. "Raspberry" came back as «Малина (если это
 # название растения, то можно перевести как «Малина», но в Skyrim часто оставляют как
 # есть. Для точности: «Малина»)». The translation is the part before the aside.
+_VARIANT_SPLIT_RE = re.compile(r"⇥|→|->|=>")
+
 _META_TAIL_RE = re.compile(
     r"\s*[(\[]\s*(?:если это|можно перевести|вариант перевода|дословно:|примечание:"
     r"|в контексте игры|оставляют как есть)[^)\]]*[)\]]\s*$",
@@ -205,13 +209,33 @@ def find_repairable(repo, limit: int | None = None) -> dict:
         sql += f" LIMIT {int(limit)}"
     out: dict[str, list] = {"echo": [], "identifier": [], "angle": [], "meta": [],
                             "markdown": [], "untranslatable": [], "scaffold": [],
-                            "gloss": []}
+                            "gloss": [], "variant": []}
+    try:
+        from translator.validation.authority import load_official
+        official = load_official()
+    except Exception:
+        official = {}
     for r in repo.db.execute(sql).fetchall():
         o, t = r["original"] or "", r["translation"] or ""
+        # Официальную локализацию чинить не надо — её надо принимать. «Cyclone03» стоит
+        # в таблице как «Циклон 03», а правило про идентификаторы видит латиницу с цифрой
+        # и предлагает вернуть английский: починка против эталона.
+        if official.get(o.strip()) == t.strip():
+            continue
         # Before anything else: this project's own prompt label, stored as the
         # answer. The requirement is the LAST column and the translation the middle
         # one, so strip_echo on its own would keep the requirement and throw the
         # answer away.
+        # Два варианта через стрелку. Какая сторона верна — не угадывается: для «Jagged
+        # Crown» права вторая («Зубчатая корона» официально), для «Forgemaster's Fingers»
+        # первая. Поэтому стороны не выбираются по позиции, а судятся: выигрывает та, что
+        # выигрывает у pick_better — то же ранжирование, что решает судьбу доставок.
+        if variant_choice_violations(o, t):
+            a, b = [x.strip() for x in _VARIANT_SPLIT_RE.split(t) if x.strip()][:2]
+            best = pick_better(o, a, b)["translation"]
+            if best and best != t and not renders_as_garbage(o, best):
+                out["variant"].append((r["id"], o, t, best))
+                continue
         if prompt_scaffold_violations(t):
             fixed = strip_echo(o, _strip_scaffold(t))
             if fixed and fixed != t and not renders_as_garbage(o, fixed):
@@ -259,6 +283,22 @@ def find_repairable(repo, limit: int | None = None) -> dict:
     return out
 
 
+_TERMS = None
+
+
+def _terms():
+    """Глоссарий, загруженный один раз: судить починку без него — судить наполовину."""
+    global _TERMS
+    if _TERMS is None:
+        try:
+            from translator.validation.terminology import load_terms
+            _TERMS = load_terms()
+        except Exception as exc:
+            log.warning("repair: глоссарий не загружен (%s), починка судится без него", exc)
+            _TERMS = {}
+    return _TERMS
+
+
 def apply_repairs(repo, found: dict, job=None) -> dict:
     """Write the repairs found by `find_repairable`. Returns what changed, by kind."""
     now = time.time()
@@ -270,16 +310,28 @@ def apply_repairs(repo, found: dict, job=None) -> dict:
                 repo.insert_history(sid, old, "translated", None, f"repair:{kind}", None, None)
             except Exception as exc:                     # history is a courtesy, not a gate
                 log.debug("repair: could not record history for %s: %s", sid, exc)
+            # Починка судится тем же, чем судится всё остальное. Раньше здесь было два
+            # утверждения без доказательства: одна ветка объявляла свой результат
+            # готовым с оценкой 100, другая меняла текст и оставляла прежние статус и
+            # оценку — строка со ста баллами так и стояла со ста, что бы починка ни
+            # записала. Это тот же обход ворот, что и разнос по двойникам: заявление
+            # вместо суждения.
+            row = repo.db.execute(
+                "SELECT rec_type, field_type FROM strings WHERE id=?", (sid,)).fetchone()
+            qs, _tok, _issues, status = compute_string_status(
+                original, new, _terms(),
+                row["rec_type"] if row else None, row["field_type"] if row else None)
             if kind in ("identifier", "untranslatable"):
                 # A record name is not translatable, and saying so stops the next sweep
                 # from spending a machine on it and getting this wrong again.
                 repo.db.execute(
-                    "UPDATE strings SET translation=?, status='translated', quality_score=100, "
-                    "source='untranslatable', updated_at=? WHERE id=?", (new, now, sid))
+                    "UPDATE strings SET translation=?, status=?, quality_score=?, "
+                    "source='untranslatable', updated_at=? WHERE id=?",
+                    (new, status, qs, now, sid))
             else:
                 repo.db.execute(
-                    "UPDATE strings SET translation=?, updated_at=? WHERE id=?",
-                    (new, now, sid))
+                    "UPDATE strings SET translation=?, status=?, quality_score=?, "
+                    "updated_at=? WHERE id=?", (new, status, qs, now, sid))
             done[kind] += 1
             if job is not None and done[kind] % 200 == 0:
                 job.add_log(f"{kind}: repaired {done[kind]}")

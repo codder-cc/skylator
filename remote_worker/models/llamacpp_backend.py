@@ -161,6 +161,13 @@ class LlamaCppBackend(BaseBackend):
         )
         elapsed = _time.time() - t0
         usage   = resp.get("usage") or {}
+        # «length» значит, что генерация упёрлась в потолок, а не закончилась сама.
+        # До этого обрыв книги на полуслове приходилось угадывать по тексту — 217
+        # нечётких догадок там, где бэкенд всё это время знал точно.
+        try:
+            self.last_finish_reason = (resp.get("choices") or [{}])[0].get("finish_reason")
+        except Exception:
+            self.last_finish_reason = None
 
         completion_tokens = usage.get("completion_tokens", 0)
         tps = completion_tokens / elapsed if elapsed > 0 else 0.0

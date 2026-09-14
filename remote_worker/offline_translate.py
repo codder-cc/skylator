@@ -411,17 +411,31 @@ class OfflineTranslateRunner:
                         stored=stored if reviewing else None,
                         req_terms=req_terms if reviewing else None)
 
+                cut_by_length = getattr(state.backend, "last_finish_reason", None) == "length"
+                last_filled = max((k for k, t in enumerate(translations) if (t or "").strip()),
+                                  default=-1)
+                if cut_by_length:
+                    log.warning("OfflineTranslateRunner[%s]: генерация упёрлась в потолок — "
+                                "строка %d из %d обрезана", self._aid[:8], last_filled + 1,
+                                len(batch))
+
                 for j, b in enumerate(batch):
                     original    = b.get("original") or ""
                     translation = translations[j] if j < len(translations) else ""
                     if not translation:
                         continue   # leave manifest done=0 → retried next pass / next run
                     qs     = _inline_quality_score(original, translation)
+                    _cut_here = cut_by_length and j == last_filled
+                    # Генерация упёрлась в потолок — значит последняя выданная строка
+                    # оборвана на полуслове, а не закончена. Бэкенд знает это точно;
+                    # до сих пор мастер угадывал по тексту.
+                    if _cut_here:
+                        qs = min(qs, 60)
                     # Same gate as scripts/esp_engine.py:631 — anything the scorer is not
                     # confident about goes to review instead of silently counting as done.
                     # Untranslated passthrough scores 30 here; it used to be stored as
                     # "translated", so English text landed in the DB as finished work.
-                    status = "translated" if qs > 70 else "needs_review"
+                    status = "translated" if (qs > 70 and not _cut_here) else "needs_review"
                     # DURABILITY POINT — commit before any network delivery happens.
                     seq = self._store.write_result(
                         assignment_id = self._aid,

@@ -277,15 +277,25 @@ class MlxBackend(BaseBackend):
             stream_kwargs = {k: v for k, v in gen_kwargs.items() if k != "verbose"}
             # response.text is the NEXT segment, not the text so far — accumulate it.
             segments: list[str] = []
+            last_response = None
             for response in mlx_lm.stream_generate(
                 self._model, self._tokenizer, prompt=prompt, **stream_kwargs
             ):
                 segments.append(response.text or "")
+                last_response = response
                 if stop_check():
                     log.info("MlxBackend._infer: stop requested — aborting after %d chars",
                              sum(len(x) for x in segments))
                     return ""
+            # Почему генерация кончилась. mlx_lm сообщает это сам, где умеет; где не
+            # умеет — упор в потолок виден по числу выданных сегментов. Раньше обрыв
+            # книги на полуслове приходилось угадывать по тексту.
+            self.last_finish_reason = getattr(last_response, "finish_reason", None)
+            if self.last_finish_reason is None:
+                cap = gen_kwargs.get("max_tokens") or 0
+                self.last_finish_reason = "length" if cap and len(segments) >= cap else "stop"
             return "".join(segments).strip()
 
         raw = mlx_lm.generate(self._model, self._tokenizer, prompt=prompt, **gen_kwargs)
+        self.last_finish_reason = None      # generate() причину не возвращает
         return raw.strip()

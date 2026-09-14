@@ -12,6 +12,8 @@
 оформлением — это единственное, что здесь решается без модели. Остальное отдаётся на
 решение, по одному на кластер: 5 718 решений вместо 27 378 строк.
 """
+import pytest
+
 from translator.db.repo import StringRepo
 from translator.validation.consistency import (
     Cluster, apply_casing, casing_only, find_name_clusters, report, split_clusters,
@@ -210,3 +212,60 @@ def test_ok_is_deliberately_not_in_the_list():
     """45 строк пишут «ОК» кириллицей, 37 «OK» латиницей, и обе формы правильны.
     Это единообразие, а не верность, и выбирать за коллекцию тут нечем."""
     assert "ok" not in UNAMBIGUOUS
+
+
+# ── семейство имён ───────────────────────────────────────────────────────────
+#
+#     Ebony                        →  «Эбонит»
+#     Ebony Crossbow of Enervation →  «Арбалет из обсидиана Истощения»
+#
+# Каждое имя по отдельности безупречно, и кластерная проверка молчит: у каждого ровно
+# один вариант. Разъезжается семья.
+#
+# Признак искался трижды, и это главное про эту проверку:
+#
+#     префикс в 5 букв      7 809 «семей», почти всё ложное
+#     леммы (pymorphy3)     8 735, не лучше: «Вода» → «Водная хэг» тоже верно
+#     леммы ИЛИ общий корень 3 960, и вот это уже настоящее
+#
+# Русский образует такие имена прилагательным от существительного, и ни склонение, ни
+# лемматизация этой связи не покрывают.
+
+from translator.validation.consistency import base_is_present, find_broken_families  # noqa: E402
+
+
+@pytest.mark.parametrize("base, derived", [
+    ("Тень", "Теневая невидимость"),      # словообразование, корень укорачивается
+    ("Вода", "Водная хэг"),
+    ("Эбонит", "Эбонитовый лук"),
+    ("Сталгрим", "Сталгримовая броня"),
+    ("Эльфийская секира", "Эльфийской секиры пламени"),   # склонение обоих слов
+])
+def test_a_derived_name_that_kept_its_base(base, derived):
+    assert base_is_present(base, derived)
+
+
+@pytest.mark.parametrize("base, derived, why", [
+    ("Эбонит", "Арбалет из обсидиана Истощения", "два материала для одного слова"),
+    ("Люсьен", "Люциен Надина Заглушка", "имя разъехалось"),
+    ("Мороз", "Ледяная волна", "база пропала совсем"),
+    ("Двемерский боевой топор", "Дварвенский боевой топор Великого Разрушения",
+     "транслитерация разъехалась"),
+])
+def test_a_derived_name_that_lost_its_base(base, derived, why):
+    assert not base_is_present(base, derived), why
+
+
+def test_suppletion_is_a_known_miss():
+    """«кошка» и «кот» — одно существо и разные слова, и ни морфология, ни корень
+    этого не связывают. Записано как известный промах, а не притворяется решённым."""
+    assert not base_is_present("Белая кошка", "Кольцо Белого Кота")
+
+
+def test_the_family_check_finds_a_broken_one(fakedb):
+    _seed(fakedb, "Ebony", "Эбонит", n=3)
+    _seed(fakedb, "Ebony Crossbow", "Арбалет из обсидиана", n=2)
+    _seed(fakedb, "Ebony Bow", "Эбонитовый лук", n=2)
+    fakedb.commit()
+    found = find_broken_families(StringRepo(fakedb))
+    assert [f["derived"] for f in found] == ["Ebony Crossbow"]

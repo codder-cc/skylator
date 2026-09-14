@@ -280,3 +280,103 @@ def fix_unambiguous_buttons(repo, dry: bool = True) -> dict:
     if not dry:
         repo.db.commit()
     return changed
+
+
+# ── семейство имён: база и всё, что от неё образовано ────────────────────────
+#
+#     Ebony                        →  «Эбонит»
+#     Ebony Crossbow of Enervation →  «Арбалет из обсидиана Истощения»
+#
+# Каждое имя по отдельности безупречно, и кластерная проверка молчит: у каждого ровно
+# один вариант. Разъезжается СЕМЬЯ, и увидеть это можно только глядя на базу и
+# производные вместе.
+#
+# Проверка прямая: если английское имя A целиком начинает имя B, то русское A должно
+# как-то присутствовать в русском B.
+#
+# «Как-то» здесь пришлось искать трижды, и это главное, что стоит знать про эту функцию:
+#
+#   по префиксу в 5 букв     7 809 «семей» — почти всё ложное: «Белая кошка» →
+#                            «Кольцо Белого Кота» верно, а префикс этого не видит
+#   по леммам (pymorphy3)    8 735 — не лучше: «Вода» → «Водная хэг» тоже верно, но
+#                            «водный» это другая лемма, словообразование, а не склонение
+#   леммы ИЛИ общий корень   3 960 — и вот это уже настоящее
+#
+# Русский образует такие имена прилагательным от существительного, и ни склонение, ни
+# лемматизация этой связи не покрывают. Общий корень покрывает.
+#
+# Остаётся хвост ложных: «Тень» → «Теневая невидимость» — то же словообразование, где
+# корень укорачивается. Поэтому короткое слово сравнивается по трём буквам, длинное по
+# четырём.
+
+_FAMILY_PREFIX_LONG = 4
+_FAMILY_PREFIX_SHORT = 3
+_FAMILY_SHORT_WORD = 6
+_FAMILY_WORD_RE = re.compile(r"[А-Яа-яЁё]{3,}")
+_FAMILY_FUNCTION = frozenset("из в на с со от для и у к по о об до над под при за без".split())
+
+
+def _family_words(text: str) -> list[str]:
+    return [w for w in _FAMILY_WORD_RE.findall((text or "").lower())
+            if w not in _FAMILY_FUNCTION]
+
+
+def _root(word: str) -> str:
+    n = _FAMILY_PREFIX_SHORT if len(word) < _FAMILY_SHORT_WORD else _FAMILY_PREFIX_LONG
+    return word[:n]
+
+
+def base_is_present(base_ru: str, derived_ru: str) -> bool:
+    """Присутствует ли русское имя базы в русском имени производного."""
+    from translator.validation.terminology import _lemma, _text_lemmas
+
+    need = _family_words(base_ru)
+    if not need:
+        return False
+    have_lemmas = _text_lemmas(derived_ru)
+    have_roots = [_root(w) for w in _family_words(derived_ru)]
+
+    def rooted(word: str) -> bool:
+        # Не равенство корней, а «один начинает другой»: «Тень» даёт «тен», «Теневая»
+        # даёт «тене», и требовать совпадения длин значило бы снова ловить правильное.
+        r = _root(word)
+        return any(r.startswith(h) or h.startswith(r) for h in have_roots)
+
+    return all((_lemma(w) & have_lemmas) or rooted(w) for w in need)
+
+
+def find_broken_families(repo, max_base_words: int = 3) -> list[dict]:
+    """Имена, потерявшие базу, от которой они образованы.
+
+    База — имя из одного-трёх слов; производное начинается с неё и продолжается. Для
+    каждого имени берётся то, как коллекция называет его чаще всего: разнобой внутри
+    одного имени — работа find_name_clusters, здесь он только помешал бы.
+    """
+    by_source: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
+    sql = ("SELECT original, translation, rec_type FROM strings "
+           "WHERE status='translated' AND field_type='FULL' "
+           "AND TRIM(COALESCE(translation,'')) <> '' AND translation <> original")
+    for row in repo.db.execute(sql).fetchall():
+        if row["rec_type"] not in NAME_RECORDS:
+            continue
+        o, t = (row["original"] or "").strip(), (row["translation"] or "").strip()
+        if MIN_LEN <= len(o) <= MAX_LEN and _CYRILLIC_RE.search(t):
+            by_source[o][t] += 1
+    canon = {o: c.most_common(1)[0][0] for o, c in by_source.items()}
+
+    by_first: dict[str, list[str]] = collections.defaultdict(list)
+    for o in canon:
+        by_first[o.split()[0].lower()].append(o)
+
+    out: list[dict] = []
+    for base, base_ru in canon.items():
+        words = base.split()
+        if not (1 <= len(words) <= max_base_words) or len(base) < 5:
+            continue
+        for derived in by_first.get(words[0].lower(), ()):
+            if derived == base or not derived.lower().startswith(base.lower() + " "):
+                continue
+            if not base_is_present(base_ru, canon[derived]):
+                out.append({"base": base, "base_ru": base_ru,
+                            "derived": derived, "derived_ru": canon[derived]})
+    return out

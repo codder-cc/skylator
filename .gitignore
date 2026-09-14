@@ -52,3 +52,4 @@ desktop.ini
 
 # ── Malformed pip install artefacts (e.g. "pip install =0.x.x") ─────────────
 =*
+worker_data/

@@ -84,7 +84,7 @@ def stamp() -> str:
 _BANDS = {
     "windows-DeadLine":       (None, 6000, 3072),
     "darwin-int00mac-5YVL25": (None,  400, 2048),
-    "darwin-int00mac-7PKF2W": (6000, None, 16384),
+    "darwin-int00mac-7PKF2W": (400, None, 16384),
 }
 _DEFAULT_BAND = (None, 1200, 2048)
 

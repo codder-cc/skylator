@@ -2564,7 +2564,7 @@ def workers_offline_results(label: str):
 
         try:
             if repo is not None and cfg is not None:
-                string_mgr.save_string(
+                _saved = string_mgr.save_string(
                     mod_name=mod_name, esp_name=esp_name, key=key,
                     translation=translation, original=original,
                     source="ai", machine_label=label, job_id=host_job_id,
@@ -2595,7 +2595,16 @@ def workers_offline_results(label: str):
                 # с эхом промпта «Have you been in Dawnstar long? ⇥ Вы давно в Данстар?»
                 # лежали принятыми, притом что правило на них есть и срабатывает.
                 from translator.validation.quality import compute_string_status as _css
-                _dup_text = translation
+                # То, что решили ворота, а не то, что прислал агент. Ворота отвергли
+                # английское эхо для самой строки — и разнос тут же писал его во все
+                # двойники, потому что брал `translation`, а не результат save_string.
+                # Десять строк за один проход вернулись к английскому источнику именно
+                # так: «It was all I could do to find a place to hide…» легло вместо
+                # готового русского перевода в каждую копию.
+                #
+                # Дырой был не разнос сам по себе, а то, что он не спрашивал исхода.
+                _dup_text = (_saved.translation
+                             if getattr(_saved, "translation", None) else translation)
                 # Размножение идёт сырым SQL по всем двойникам, мимо ворот записи, а
                 # значит и мимо таблицы авторитета. Двойники делят один английский
                 # источник, поэтому ответ таблицы у них общий — кроме ветки, которая

@@ -17,6 +17,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from translator.validation.quality import compute_string_status
+
 log = logging.getLogger(__name__)
 
 PULL_INTERVAL  = 30   # seconds between reconciliation sweeps
@@ -47,10 +49,11 @@ def apply_pulled_results(string_mgr, astore, agent_label: str, results: list[dic
             rejected += 1
             log.warning("pull: hash mismatch from %s for %s/%s — rejected", agent_label, mod, key)
             continue
-        string_mgr.save_string(
+        saved_res = string_mgr.save_string(
             mod_name=mod, esp_name=esp, key=key, translation=translation,
             original=original, source="remote_agent", machine_label=agent_label,
             quality_score=r.get("quality_score"), status=r.get("status"),
+            rec_type=r.get("rec_type") or None, field_type=r.get("field_type") or None,
             # Arrival order is not ours to control: an agent presumed dead can return
             # with work that was reassigned meanwhile. Keep the better of the two.
             merge=True,
@@ -60,10 +63,18 @@ def apply_pulled_results(string_mgr, astore, agent_label: str, results: list[dic
         # live one. Fill every still-pending twin with this result instead of paying an
         # agent to translate it again. Never touches a row that already has a
         # translation, so nothing can be overwritten.
+        # Разносится то, что решили ворота, и с тем статусом, который они присвоили.
+        # Здесь стояло `r.get("status") or "translated"` — заявление агента, а агент
+        # всегда говорит «готово», — и оно шло сырым SQL прямо в двойники, минуя
+        # единственную точку суждения. Тот же обход в офлайн-пути уложил английское эхо
+        # источника в каждую копию десяти строк: ворота его отвергли, разнос записал.
         try:
+            dup_text = getattr(saved_res, "translation", "") or translation
+            dup_qs, _tok, _iss, dup_status = compute_string_status(
+                original, dup_text, string_mgr._glossary(),
+                r.get("rec_type") or None, r.get("field_type") or None)
             n_dup = string_mgr._repo.apply_to_pending_duplicates(
-                r.get("string_hash") or "", translation,
-                r.get("status") or "translated", r.get("quality_score"))
+                r.get("string_hash") or "", dup_text, dup_status, dup_qs)
             if n_dup:
                 dup_filled += n_dup
         except Exception:

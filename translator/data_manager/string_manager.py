@@ -32,6 +32,11 @@ class SaveResult:
     status: str
     string_id: int
     was_inserted: bool
+    # Текст, который РЕАЛЬНО лёг в строку. Не то же, что прислал вызывающий: ворота
+    # могли оставить хранимый перевод или подставить официальный. Без этого поля
+    # вызывающий не знал исхода и разносил по двойникам то, что ворота только что
+    # отвергли, — так десять строк вернулись к английскому источнику за один проход.
+    translation: str = ""
 
 
 def _sha256_hash(text: str) -> str:
@@ -219,6 +224,7 @@ class StringManager:
                         status        = existing["status"] or "translated",
                         string_id     = existing["id"],
                         was_inserted  = False,
+                        translation   = prev,
                     )
                 translation     = best["translation"]
                 computed_qs     = best["quality_score"]
@@ -303,6 +309,7 @@ class StringManager:
             status=computed_status or "pending",
             string_id=string_id or 0,
             was_inserted=string_id is not None,
+            translation=translation or "",
         )
 
     def _ledger_write(self, mod_name, esp_name, key, original, translation, agent, job_id):

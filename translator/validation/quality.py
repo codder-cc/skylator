@@ -645,6 +645,77 @@ def truncation_violations(original: str, translation: str) -> list[str]:
     return [f"cut off mid-sentence at {len(t) / len(o):.0%} of the source: …{t[-40:]}"]
 
 
+# ── потерянное отрицание ──────────────────────────────────────────────────────
+#
+#     "I dare not."                    →  «Я осмелюсь.»
+#     "someone can't grow up..."       →  «кто-то может вырасти...»
+#     "No more Skooma please."         →  «Больше скумы, пожалуйста.»
+#
+# Противоположный смысл, и ни одно другое правило его не видит: русский нормальный,
+# токены целы, длина верна, счёт 100.
+#
+# Первая версия искала «не» отдельным словом и захлебнулась на приставочном отрицании —
+# «Not enough» → «Недостаточно» объявлялось потерей. Затыкать это списком приставок
+# бессмысленно, поэтому вопрос задан морфологии: «не» это частица, а «недостаточно» —
+# одно слово, которое без «не» не существует.
+#
+# Третий случай — отрицание без «не» вовсе: «It's not often» → «Редко бывает», «not a
+# lot going on» → «без особых событий». Это закрытый список, потому что иначе догадки.
+#
+# Замер: из 52 433 строк, где источник отрицает, отрицания нет в 216. При чтении около
+# 60% настоящие — для класса «сказано наоборот» этого достаточно.
+
+_EN_NEGATION_RE = re.compile(
+    r"\b(?:not|never|cannot|can't|won't|don't|doesn't|didn't|isn't|aren't|wasn't|"
+    r"weren't|shouldn't|couldn't|wouldn't|haven't|hasn't|hadn't|nothing|nobody|"
+    # Голое «no» сюда не входит: оно слишком многозначно — «no» как ответ, как метка,
+    # как часть «no. 5». А «no more» и «no longer» однозначны.
+    r"no\s+more|no\s+longer|none\s+of)\b", re.I)
+
+_RU_LEXICAL_NEG_RE = re.compile(
+    r"(?<![А-Яа-яЁё])(?:только|лишь|редко|вряд\s+ли|едва|хватит|отказ|запрещ|"
+    r"бесполезно|напрасно|отсутств|кроме|прекрат|перестал|забыл|избега|мало|"
+    r"всё\s+равно|все\s+равно|всё\s+же|все\s+же|плевать|безразличн|нечего|некому|"
+    r"негде|некогда|без|сомнева|сомнительно|отговорк|вместо|пуст|кончил)", re.I)
+
+_RU_WORD_RE = re.compile(r"[А-Яа-яЁё]+")
+_POLARITY_MAX_LEN = 400          # длиннее — отрицание может относиться к другой фразе
+
+
+def _word_negates(word: str) -> bool:
+    """Слово несёт отрицание — частицей или приставкой."""
+    w = (word or "").lower()
+    if w in ("не", "ни", "нет", "нельзя"):
+        return True
+    if len(w) > 4 and w.startswith(("не", "ни")):
+        return True
+    from translator.validation.terminology import _morph
+    m = _morph()
+    if m is None:
+        return False
+    try:
+        return any("PRCL" in p.tag and p.normal_form in ("не", "ни") for p in m.parse(w))
+    except Exception:
+        return False
+
+
+def polarity_violations(original: str, translation: str) -> list[str]:
+    """Источник отрицает, а перевод — нет."""
+    o = _strip_all_tokens(original or "")
+    t = _strip_all_tokens(translation or "")
+    if not o or not t or len(o) > _POLARITY_MAX_LEN:
+        return []
+    if not _CYRILLIC_RE.search(t):
+        return []
+    if not _EN_NEGATION_RE.search(o):
+        return []
+    if _RU_LEXICAL_NEG_RE.search(t):
+        return []
+    if any(_word_negates(w) for w in _RU_WORD_RE.findall(t)):
+        return []
+    return ["negation in the source is missing from the translation"]
+
+
 def trailing_stop_violations(original: str, translation: str,
                              rec_type: str | None = None,
                              field_type: str | None = None) -> list[str]:
@@ -713,6 +784,7 @@ def compute_string_status(original: str, translation: str,
                       + prompt_scaffold_violations(translation)
                       + untranslated_word_violations(original, translation, terms)
                       + truncation_violations(original, translation)
+                      + polarity_violations(original, translation)
                       + developer_note_violations(original, translation,
                                                 rec_type, field_type)
                       + trailing_stop_violations(original, translation,

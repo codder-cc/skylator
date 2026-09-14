@@ -22,8 +22,10 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -54,14 +56,43 @@ def is_vanilla_override(form_id: str | None) -> bool:
     return len(fid) >= 2 and fid[:2].upper() in _VANILLA_PLUGINS
 
 
+# Десятая доля таблицы отрезана по хешу источника и служит линейкой: это единственная
+# внешняя мера качества корпуса, которую нельзя подогнать, потому что ответы на эти
+# строки не входят ни в память переводов, ни в реестр имён, ни в промпт.
+#
+# Правило авторитета обходит их стороной — иначе линейка мерила бы саму себя. Строки от
+# этого остаются с машинным переводом, и в конце работы их надо выровнять отдельным
+# прогоном: SKYLATOR_APPLY_HOLDOUT=1 снимает исключение. 2 552 пары из 463 463 строк,
+# то есть 0,3% корпуса, — приемлемая цена за возможность что-то замерить.
+_HOLDOUT_SHARE = 10
+
+
+def _in_holdout(source: str) -> bool:
+    digest = hashlib.sha256((source or "").encode("utf-8")).hexdigest()
+    return int(digest[:8], 16) % _HOLDOUT_SHARE == 0
+
+
+def _holdout_allowed() -> bool:
+    return os.environ.get("SKYLATOR_APPLY_HOLDOUT", "").strip() in ("1", "true", "yes")
+
+
 @lru_cache(maxsize=1)
 def load_official() -> dict:
-    """EN→RU из официальной локализации. Пусто — правило просто молчит."""
+    """EN→RU из официальной локализации. Пусто — правило просто молчит.
+
+    Строки линейки исключаются, пока SKYLATOR_APPLY_HOLDOUT не сказано обратное.
+    """
     try:
-        return json.loads(_TABLE_PATH.read_text(encoding="utf-8"))
+        table = json.loads(_TABLE_PATH.read_text(encoding="utf-8"))
     except Exception as exc:
         log.warning("authority: официальная таблица не прочитана (%s), правило выключено", exc)
         return {}
+    if _holdout_allowed():
+        return table
+    kept = {en: ru for en, ru in table.items() if not _in_holdout(en)}
+    log.info("authority: таблица %d пар, линейка (%d) исключена",
+             len(kept), len(table) - len(kept))
+    return kept
 
 
 def official_override(original: str, translation: str, form_id: str | None = None,

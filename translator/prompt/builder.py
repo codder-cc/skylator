@@ -225,6 +225,12 @@ place names — do NOT leave them in English unless they are untranslatable bran
 - ⟨H0⟩, ⟨H1⟩, ⟨H2⟩… are HTML formatting tokens — keep each one exactly in place, \
 translate only the text around them.
 - Copy {{T0}}, {{T1}}... token placeholders verbatim — they are runtime-substituted game values.
+- Russian has two second-person forms and English has one, so the choice is the \
+translator's and must be the same everywhere. Address the player as "ты" (informal \
+singular), with the verb agreeing. This is what the official Russian Skyrim uses: of \
+its lines that mark the distinction, 86% are "ты". Use "вы" only where the speaker is \
+plainly addressing several people, or is a noble, Thalmor, or servant using deliberate \
+formality.
 - Output ONLY the numbered translations — no commentary, no explanations."""
 
 _HYMT_TMPL = """\

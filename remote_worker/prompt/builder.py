@@ -28,6 +28,7 @@ place or item is an error even when it reads well on its own.
 - ⟨H0⟩, ⟨H1⟩, ⟨H2⟩… are HTML formatting tokens — keep each one exactly in place, \
 translate only the text around them.
 - Copy {{T0}}, {{T1}}... token placeholders verbatim — they are runtime-substituted game values.
+- Russian has two second-person forms and English has one, so the choice is the translator's and must be the same everywhere. Address the player as "ты" (informal singular), with the verb agreeing. This is what the official Russian Skyrim uses: of its lines that mark the distinction, 86% are "ты". Use "вы" only where the speaker is plainly addressing several people, or is a noble, Thalmor, or servant using deliberate formality.
 - Output ONLY the numbered translations — no commentary, no explanations."""
 
 _DEFAULT_SYSTEM = (
@@ -63,6 +64,11 @@ good work for the sake of changing it.
 - Fix: wrong or invented words, proper nouns rendered as a different name, English left \
 inside the Russian, half-translated words mixing both alphabets, text that repeats the \
 source before the translation, and anything omitted from the source.
+- Also fix the form of address: the player is "ты" (informal singular), with the verb \
+agreeing — «Чем я могу вам помочь?» becomes «Чем я могу тебе помочь?». The official \
+Russian Skyrim uses "ты" in 86% of the lines that mark the distinction, and one modpack \
+cannot address the same player both ways. Keep "вы" only where the speaker addresses \
+several people, or is a noble, Thalmor, or servant using deliberate formality.
 - Preserve formatting tokens and placeholders (<Alias=...>, %1, [PlayerName]) exactly, \
 along with ⟨NL⟩, ⟨H0⟩⟨H1⟩⟨H2⟩ and {{T0}}{{T1}} — copy them verbatim.
 - Never output the source text, an explanation, or the ⇥ separator. \

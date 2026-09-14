@@ -29,6 +29,7 @@
 лежали бы сутки, пока быстрые стоят. Раздано работу назад не забрать.
 
     python scripts/fleet_keeper.py                      # 8 часов, порция 700
+    python scripts/fleet_keeper.py --skip darwin-int00mac-7PKF2W   # машина занята хозяином
     python scripts/fleet_keeper.py --hours 2 --chunk 300
 """
 import argparse
@@ -58,6 +59,41 @@ def stamp() -> str:
     return time.strftime("%H:%M:%S")
 
 
+# Полоса длины на машину, и она выведена из двух замеров, а не из удобства.
+#
+# Очередь ревью на 85% состоит из коротких строк, но по ОБЪЁМУ на 94% из книг: 950 строк
+# длиннее 1 200 знаков несут 6,3 млн знаков из 6,7. Раздавать её вслепую значит посадить
+# все машины на книги, пока восемь тысяч коротких строк ждут, — и ровно это произошло:
+# очередь падала на 2–3 строки в минуту при трёх работающих машинах.
+#
+# Куда что идти:
+#   llama.cpp на 5080 — самая быстрая машина парка (62 токена/с против 41 у MLX), но её
+#   контекст 8 192 токена на ВСЁ, промпт плюс ответ. Источник на 6 000 знаков это ~2 400
+#   токенов промпта плюс столько же ответа, и это последнее, что туда влезает. Поднять
+#   контекст нельзя: из 16,3 ГБ VRAM 11,9 уже занято, при том что сама модель 3,8 ГБ, —
+#   остальное KV-кэш, и удвоение его не поместится. Ей всё до 6 000 знаков.
+#
+#   MLX предела по контексту не имеет (151 000 и 580 000 по опросу машин), поэтому книги
+#   длиннее идут только туда, и потолок вывода поднимается под длину: при стандартных
+#   2 048 токенах книга возвращается обрезанной на полуслове — так обрезано 154 книги,
+#   половина из тех, что длиннее 10 000 знаков.
+#
+#   Медленная машина парка (5,7 токена/с) получает только короткое: там на строку уходят
+#   десятки токенов, а не тысячи, и её вклад виден. Средняя книга на ней считается минут
+#   двадцать — 254 таких книги это две недели.
+_BANDS = {
+    "windows-DeadLine":       (None, 6000, 3072),
+    "darwin-int00mac-5YVL25": (None,  400, 2048),
+    "darwin-int00mac-7PKF2W": (6000, None, 16384),
+}
+_DEFAULT_BAND = (None, 1200, 2048)
+
+
+def band(label: str):
+    """(min_chars, max_len, max_tokens) для машины; незнакомой — короткое и безопасное."""
+    return _BANDS.get(label, _DEFAULT_BAND)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--hours", type=float, default=8.0)
@@ -67,7 +103,12 @@ def main() -> None:
     # где они лежали бы сутки, пока быстрые машины стоят. Раздано работу назад не
     # забрать, поэтому порция должна кончаться быстрее, чем освобождается сосед.
     ap.add_argument("--chunk", type=int, default=700)
+    # Машина может понадобиться хозяину. Раздавать на неё нельзя, и снимать с неё чужие
+    # пакеты тоже: она не «зависла», она занята не нами.
+    ap.add_argument("--skip", action="append", default=[],
+                    help="метка машины, которую не трогать (можно несколько раз)")
     args = ap.parse_args()
+    skip = set(args.skip)
     deadline = time.time() + args.hours * 3600
     scopes = ["terms", "flagged"]
     scope_i = 0
@@ -101,6 +142,8 @@ def main() -> None:
         # воскрешённым. Пятнадцать минут длиннее любой книги, а воскрешённый остаток
         # лежит нулём сколько угодно, так что различает надёжно.
         for w in workers:
+            if w["label"] in skip:
+                continue
             jobs = w.get("offline_jobs") or []
             if len(jobs) < 2 or not any(x.get("done") for x in jobs):
                 for x in jobs:
@@ -135,6 +178,8 @@ def main() -> None:
         # опрос не доказательство: между пакетами такое состояние бывает на пару секунд,
         # поэтому нужно два подряд.
         for w in workers:
+            if w["label"] in skip:
+                continue
             jobs = w.get("offline_jobs") or []
             health = w.get("health") or {}
             starved = (jobs and not health.get("open_assignments")
@@ -165,7 +210,8 @@ def main() -> None:
             break
 
         idle = [w["label"] for w in workers
-                if w.get("alive") and not (w.get("offline_jobs") or [])]
+                if w.get("alive") and w["label"] not in skip
+                and not (w.get("offline_jobs") or [])]
         busy = [(w["label"], sum(x.get("done", 0) for x in (w.get("offline_jobs") or [])),
                  sum(x.get("total", 0) for x in (w.get("offline_jobs") or [])))
                 for w in workers if (w.get("offline_jobs") or [])]
@@ -180,28 +226,34 @@ def main() -> None:
             continue
 
         scope = scopes[scope_i % len(scopes)]
-        try:
-            job = post("/jobs/create", {"type": "review_strings",
-                                        "options": {"scope": scope, "machines": idle,
-                                                    "limit": args.chunk * len(idle)}})
-            jid = job.get("job_id")
-            print(f"{stamp()}  {scope} → {', '.join(idle)}  "
-                  f"порция {args.chunk * len(idle)}  (очередь {queue})",
-                  file=out, flush=True)
-            # Ждём, пока раздача дойдёт до пакетов, иначе следующий круг увидит те же
-            # машины свободными и отменит только что выданное.
-            for _ in range(24):
-                time.sleep(5)
-                d = get(f"/api/jobs/{jid}")
-                if d.get("status") in ("done", "failed", "cancelled", "offline_dispatched"):
-                    for line in (d.get("log_lines") or [])[-3:]:
-                        print(f"      {str(line)[:120]}", file=out, flush=True)
-                    break
-            # Если область ничего не дала — пробуем следующую на следующем круге.
-            scope_i += 1
-        except Exception as exc:
-            print(f"{stamp()}  раздача {scope} не удалась: {exc}", file=out, flush=True)
-            scope_i += 1
+        for label in idle:
+            lo, hi, ceiling = band(label)
+            opts = {"scope": scope, "machines": [label], "max_tokens": ceiling,
+                    "limit": args.chunk}
+            if lo:
+                opts["min_chars"] = lo
+            if hi:
+                opts["max_len"] = hi
+            try:
+                job = post("/jobs/create", {"type": "review_strings", "options": opts})
+                jid = job.get("job_id")
+                print(f"{stamp()}  {scope} {lo or 0}–{hi or '∞'} знаков → {label}  "
+                      f"потолок {ceiling}  (очередь {queue})", file=out, flush=True)
+                # Ждём, пока раздача дойдёт до пакета, иначе следующий круг увидит ту же
+                # машину свободной и выдаст ей вторую порцию поверх первой.
+                for _ in range(24):
+                    time.sleep(5)
+                    d = get(f"/api/jobs/{jid}")
+                    if d.get("status") in ("done", "failed", "cancelled",
+                                           "offline_dispatched"):
+                        for line in (d.get("log_lines") or [])[-2:]:
+                            print(f"      {str(line)[:120]}", file=out, flush=True)
+                        break
+            except Exception as exc:
+                print(f"{stamp()}  раздача {scope} на {label} не удалась: {exc}",
+                      file=out, flush=True)
+        # Если область ничего не дала — пробуем следующую на следующем круге.
+        scope_i += 1
         time.sleep(args.every)
 
     print(f"{stamp()}  срок смотрителя истёк", file=out, flush=True)

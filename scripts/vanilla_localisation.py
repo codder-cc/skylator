@@ -66,8 +66,19 @@ def unpack_interface_bsa(bsa: Path, bsarch: Path, dest: Path) -> Path:
 
 
 def load_pairs(strings_dir: Path, language: str = "russian") -> dict[str, str]:
-    """{английский текст: официальный перевод} по всем плагинам в каталоге."""
-    pairs: dict[str, str] = {}
+    """{английский текст: официальный перевод} по всем плагинам в каталоге.
+
+    Источник, у которого официальных передач больше одной, выбрасывается целиком.
+    Раньше здесь стоял setdefault — брал первую попавшуюся и молча терял остальные, а
+    таблица авторитета, которая угадывает, авторитетом быть перестаёт:
+
+        Frost Cloaked Spider  →  «Окутанный морозом паук»  ИЛИ  «Электрический паук-прыгун»
+
+    Это два разных существа с одним английским именем в разных плагинах, и выбрать за
+    игру тут нечем. Таких 709 из 25 984 — 2,7%, и верх этого списка вообще не переводы,
+    а таблицы подстановки шрифтов: «j», «R», «x» против случайных кириллических глифов.
+    """
+    seen: dict[str, dict[str, int]] = {}
     for en_path in sorted(strings_dir.glob("*_english.*")):
         kind = KINDS.get(en_path.suffix.lower())
         if kind is None:
@@ -87,7 +98,17 @@ def load_pairs(strings_dir: Path, language: str = "russian") -> dict[str, str]:
                 continue
             e, r = etext.strip(), rtext.strip()
             if e and r and e != r:
-                pairs.setdefault(e, r)                # первый плагин выигрывает: Skyrim.esm
+                seen.setdefault(e, {})[r] = seen.setdefault(e, {}).get(r, 0) + 1
+    pairs: dict[str, str] = {}
+    dropped = 0
+    for en, renderings in seen.items():
+        distinct = {cosmetic_key(x) for x in renderings}
+        if len(distinct) > 1:
+            dropped += 1
+            continue                      # игра сама называет это по-разному
+        pairs[en] = max(renderings.items(), key=lambda kv: kv[1])[0]
+    if dropped:
+        print(f"  выброшено как неоднозначное: {dropped}", file=out)
     return pairs
 
 
@@ -216,3 +237,75 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# Ванильные FormID: Skyrim.esm 00, Update 01, Dawnguard 02, HearthFires 03, Dragonborn 04.
+# Запись мода с таким FormID — это ПЕРЕОПРЕДЕЛЕНИЕ ванильной, тот же объект игры, уже
+# названный официальной локализацией.
+_VANILLA_PLUGINS = ("00", "01", "02", "03", "04")
+_TAIL_COLON_RE = re.compile(r"[:：]\s*$")
+
+
+def is_vanilla_override(form_id: str) -> bool:
+    fid = (form_id or "").strip()
+    return len(fid) >= 2 and fid[:2].upper() in _VANILLA_PLUGINS
+
+
+def apply_vanilla_overrides(repo, pairs: dict[str, str], dry: bool = True) -> dict:
+    """Выровнять по официальной локализации записи, переопределяющие ванильные.
+
+    Имена применены отдельно. Здесь остальное — описания эффектов, цели квестов, реплики
+    — но только там, где мод переопределяет ванильную запись: игрок видит тот же объект,
+    и если базовая игра зовёт его «Магия», а мод «Магикка», это то же расхождение.
+
+    Из 18 159 оставшихся расхождений таких 13 287. Собственные записи мода, у которых
+    просто совпал английский текст, не трогаются: «Hello.» в чужом диалоге принадлежит
+    автору мода, а не Bethesda.
+
+    Не берётся и то, где официальный текст несёт двоеточие под своё место в меню
+    («Прочесть:») или набран заглавными — это оформление интерфейса базовой игры, и в
+    моде оно ни к чему.
+    """
+    import time
+
+    from translator.validation.quality import compute_string_status
+
+    now = time.time()
+    stat = collections.Counter()
+    rows = repo.db.execute(
+        "SELECT id, original, translation, form_id, rec_type, field_type, source "
+        "FROM strings WHERE TRIM(COALESCE(translation,'')) <> ''").fetchall()
+    for r in rows:
+        official = pairs.get((r["original"] or "").strip())
+        ours = (r["translation"] or "").strip()
+        if not official or not ours or ours == official or r["source"] == "vanilla":
+            continue
+        if cosmetic_key(ours) == cosmetic_key(official):
+            continue
+        if not is_vanilla_override(r["form_id"]):
+            stat["своя запись мода — не трогаем"] += 1
+            continue
+        if _TAIL_COLON_RE.search(official) and not _TAIL_COLON_RE.search(ours):
+            stat["подпись меню — не трогаем"] += 1
+            continue
+        if official.isupper() or (r["original"] or "").isupper():
+            stat["заглавными — не трогаем"] += 1
+            continue
+        stat["выровнено"] += 1
+        if dry:
+            continue
+        qs, _tok, _issues, status = compute_string_status(
+            r["original"], official, None, r["rec_type"], r["field_type"])
+        try:
+            repo.insert_history(r["id"], r["translation"], "translated", None,
+                                "vanilla:override", None, None)
+        except Exception as exc:
+            log_line = f"vanilla override: history for {r['id']}: {exc}"
+            print(log_line, file=out)
+        repo.db.execute(
+            "UPDATE strings SET translation=?, status=?, quality_score=?, "
+            "source='vanilla', updated_at=? WHERE id=?",
+            (official, status, qs, now, r["id"]))
+    if not dry:
+        repo.db.commit()
+    return dict(stat)

@@ -618,6 +618,25 @@ def load_terms(curated_path=None, vanilla_path=None, use_cache: bool = True) -> 
             import logging
             logging.getLogger(__name__).warning(
                 "terminology: %s не загружен (%s): %s", what, path.name, exc)
+    # Записи, которые нельзя требовать в прозе. Различить термин с закреплённой
+    # передачей от обычного слова можно только замером: для каждой записи считается,
+    # сколько раз официальная таблица её подтверждает и сколько раз противоречит.
+    # «Stalhrim» — 479 подтверждений против 0, это термин. «Gold» — 96 против 172, и
+    # требовать «Золото» в прозе значит браковать «золотой», «позолота», «деньги».
+    # Такие записи опускаются до уровня реестра: они спрашиваются только в поле имени.
+    #
+    # Замер живёт в scratchpad/term_reliability.py; результат — в файле, потому что
+    # пересчитывать его на каждой загрузке незачем.
+    try:
+        only_names = root / "data" / "terms_name_field_only.json"
+        if only_names.exists():
+            listed = json.loads(only_names.read_text(encoding="utf-8"))
+            if isinstance(listed, list):
+                registry_keys.update(t for t in listed if t in merged)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "terminology: список «только поле имени» не прочитан: %s", exc)
     merged = TermSet(merged, registry=registry_keys)
     if use_cache:
         _TERMS_CACHE.clear()

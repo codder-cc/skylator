@@ -1598,6 +1598,32 @@ def _load_glossary(cfg) -> dict:
 _TERMFIX_MAX_CHARS = 1200
 
 
+def _clean_current(original: str, stored: str) -> str:
+    """Сохранённый перевод без механического мусора — перед тем, как показать модели.
+
+    Пакет ревью несёт строку как «источник ⇥ сохранённый перевод». Если в сохранённом
+    уже сидит эхо, модель видит «источник ⇥ источник ⇥ перевод» и копирует это целиком:
+
+        Conjure Dremora Churl ⇥ Conjure Dremora Churl ⇥ Призвать Дреморского Чурла
+
+    Эхо удваивается на каждом проходе. 2 062 строки в корпусе дошли до такого, и каждая
+    из них — работа, которую проход сам же и испортил, показав модели собственный мусор
+    как образец.
+
+    Чинится тем же strip_echo, что и ремонт, и до отправки: показывать модели то, что мы
+    и сами считаем повреждённым, смысла нет.
+    """
+    from translator.validation.quality import echo_violations, renders_as_garbage, strip_echo
+
+    stored = stored or ""
+    if not echo_violations(original or "", stored):
+        return stored
+    fixed = strip_echo(original or "", stored)
+    if fixed and fixed != stored and not renders_as_garbage(original or "", fixed):
+        return fixed
+    return stored
+
+
 def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                              scope: str = "all", limit: int | None = None,
                              max_chars: int | None = None,
@@ -1714,10 +1740,11 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                 if len(r["original"] or "") > max_chars:
                     skipped_too_long += 1
                     continue
-                item["current"]   = r["translation"]
+                item["current"]   = _clean_current(r["original"], r["translation"])
                 item["req_terms"] = "; ".join(f"{en} = {ru}" for en, ru in bad[:3])
             elif not blind:
-                item["current"] = r["translation"]   # what makes this a review, not a retry
+                # Именно наличие этого поля делает пакет ревью, а не переводом.
+                item["current"] = _clean_current(r["original"], r["translation"])
             by_mod.setdefault(r["mod_name"], []).append(item)
         n = sum(len(v) for v in by_mod.values())
         kind = ("Terminology fix" if fixing_terms else

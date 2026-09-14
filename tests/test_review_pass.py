@@ -401,3 +401,35 @@ def test_the_term_fix_prompt_forbids_markdown():
     p = build_prompt(["The Aedra"], "English", "Russian",
                      current=["Эйдры"], terms=["Aedra = Аэдра"])
     assert "No asterisks, no bold, no markdown" in p
+
+
+# ── проход не должен показывать модели собственный мусор ─────────────────────
+#
+# Пакет ревью несёт строку как «источник ⇥ сохранённый перевод». Если в сохранённом уже
+# сидит эхо, модель видит «источник ⇥ источник ⇥ перевод» и копирует это целиком:
+#
+#     Conjure Dremora Churl ⇥ Conjure Dremora Churl ⇥ Призвать Дреморского Чурла
+#
+# Эхо удваивается на каждом проходе. 2 062 строки в корпусе дошли до такого состояния —
+# каждая из них работа, которую проход сам же и испортил.
+
+def test_the_stored_text_is_cleaned_before_the_model_sees_it():
+    from translator.web.routes.jobs import _clean_current
+    doubled = "Conjure Dremora Churl ⇥ Conjure Dremora Churl ⇥ Призвать Дреморского Чурла"
+    assert _clean_current("Conjure Dremora Churl", doubled) == "Призвать Дреморского Чурла"
+
+
+def test_a_single_echo_is_cleaned_too():
+    from translator.web.routes.jobs import _clean_current
+    assert _clean_current("Bed", "Bed ⇥ Кровать") == "Кровать"
+
+
+def test_clean_work_is_passed_through_untouched():
+    from translator.web.routes.jobs import _clean_current
+    assert _clean_current("Iron Sword", "Железный меч") == "Железный меч"
+
+
+def test_nothing_usable_left_keeps_the_original_text():
+    """Если после снятия эха не остаётся ничего, лучше показать как есть, чем пустоту."""
+    from translator.web.routes.jobs import _clean_current
+    assert _clean_current("Bed", "Bed") == "Bed"

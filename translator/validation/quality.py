@@ -890,9 +890,62 @@ def renders_as_garbage(original: str, translation: str) -> list[str]:
     return out
 
 
-def _candidate_score(original: str, t: str) -> tuple[int, float]:
+_LINE_LATIN_RE = re.compile(r"[A-Za-z]{4,}")
+
+
+def copied_source_share(original: str, translation: str) -> float:
+    """Какая доля перевода — дословно списанный источник.
+
+    Оценка качества считает токены, разметку и отношение длин, и по всем трём статьям
+    дословная копия источника безупречна: разметка на месте, потому что она ИЗ источника,
+    длина совпадает, потому что это он и есть. Копия получает 100.
+
+    Этим и объясняется вот что, найденное в истории живой книги:
+
+        12.09   5 914 знаков, английских абзацев 0%   честный, но обрезанный перевод
+        13.09  21 930 знаков, английских абзацев 80%  ← заменил его и был принят
+
+    Обрезанный перевод получил 0, потому что при обрыве потерялись семь [pagebreak].
+    Копия получила 100. Ворота слияния сравнили 0 и 100 и взяли копию.
+
+    Считается по строкам: строка, в которой нет кириллицы и которая дословно стоит в
+    источнике, — не перевод, а списанное. Доля таких строк и возвращается.
+    """
+    lines = [l.strip() for l in (translation or "").splitlines() if l.strip()]
+    if not lines:
+        return 0.0
+    src = original or ""
+    copied = sum(1 for l in lines
+                 if not _CYRILLIC_RE.search(l) and _LINE_LATIN_RE.search(l) and l in src)
+    return copied / len(lines)
+
+
+def translated_coverage(original: str, translation: str) -> float:
+    """Сколько источника действительно переведено — от 0 до 1.
+
+    Двух бед здесь две, и обе означают «это не перевод»:
+
+        текст списан      разметка на месте и длина совпадает, потому что это источник;
+        текста почти нет  8 знаков на книгу в 39 975.
+
+    Меру пришлось сделать одной, потому что по отдельности каждая ломается об другую.
+    Когда доля списанного стояла отдельной ступенью, она предлагала откатить книгу на
+    39 615 знаков к версии из восьми: там ведь не списано ничего.
+
+    Поэтому: списанное не засчитывается, а то, что осталось, взвешивается по покрытию
+    источника. Половина длины источника считается полным покрытием — русский текст
+    короче английского, и требовать paritet значило бы наказывать хороший перевод.
+    """
+    if not (translation or "").strip():
+        return 0.0
+    genuine = 1.0 - copied_source_share(original, translation)
+    need = max(len(original or "") * 0.5, 1)
+    return genuine * min(1.0, len(translation) / need)
+
+
+def _candidate_score(original: str, t: str) -> tuple[int, float, float]:
     """Comparable rank for picking between two candidates: (would the gate accept it,
-    then the score). Empty/missing sorts below everything.
+    how little of it is copied source, then the score). Empty/missing sorts below all.
 
     The verdict has to come first, and leaving it out is what made the review pass need a
     tie-break to land anything. The score counts tokens, markup and length; it does not
@@ -902,9 +955,20 @@ def _candidate_score(original: str, t: str) -> tuple[int, float]:
     that very string. Two functions deciding "better" by different rules is one too many.
     """
     if not t or not t.strip():
-        return (-1, -1.0)
+        return (-1, -1.0, -1.0)
     qs, tok_ok, _, status = compute_string_status(original, t)
-    return (1 if status == "translated" else 0, qs + (5.0 if tok_ok else 0.0))
+    # Покрытие стоит ОТДЕЛЬНОЙ ступенью, выше баллов, и это не придирка к оформлению.
+    # Вычитать долю списанного из оценки оказалось мало: у копии базовые 100 (разметка
+    # на месте, длина совпадает — это же источник), у честного, но обрезанного перевода
+    # 0 (при обрыве потерялись семь [pagebreak]), и разрыв в сто баллов не перекрывается
+    # никаким вычетом. Копия — не «перевод похуже», а не перевод вовсе, поэтому вопрос
+    # решается до баллов.
+    #
+    # Округление до десятых: разница в пару процентов не должна перевешивать настоящую
+    # разницу в качестве, а разница в разы — должна.
+    return (1 if status == "translated" else 0,
+            round(translated_coverage(original, t), 1),
+            qs + (5.0 if tok_ok else 0.0))
 
 
 def pick_better(original: str, a: str | None, b: str | None,

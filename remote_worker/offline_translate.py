@@ -177,6 +177,49 @@ class OfflineTranslateRunner:
     def cancel(self) -> None:
         self._stop = True
 
+    async def _retranslate_singly(self, originals, state, loop, infer_params, *,
+                                  src_lang, tgt_lang, context, system_prompt, thinking,
+                                  terminology, preserve_tokens, stored, req_terms):
+        """Перевести каждую строку батча отдельным запросом.
+
+        Нужно ровно там, где нумерованный ответ вернулся короче батча: разложить его по
+        местам уже нельзя, потому что номера могли съехать. По одной строке номер
+        единственный, и съезжать нечему.
+
+        Стоит это одного вызова на строку вместо одного на батч — дорого, но случается
+        редко, а альтернатива это молча записанный перевод соседней строки, которого не
+        видит ни одно правило.
+        """
+        from prompt.builder import build_prompt
+        from prompt.parser import parse_numbered_output
+
+        out = []
+        for i, text in enumerate(originals):
+            if self._stop:
+                out.extend([""] * (len(originals) - len(out)))
+                break
+            prompt = build_prompt(
+                texts=[text], src_lang=src_lang, tgt_lang=tgt_lang, context=context,
+                system_prompt=system_prompt, thinking=thinking, terminology=terminology,
+                preserve_tokens=preserve_tokens,
+                current=[stored[i]] if stored else None,
+                terms=[req_terms[i]] if req_terms else None,
+            )
+            try:
+                _self = self
+                raw = await loop.run_in_executor(
+                    None,
+                    lambda p=prompt: state.backend._infer(
+                        p, params=infer_params, stop_check=lambda: _self._stop),
+                )
+            except Exception as exc:
+                log.error("OfflineTranslateRunner[%s]: одиночный перевод не удался: %s",
+                          self._aid[:8], exc)
+                raw = ""
+            got = parse_numbered_output(raw or "", 1)
+            out.append(got[0] if got else "")
+        return out
+
     async def run(self, state, loop: asyncio.AbstractEventLoop) -> None:
         """Produce translations for all pending manifest items, writing each durably.
 
@@ -334,6 +377,39 @@ class OfflineTranslateRunner:
                     pass
 
                 translations = parse_numbered_output(raw or "", len(batch))
+
+                # Нумерованный список, вернувшийся короче, нельзя раскладывать по местам.
+                #
+                # Разборщик сопоставляет ответ с исходником по НАПЕЧАТАННОМУ номеру. Если
+                # модель пропустила пункт и перенумеровала остаток, каждый ответ садится на
+                # соседнюю строку — а пустым оказывается только последнее место. Найдено в
+                # корпусе на пяти школах магии:
+                #
+                #     Alteration  → «Призыв»          ← ответ для Conjuration
+                #     Conjuration → «Разрушение»      ← ответ для Destruction
+                #     Destruction → «Иллюзия»         ← ответ для Illusion
+                #     Illusion    → «Восстановление»  ← ответ для Restoration
+                #
+                # Каждая из них — нормальное русское слово на своём месте, токены целы,
+                # счёт 100. Ни одно правило этого не увидит и увидеть не может: строка
+                # неверна только относительно СОСЕДА по батчу.
+                #
+                # Поэтому недостача в ответе означает, что доверять нельзя всему батчу, а
+                # не одному месту. Батч переводится заново по одной строке: там номер
+                # всегда единственный и сдвинуться некуда.
+                if len(batch) > 1 and any(not (t or "").strip() for t in translations):
+                    log.warning(
+                        "OfflineTranslateRunner[%s]: ответ короче батча (%d из %d) — "
+                        "нумерация ненадёжна, переперевод по одной",
+                        self._aid[:8], sum(1 for t in translations if (t or "").strip()),
+                        len(batch))
+                    translations = await self._retranslate_singly(
+                        originals, state, loop, infer_params,
+                        src_lang=src_lang, tgt_lang=tgt_lang, context=full_context,
+                        system_prompt=system_prompt, thinking=thinking,
+                        terminology=terminology, preserve_tokens=preserve_tokens,
+                        stored=stored if reviewing else None,
+                        req_terms=req_terms if reviewing else None)
 
                 for j, b in enumerate(batch):
                     original    = b.get("original") or ""

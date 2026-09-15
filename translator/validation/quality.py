@@ -673,6 +673,72 @@ def truncation_violations(original: str, translation: str) -> list[str]:
     return [f"cut off mid-sentence at {len(t) / len(o):.0%} of the source: …{t[-40:]}"]
 
 
+# Фраза, оборванная на полуслове, которую правило выше не видит.
+#
+# truncation_violations ловит книгу, упёршуюся в потолок токенов: источник от 400 знаков,
+# ответ короче 70%, источник кончается точкой. Но в игре видели строку, кончавшуюся одной
+# буквой «Т», и ни одно из трёх условий там не выполняется — обрыв бывает и на короткой
+# строке, и при полной длине.
+#
+# Признак другой: последнее слово перевода короткое и словом не является. «уклонилась от
+# его вз», «Они могут не наз», «я мог осв» — обрывки; «кто уничтожит их», «передал её»,
+# «Хе-хе» — нормальные окончания. Разделяет их не длина, а существование слова, и это
+# вопрос к морфологии, а не к списку.
+#
+# Две оговорки, обе из замера:
+#   ответ в одно-два слова — это имя, а не начатая фраза: «Лич», «Шшш», «Хед» морфологии
+#   неизвестны, но они и есть весь ответ;
+#   записки в Skyrim подписывают инициалом — «--R» → «--Р», «KV» → «КВ», — и такой хвост
+#   перевод повторяет за источником. Таких 153.
+#
+# На корпусе: 127 обрывов, из которых прежнее правило видело 4.
+_TAIL_WORD_RE = re.compile(r"([А-Яа-яЁё]+)\s*$")
+_EN_TAIL_WORD_RE = re.compile(r"([A-Za-z]+)\s*$")
+_CLOSERS_RE = re.compile(
+    r"(?:<[^<>]{1,60}>|\{[^{}]{1,40}\}|\[[^\[\]]{1,40}\]"
+    r"|[" + re.escape(".!?" + chr(8230) + chr(187) + chr(34) + "')]-") + r"\s])+$")
+_MAX_DANGLING = 3
+_MIN_WORDS_FOR_PHRASE = 3
+
+
+def dangling_tail_violations(original: str, translation: str) -> list[str]:
+    """Перевод обрывается коротким огрызком, который словом не является."""
+    raw = translation or ""
+    body = _CLOSERS_RE.sub("", raw)
+    if body != raw.rstrip():
+        return []                       # закрыто знаком или разметкой — не обрыв
+    m = _TAIL_WORD_RE.search(body)
+    if not m:
+        return []
+    tail = m.group(1)
+    if len(tail) > _MAX_DANGLING:
+        return []
+    if len(_RU_WORD_RE.findall(body)) < _MIN_WORDS_FOR_PHRASE:
+        return []                       # это имя, а не начатая фраза
+    src = _CLOSERS_RE.sub("", original or "")
+    em = _EN_TAIL_WORD_RE.search(src)
+    if em and len(em.group(1)) <= _MAX_DANGLING:
+        return []                       # источник сам кончается инициалом
+    morph = _morph_or_none()
+    if morph is None or morph.word_is_known(tail.lower()):
+        return []
+    return [f"cut off mid-word: …{body[-32:]}"]
+
+
+_MORPH_CACHE: list = []
+
+
+def _morph_or_none():
+    """pymorphy3, если он есть. Без него правило молчит, а не падает."""
+    if not _MORPH_CACHE:
+        try:
+            from translator.validation.terminology import _morph
+            _MORPH_CACHE.append(_morph())
+        except Exception:
+            _MORPH_CACHE.append(None)
+    return _MORPH_CACHE[0]
+
+
 # ── потерянное отрицание ──────────────────────────────────────────────────────
 #
 #     "I dare not."                    →  «Я осмелюсь.»
@@ -826,6 +892,7 @@ def compute_string_status(original: str, translation: str,
                       + markdown_emphasis_violations(original, translation)
                       + prompt_scaffold_violations(translation)
                       + variant_choice_violations(original, translation)
+                      + dangling_tail_violations(original, translation)
                       + untranslated_word_violations(original, translation, terms)
                       + truncation_violations(original, translation)
                       + polarity_violations(original, translation)

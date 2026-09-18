@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import platform
 import random
 import socket
@@ -311,6 +312,12 @@ class ServerState:
         # enough — a 4-bit 30B sits on ~18 GB of unified memory, and handing back a
         # machine that still holds that is not handing it back.
         self.asleep: bool = False
+        # Idle-unloaded: the window is open but nothing has needed the model for a long
+        # while, so it was handed back on purpose. Distinct from asleep (that is the
+        # schedule speaking) and from a failed load (that is a problem): a chunk may end
+        # this state by reloading on demand; nothing may end asleep but the schedule.
+        self.idle_unloaded: bool = False
+        self.last_work_at: float = 0.0   # time.monotonic() of the last work seen; 0 = never
         # The last model that loaded successfully, kept so the agent can put it back on
         # its own at the end of a window. The host restores models too, but only while
         # the host is up; this is what makes a window open on time regardless.
@@ -958,6 +965,9 @@ def _socket_load_model(state: ServerState, payload: dict) -> dict:
     state.backend      = backend
     state.backend_type = bt
     state.model_label  = req.gguf_filename or req.repo_id or req.model_path or "unknown"
+    # A fresh model gets the full idle grace, not the tail of the previous silence.
+    state.idle_unloaded = False
+    _mark_work(state)
     state.refresh_free_memory()
     log.info("Socket: model loaded — %s via %s", state.model_label, bt)
     return {"ok": True, "model": state.model_label}
@@ -1093,7 +1103,11 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
                     # it never started), so without its own flag this reads as a healthy
                     # agent that simply happens to produce nothing.
                     health_payload["awake_no_model"] = (
-                        not state.asleep and state.backend is None)
+                        not _no_model_on_purpose(state) and state.backend is None)
+                    # "Sleeping" and "idling" ride the same asleep gate on the host (both
+                    # mean: do not push the default model back); the UI still gets to
+                    # tell them apart.
+                    health_payload["idle_unloaded"] = state.idle_unloaded
                 except Exception:
                     health_payload = {}
 
@@ -1110,8 +1124,11 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
                     "health":       health_payload,
                     "download_progress": state.download_progress or {},
                     # Asleep is not idle and not broken: the machine was handed back on
-                    # purpose. Without saying so it looks like an agent that lost its model.
-                    "asleep":       state.asleep,
+                    # purpose. Without saying so it looks like an agent that lost its
+                    # model. An idle unload rides the same flag: the host's model-default
+                    # restore (model_state._materialize_default_nolock) gates on it, and
+                    # without this it would push the 19 GB back within one heartbeat.
+                    "asleep":       _no_model_on_purpose(state),
                     # Sent every beat, not only at registration: a laptop crosses a
                     # timezone or steps into DST without ever re-registering.
                     "tz_offset_min": _tz_offset_min(),
@@ -1470,8 +1487,26 @@ def _schedule_permits_loading(state: ServerState) -> bool:
         return True
 
 
-async def _sleep_for_the_night(state: ServerState, loop) -> None:
-    """Drop the model and everything holding memory behind it."""
+# An open window with no work in it still holds ~20 GB of unified memory for nothing.
+# After this long without work the model is handed back; the next chunk reloads it on
+# demand (~6 s from local disk). Tunable without touching code.
+_IDLE_UNLOAD_SEC = float(os.environ.get("SKYLATOR_IDLE_UNLOAD_SEC", "3600"))
+
+
+def _no_model_on_purpose(state: ServerState) -> bool:
+    """The model is absent by decision (schedule or idleness), not because of a failure.
+    The host restores its default model to any agent that is up without one — this is
+    the flag that tells it not to."""
+    return bool(getattr(state, "asleep", False) or getattr(state, "idle_unloaded", False))
+
+
+def _mark_work(state: ServerState) -> None:
+    """Reset the idle clock: something just needed (or used) the model."""
+    state.last_work_at = time.monotonic()
+
+
+async def _drop_model(state: ServerState, loop, why: str) -> str:
+    """Shared mechanics of letting the model go; returns the label for the caller's log."""
     label = state.model_label or "model"
     try:
         if state.backend is not None:
@@ -1479,15 +1514,36 @@ async def _sleep_for_the_night(state: ServerState, loop) -> None:
             # memory is genuinely returned rather than merely dereferenced.
             await loop.run_in_executor(None, state.backend.unload)
     except Exception as exc:
-        log.warning("sleep: unloading %s failed: %s", label, exc)
+        log.warning("%s: unloading %s failed: %s", why, label, exc)
     state.backend = None
     state.model_label = ""
-    state.asleep = True
     try:
         state.refresh_free_memory()
     except Exception:
         pass
+    return label
+
+
+async def _sleep_for_the_night(state: ServerState, loop) -> None:
+    """Drop the model and everything holding memory behind it."""
+    label = await _drop_model(state, loop, "sleep")
+    state.asleep = True
     log.info("Asleep — %s unloaded, machine handed back", label)
+
+
+async def _unload_for_idle(state: ServerState, loop) -> None:
+    """The window is open, nothing has needed the model for _IDLE_UNLOAD_SEC — give the
+    memory back without going to sleep. A chunk may load it again; the schedule may not
+    have changed at all."""
+    label = await _drop_model(state, loop, "idle")
+    state.idle_unloaded = True
+    # This is a decision, not a failure: nothing is owed. Without clearing the wake debt
+    # the controller's retry branch would put the model straight back into the same
+    # silence it was just freed from.
+    state.wake_retry_at = 0.0
+    state.wake_failures = 0
+    log.info("Idle for %.0f min — %s unloaded until work arrives",
+             _IDLE_UNLOAD_SEC / 60, label)
 
 
 def _owe_another_wake(state: ServerState, reason: str, detail: str = "") -> None:
@@ -1531,8 +1587,12 @@ async def _wake_up(state: ServerState, loop) -> bool:
         state.backend_type = bt
         state.model_label  = name
         state.asleep       = False
+        state.idle_unloaded = False
         state.wake_retry_at = 0.0
         state.wake_failures = 0
+        # A freshly loaded model gets the full idle grace, not the tail of the silence
+        # that preceded it.
+        _mark_work(state)
         state.refresh_free_memory()
         log.info("Awake — %s loaded via %s", name, bt)
         # The offline runner parks on `state.backend is None` between batches and picks
@@ -1545,6 +1605,27 @@ async def _wake_up(state: ServerState, loop) -> bool:
         state.asleep = False
         _owe_another_wake(state, f"could not reload {name}", str(exc))
         return False
+
+
+async def _ensure_model_for_work(state: ServerState, loop) -> bool:
+    """The other half of the idle unload: the controller lets go on a timer, and the
+    chunk that ends the silence puts the weights back. Waiting for the controller's next
+    tick instead would add up to _SLEEP_CHECK_SEC to the first batch after every pause.
+
+    Any chunk resets the idle clock, model loaded or not. Returns True when a model is
+    (now) loaded. A closed window is final: a chunk has no right to load a model into
+    the operator's hours, whatever state the flags are in."""
+    _mark_work(state)
+    if state.backend is not None:
+        return True
+    if not getattr(state, "idle_unloaded", False):
+        # Not our unload — a failed load or a sleep. Those are owned by the controller's
+        # retry branch and the schedule respectively; a chunk must not paper over them.
+        return False
+    if not _schedule_permits_loading(state):
+        return False
+    state.idle_unloaded = False
+    return await _wake_up(state, loop)
 
 
 async def _sleep_controller(state: ServerState) -> None:
@@ -1577,6 +1658,10 @@ async def _sleep_controller(state: ServerState) -> None:
                         log.info("A model was loaded while off-hours — unloading again")
                     await _sleep_for_the_night(state, loop)
                 state.asleep = True
+                # A closed window outranks idleness: while the operator has the machine,
+                # no chunk has the right to load a model, so the on-demand escape hatch
+                # is shut too.
+                state.idle_unloaded = False
                 # A new window is a fresh sequence of attempts: whatever went wrong at
                 # the last one should not start the next already backed off to ten
                 # minutes, and nothing is owed while we are meant to have no model.
@@ -1584,6 +1669,24 @@ async def _sleep_controller(state: ServerState) -> None:
                 state.wake_failures = 0
             elif state.asleep:
                 await _wake_up(state, loop)
+            elif state.backend is not None:
+                # A loaded model outranks a stale idle flag — heartbeats must not read
+                # "handed back on purpose" off an agent that is holding 20 GB.
+                state.idle_unloaded = False
+                in_flight = (getattr(state, "offline_job", None) is not None
+                             or getattr(state, "infer_started_at", 0.0) > 0
+                             or getattr(state, "queue_depth", 0) > 0)
+                if in_flight or not getattr(state, "last_work_at", 0.0):
+                    # Pauses inside a job (posting a batch, writing a package) are not
+                    # idleness — unloading there would land mid-way through the very work
+                    # the memory was freed for. An unset clock starts counting now.
+                    _mark_work(state)
+                elif time.monotonic() - state.last_work_at >= _IDLE_UNLOAD_SEC:
+                    await _unload_for_idle(state, loop)
+            elif getattr(state, "idle_unloaded", False):
+                # Let go on purpose; the next chunk reloads on demand. Nothing to do —
+                # and nothing to retry, or the controller would undo its own decision.
+                pass
             elif state.backend is None and 0 < state.wake_retry_at <= time.monotonic():
                 # The window is open and we still have no model: a reload that failed, or
                 # a spec we did not have when it opened. Waking is not a moment to be
@@ -1697,6 +1800,10 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                         state.backend      = backend
                         state.backend_type = bt
                         state.model_label  = req.gguf_filename or req.repo_id or req.model_path or "unknown"
+                        # A fresh model gets the full idle grace, not the tail of the
+                        # previous silence.
+                        state.idle_unloaded = False
+                        _mark_work(state)
                         state.refresh_free_memory()
                         _remember_model_spec(state, payload)
                         log.info("Pull worker: model loaded — %s via %s", state.model_label, bt)
@@ -1883,6 +1990,10 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                          offline_job_id[:8], len(chunk.get("strings") or []))
                 await _post_result(state.http_client, base, label, chunk_id,
                                    json.dumps({"ok": True, "offline_job_id": offline_job_id}))
+                # Reload an idle-unloaded model BEFORE the runner starts: the runner parks
+                # on `state.backend is None` between batches and would silently produce
+                # nothing at all.
+                await _ensure_model_for_work(state, loop)
                 asyncio.create_task(
                     _run_offline_job(chunk, state, loop, base, label)
                 )
@@ -1920,6 +2031,9 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
             prompt = chunk["prompt"]
             log.info("Pull worker: inferring chunk %s (%d chars)", chunk_id[:8], len(prompt))
 
+            # The chunk that ends a quiet hour puts the weights back itself (an
+            # idle-unloaded model reloads on demand; anything else stays refused).
+            await _ensure_model_for_work(state, loop)
             if state.backend is None:
                 log.error("Pull worker: no model loaded — cannot process chunk %s", chunk_id[:8])
                 await _post_result(state.http_client, base, label, chunk_id, "\x00no_model\x00")

@@ -24,7 +24,9 @@ def test_keeps_existing_when_new_is_worse():
 
 
 def test_empty_candidate_never_wins():
-    assert _candidate_score("Hello", "") == (-1, -1.0)
+    # Ранг — тройка: вердикт ворот, доля переведённого, балл. Доля переведённого
+    # появилась потому, что балл один не отличал перевод от скопированного источника.
+    assert _candidate_score("Hello", "") == (-1, -1.0, -1.0)
     assert _candidate_score("Hello", "") < _candidate_score("Hello", "Привет")
     out = pick_better("Hello", "Привет", "")
     assert out["translation"] == "Привет"

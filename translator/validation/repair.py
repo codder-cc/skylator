@@ -324,10 +324,22 @@ def apply_repairs(repo, found: dict, job=None) -> dict:
             if kind in ("identifier", "untranslatable"):
                 # A record name is not translatable, and saying so stops the next sweep
                 # from spending a machine on it and getting this wrong again.
+                #
+                # Здесь вердикт ворот не применяется, и это не исключение из правила
+                # «судит одно место», а другой вопрос. Ворота отвечают, хорош ли русский
+                # перевод; для «KSSMP Sky201» и заметки разработчика верный вывод — сам
+                # английский текст, и ворота, сравнив вывод со входом, честно скажут
+                # «не переведено». Переводимость решена раньше и не здесь: точным
+                # правилом в find_repairable, а не заявлением того, кто пишет.
+                #
+                # Балл тоже не от ворот: они дали бы 50 за «вывод равен входу», а строка
+                # при этом верна. Полсотни в интерфейсе горят жёлтым и попадают в любую
+                # выборку по низкому баллу — то есть ровно туда, откуда source
+                # 'untranslatable' её и убирает.
                 repo.db.execute(
-                    "UPDATE strings SET translation=?, status=?, quality_score=?, "
-                    "source='untranslatable', updated_at=? WHERE id=?",
-                    (new, status, qs, now, sid))
+                    "UPDATE strings SET translation=?, status='translated', "
+                    "quality_score=100, source='untranslatable', updated_at=? WHERE id=?",
+                    (new, now, sid))
             else:
                 repo.db.execute(
                     "UPDATE strings SET translation=?, status=?, quality_score=?, "

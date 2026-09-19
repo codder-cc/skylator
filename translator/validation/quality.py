@@ -713,6 +713,13 @@ def dangling_tail_violations(original: str, translation: str) -> list[str]:
     tail = m.group(1)
     if len(tail) > _MAX_DANGLING:
         return []
+    # Только строчный хвост. Заглавный — это короткое имя собственное в конце названия,
+    # и на корпусе таких оказалось 93 из 127: «Серебряное ожерелье Рич», «Заметки
+    # Ядро'Ры», «Сцена Изобель Лод», «Фиг и Уиг». Обрыв посреди слова с заглавной тоже
+    # бывает («Вождь Лок»), но его ловит truncation_violations по длине, и отдавать ему
+    # эти случаи честнее, чем забраковать девяносто три верных названия.
+    if not tail[:1].islower():
+        return []
     if len(_RU_WORD_RE.findall(body)) < _MIN_WORDS_FOR_PHRASE:
         return []                       # это имя, а не начатая фраза
     src = _CLOSERS_RE.sub("", original or "")
@@ -1010,6 +1017,22 @@ def translated_coverage(original: str, translation: str) -> float:
     return genuine * min(1.0, len(translation) / need)
 
 
+_GLOSSARY_CACHE: list = []
+
+
+def _glossary_or_none():
+    """Глоссарий, загруженный один раз. Его отсутствие выключает половину суждения,
+    поэтому молчать об этом нельзя, но и падать посреди записи тоже."""
+    if not _GLOSSARY_CACHE:
+        try:
+            from translator.validation.terminology import load_terms
+            _GLOSSARY_CACHE.append(load_terms())
+        except Exception as exc:
+            log.warning("ранжирование кандидатов идёт без глоссария: %s", exc)
+            _GLOSSARY_CACHE.append(None)
+    return _GLOSSARY_CACHE[0]
+
+
 def _candidate_score(original: str, t: str) -> tuple[int, float, float]:
     """Comparable rank for picking between two candidates: (would the gate accept it,
     how little of it is copied source, then the score). Empty/missing sorts below all.
@@ -1023,7 +1046,11 @@ def _candidate_score(original: str, t: str) -> tuple[int, float, float]:
     """
     if not t or not t.strip():
         return (-1, -1.0, -1.0)
-    qs, tok_ok, _, status = compute_string_status(original, t)
+    # Глоссарий обязателен. Без него ранжировщик судил не тем, чем судят ворота: строка,
+    # помеченная за «Mudcrab should be грязевой краб», получала вердикт «принята» и счёт
+    # 105, и любой верный перевод обязан был победить призрака. На живом проходе это дало
+    # 20 отказов из 20 — переделать помеченное было невозможно в принципе.
+    qs, tok_ok, _, status = compute_string_status(original, t, _glossary_or_none())
     # Покрытие стоит ОТДЕЛЬНОЙ ступенью, выше баллов, и это не придирка к оформлению.
     # Вычитать долю списанного из оценки оказалось мало: у копии базовые 100 (разметка
     # на месте, длина совпадает — это же источник), у честного, но обрезанного перевода

@@ -179,7 +179,8 @@ def create_job():
                                            max_chars = options.get("max_chars"),
                                            min_chars = options.get("min_chars"),
                                            max_len   = options.get("max_len"),
-                                           max_tokens = options.get("max_tokens"))
+                                           max_tokens = options.get("max_tokens"),
+                                           batch_size = options.get("batch_size"))
         except ValueError as exc:
             return jsonify({"error": str(exc), "ok": False}), 400
     elif job_type == "validate" and mod_names:
@@ -1629,7 +1630,8 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                              max_chars: int | None = None,
                              min_chars: int | None = None,
                              max_len: int | None = None,
-                             max_tokens: int | None = None):
+                             max_tokens: int | None = None,
+                             batch_size: int | None = None):
     """Send stored translations back to the fleet to be checked and corrected.
 
     A review is a translation job with the answer already filled in: the package carries
@@ -1696,11 +1698,30 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         from translator.web.offline_backend import dispatch_multi
         from translator.models.inference_params import InferenceParams
 
-        blind = scope == "flagged"
+        # `sweep` — слепой перевод ВСЕГО, что имеет перевод: помеченного и принятого
+        # вместе. Он существует из-за двух замеров, сделанных дорого.
+        #
+        # Первый: агент держит в работе ровно один пакет и сам к следующему не переходит
+        # (offline_queue только наполняется, снимать из неё некому). Значит на сутки без
+        # мастера нужна ОДНА область, покрывающая всю работу, иначе машина встаёт,
+        # доделав первое, — так и вышло: ночь кончилась через четыре часа.
+        #
+        # Второй: область `all` показывает модели готовый перевод и просит исправить, а
+        # ворота принимают ответ только строго лучший — равноценная переформулировка
+        # проигрывает хранимому тексту. За сутки 73 309 доставленных ответов изменили
+        # текст РОВНО НОЛЬ раз. Слепой перевод такого недостатка не имеет: он даёт другой
+        # текст, который может выиграть по существу, а не по формулировке.
+        #
+        # Порядок: сперва помеченное, потом длинное. Если машину выключат на середине,
+        # сделанной окажется та часть, где дефект уже назван.
+        sweep = scope == "sweep"
+        blind = scope == "flagged" or sweep
         fixing_terms = scope == "terms"
         where = ["TRIM(translation) <> ''", "translation <> original",
-                 "COALESCE(source,'') <> 'untranslatable'",
-                 "status='needs_review'" if (blind or fixing_terms) else "status='translated'"]
+                 "COALESCE(source,'') <> 'untranslatable'"]
+        if not sweep:
+            where.append("status='needs_review'" if (blind or fixing_terms)
+                         else "status='translated'")
         if scope == "unchecked":
             # Never seen by the current rules: the legacy import and everything a twin
             # was copied onto rather than translated.
@@ -1716,6 +1737,8 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
             where.append(f"LENGTH(original) < {int(max_len)}")
         sql = f"SELECT id, mod_name, esp_name, key, original, translation, rec_type, " \
               f"field_type FROM strings WHERE {' AND '.join(where)}"
+        if sweep:
+            sql += " ORDER BY (status='needs_review') DESC, LENGTH(original) DESC"
         if limit:
             sql += f" LIMIT {int(limit)}"
 
@@ -1762,10 +1785,21 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
             job.result = "nothing to review"
             return
         mods = [(mod, strs, "") for mod, strs in by_mod.items()]
-        params = InferenceParams(max_tokens=int(max_tokens) if max_tokens else None)
+        params = InferenceParams(max_tokens=int(max_tokens) if max_tokens else None,
+                                 batch_size=int(batch_size) if batch_size else None)
         if max_tokens:
             job.add_log(f"Output ceiling raised to {int(max_tokens)} tokens for this "
                         f"dispatch — at the default 2 048 a book comes back cut off")
+        if batch_size:
+            # Служебная часть промпта — 832 токена — платится за ЗАПРОС, а не за строку:
+            # при батче 4 на строку в 17,6 токена приходится 210 служебных, при 32 — 29.
+            # Замер A/B на 64 строках одной машиной: 6,33 → 2,29 с/строка (2,8×), потерь
+            # ноль на всех размерах, вердикт ворот не сдвинулся. Пропуск пункта не сдвигает
+            # остальные — parser сопоставляет по номеру, который назвала модель.
+            # Потолок ставит контекст: n_ctx у MLX 4096, поэтому чем длиннее строки в
+            # полосе, тем меньше батч.
+            job.add_log(f"Batch size {int(batch_size)} for this dispatch — measured 2.8x "
+                        f"at 32 with zero dropped entries; context is what caps it")
         dispatch_multi(job, mods, params, backends, registry, jm, repo, cfg)
 
     return jm.create(

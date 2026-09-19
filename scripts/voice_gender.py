@@ -28,8 +28,13 @@
     разные персонажи. Если среди них есть и мужские, и женские, пол не определён, и это
     тоже повод промолчать, а не выбрать большинство;
 
-    озвучка бывает упакована в BSA. Здесь читаются только свободные файлы: это дёшево и
-    покрывает столько, сколько покрывает, а сколько именно — печатается.
+    озвучка бывает упакована в BSA, и там её больше, чем свободной. BSArch умеет
+    показывать содержимое архива без распаковки (`-list`), поэтому читаются и они —
+    497 архивов, результат кладётся в кэш, чтобы не перечитывать каждый раз;
+
+    тип голоса бывает свой, модовый, и тогда пол по имени не читается:
+    «aclvoicemelvin» это мужчина, но сказать это может только человек. Такие в ответ не
+    попадают.
 
     python scripts/voice_gender.py                 # отчёт о покрытии
     python scripts/voice_gender.py --dump out.json # выгрузить карту FormID → пол
@@ -70,10 +75,73 @@ def gender_of(voice_type: str) -> str | None:
     return None
 
 
-def scan(mods_dir: Path = MODS_DIR) -> tuple[dict, collections.Counter]:
-    """{(плагин, FormID): 'm'|'f'} по свободным файлам озвучки."""
+# Внутри BSA путь записан обратными слэшами, и класс символов приходится собирать из
+# chr(92): написанный литералом он превращается в экранирование прямого слэша, обратный
+# слэш из класса исчезает, и совпадений нет ни одного — 497 архивов читаются впустую.
+_SEP = "[" + chr(92) + chr(92) + "/]+"
+_VOICE_PATH_RE = re.compile(
+    "sound" + _SEP + "voice" + _SEP + "([^" + chr(92) + "/]+)" + _SEP
+    + "([^" + chr(92) + "/]+)" + _SEP + "(.+)$", re.I)
+BSARCH = Path("H:/Nolvus/Instances/Nolvus Awakening/TOOLS/BSArch/BSArch.exe")
+
+
+def _bsa_voice_paths(bsa: Path) -> list[tuple[str, str, str]]:
+    """(плагин, тип голоса, имя файла) из содержимого архива, без распаковки."""
+    import subprocess
+    try:
+        r = subprocess.run([str(BSARCH), str(bsa), "-list"],
+                           capture_output=True, timeout=300)
+    except Exception:
+        return []
+    got = []
+    for line in r.stdout.decode("utf-8", "replace").splitlines():
+        m = _VOICE_PATH_RE.search(line.strip())
+        if m:
+            got.append((m.group(1), m.group(2), m.group(3)))
+    return got
+
+
+def scan_bsa(mods_dir: Path, cache: Path) -> dict:
+    """{(плагин, FormID6): {пол}} из BSA. Список архивов кэшируется на диск."""
+    import json as _json
+    known = {}
+    if cache.exists():
+        try:
+            known = _json.loads(cache.read_text(encoding="utf-8"))
+        except Exception:
+            known = {}
+    seen: dict = collections.defaultdict(set)
+    changed = False
+    bsas = sorted(mods_dir.glob("*/*.bsa"))
+    for i, bsa in enumerate(bsas, 1):
+        key = f"{bsa.parent.name}/{bsa.name}"
+        if key not in known:
+            known[key] = [list(x) for x in _bsa_voice_paths(bsa)]
+            changed = True
+            if i % 50 == 0:
+                print(f"      прочитано архивов: {i}/{len(bsas)}", file=out, flush=True)
+        for plugin, vt, fname in known[key]:
+            g = gender_of(vt)
+            if g is None:
+                continue
+            m = _FORMID_RE.search(fname)
+            if m:
+                seen[(plugin.lower(), m.group(1).upper()[2:])].add(g)
+    if changed:
+        cache.write_text(_json.dumps(known), encoding="utf-8")
+    return seen
+
+
+def scan(mods_dir: Path = MODS_DIR, with_bsa: bool = True) -> tuple[dict, collections.Counter]:
+    """{(плагин, FormID): 'm'|'f'} по озвучке — свободной и упакованной."""
     seen: dict[tuple[str, str], set] = collections.defaultdict(set)
     stat: collections.Counter = collections.Counter()
+    if with_bsa:
+        cache = Path(__file__).resolve().parents[1] / "cache" / "bsa_voice_index.json"
+        cache.parent.mkdir(exist_ok=True)
+        for k, gs in scan_bsa(mods_dir, cache).items():
+            seen[k] |= gs
+        stat["реплик из BSA"] = len(seen)
     for voice_dir in mods_dir.glob("*/Sound/Voice"):
         for plugin_dir in voice_dir.iterdir():
             if not plugin_dir.is_dir():
@@ -106,9 +174,10 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dump")
     ap.add_argument("--mods", default=str(MODS_DIR))
+    ap.add_argument("--no-bsa", action="store_true")
     args = ap.parse_args()
 
-    gender, stat = scan(Path(args.mods))
+    gender, stat = scan(Path(args.mods), with_bsa=not args.no_bsa)
     for k, v in stat.most_common():
         print(f"  {k:<50}{v:>8}", file=out)
 

@@ -68,6 +68,20 @@ translator/
     builder.py            ContextBuilder — Nexus + BART summarizer
     nexus_fetcher.py      Nexus Mods API v2 client + cache
 
+  nexus/                  ← Mod downloader (see translator/nexus/README.md)
+    client.py             Nexus API v1 — files, download_link, validate, rate limit, game_id
+    resolver.py           mod_id (+ hints) → one file_id
+    providers.py          Where a CDN link comes from: Premium / browser / nxm handoff / chain
+    browser.py            Chrome over DevTools Protocol — mints signed CDN links, no click
+    link_cache.py         Minted links persist 4 h, so most downloads need no browser
+    search.py             Mod search via GraphQL v2 — v1 has no search; finds translations
+    archive.py            7-Zip unpacking, refuses entries that escape the destination
+    harvest.py            Reads a donor: plugins, MCM tables (loose and in .bsa), SWF via FFDec
+    merge.py              Lines a donor's strings up against ours; plan() writes nothing
+    translate_from_mod.py find → download → unpack → harvest → plan → apply → clean up
+    downloader.py         Resumable, mirror-failover, size+MD5 verified transfer
+    manager.py            Batch queue, thread pool, state machine, snapshot
+
   prompt/
     builder.py            Prompt assembly (system + context + batch)
     parser.py             Parse model output back to string list
@@ -95,6 +109,7 @@ translator/
       logs_rt.py          /logs/* — SSE tail + /logs/tail JSON endpoint
       terms_rt.py         /terms/* — terminology editor
       servers_rt.py       /servers/* — LAN server scanner
+      nexus_rt.py         /api/nexus/* — account, file lookup, downloads, nxm tickets
 
 scripts/
   esp_engine.py           ESP binary parser/rewriter, quality_score(), validate_tokens()
@@ -264,6 +279,69 @@ Checkpoints are diff-based — only the changed strings are stored, not full cop
 | POST | `/api/checkpoints/create` | `{mod_name, esp_name?}` → `{checkpoint_id}` |
 | POST | `/api/checkpoints/<id>/restore` | Restore strings to checkpoint state |
 | DELETE | `/api/checkpoints/<id>` | Delete checkpoint |
+
+### Nexus downloads
+| Method | Endpoint | Notes |
+|---|---|---|
+| GET | `/api/nexus/account` | Key validity, `is_premium`, remaining quota |
+| GET | `/api/nexus/mods/<id>` | Mod card (name, author, version) |
+| GET | `/api/nexus/mods/<id>/files` | Uploaded files; `?categories=main,update` |
+| POST | `/api/nexus/resolve` | Dry-run the file choice — `{mod_id, file_id?, file_name?, version?}` |
+| POST | `/api/nexus/downloads` | Queue a batch `{items:[...], dest_dir?}` → `{batch_id}` |
+| GET | `/api/nexus/downloads/<id>` | Progress snapshot |
+| GET | `/api/nexus/downloads/<id>/stream` | SSE — per-item state and progress |
+| POST | `/api/nexus/downloads/<id>/cancel` | Cancel the batch |
+| POST | `/api/nexus/nxm` | Accept an `nxm://` Mod Manager Download link |
+| GET | `/api/nexus/browser` | Chrome present / running / signed in |
+| POST | `/api/nexus/browser/login` | Open the window and wait for the one-time sign-in |
+| POST | `/api/nexus/browser/close` | Shut Chrome down, keeping the profile |
+| POST | `/api/nexus/browser/mint` | Mint one signed CDN link (route check, no transfer) |
+| GET | `/api/nexus/search` | Search mods — `?q=&mode=stemmed\|exact\|contains&language=` |
+| GET | `/api/nexus/random` | A random mod (server-side random sort) |
+| GET | `/api/nexus/translations` | Translations of a mod — `?mod_id=` or `?name=`, `&language=` |
+| GET | `/api/nexus/donors` | Translations of one of *our* mods — `?mod=<folder name>` |
+| POST | `/api/nexus/transfer/plan` | Download a donor and report what it would give (writes nothing) |
+| GET | `/api/nexus/transfer/plan/<id>` | Page a plan's candidates — `?action=fill&offset=&limit=` |
+| POST | `/api/nexus/transfer/apply` | Apply a plan — `overwrite`, `status`, `only_keys` |
+| POST | `/api/nexus/transfer/oneshot` | Find, download, merge and clean up in one call |
+| POST | `/api/nexus/transfer/job` | The same on the job queue — progress via `/jobs/<id>/stream` |
+| GET/POST | `/api/nexus/settings` | Read/persist the `nexus` config block |
+
+`dest_dir` is confined to a subtree of `nexus.download_dir`. Status codes: 401 bad key,
+402 Premium required, 404 mod/file gone, 429 quota, 400 no hint matched, 409 browser
+route unavailable on this host.
+
+**Translate From Mod** (`translator/nexus/merge.py`) folds a published translation into
+the string store. Matching is by identity, never by text similarity — the donor's text is
+in the target language and ours is in the source. Plugins match on
+`(esp, form_id, rec_type, field_type, field_index)`; MCM tables on `(table stem, $KEY)`,
+*not* line number, because translators reorder those files freely; SWF on
+`(file name, DefineText id)`. `plan()` writes nothing; `apply()` defaults to filling only
+what we have nothing for, landing as `needs_review`, and stamps `source=nexus-translation`
+so a donor's work is never mistaken for our own. Donor strings that carry no
+target-language characters are rejected rather than applied: some "translation" uploads
+ship the untouched English plugin.
+
+**Search is a different API.** v1 has no search endpoint at all; `search.py` talks
+GraphQL at `api.nexusmods.com/v2/graphql`. Gotchas that bite silently are documented in
+`translator/nexus/README.md` — chiefly that `WILDCARD` takes a bare substring (asterisks
+return nothing) and that translations are found by `languageName`, not by a
+`categoryName: "Translations"` that does not exist.
+
+**The browser window** opens once per process, not per mod, and only when a link is not
+already cached. Headless is not an option — measured: Cloudflare answers a headless
+Chrome with a challenge page (`403 text/html` from `/api/auth/session`) on the very
+profile that works headed. Instead `browser_window_mode` starts it minimized,
+`browser_idle_close_sec` closes it when unused, and `link_cache.py` persists the 4-hour
+links so retries and restarts show no window at all.
+
+**Free vs Premium** — two independent signing schemes. `download_link.json` signs with
+`key`/`expires` and serves them bare only to Premium keys. The website's own
+`GenerateDownloadUrl` signs with `md5`/`expires` for *any* signed-in session — that is
+the request the download page makes for itself, and the one `browser.py` makes from
+inside a real Chrome holding the user's cookies. So a free account downloads unattended
+after one manual sign-in; `nxm://` stays as the fallback. `/api/nexus/account` reports
+`unattended` for the UI. See `translator/nexus/README.md`.
 
 ### Other
 | Method | Endpoint | Notes |

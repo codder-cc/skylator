@@ -34,6 +34,69 @@ nexus:
   request_timeout_sec:  10
   cache_ttl_days:       30
 
+  # ── Mod downloader (translator/nexus — see its README.md) ──────────────────
+  # Where finished archives land. Point at the Nolvus ARCHIVE folder to fill an
+  # existing install in place.
+  download_dir:         "cache/downloads"
+  # auto    — ask Nexus whether the key is Premium and pick accordingly: a Premium
+  #           key uses the API, a free one mints through the browser and keeps the
+  #           click handoff behind it as a fallback
+  # premium — API only (download_link.json); fails on a free key
+  # browser — mint through a signed-in Chrome; fails if there is no session
+  # nxm     — always go through the "Mod Manager Download" click handoff
+  link_mode:            "auto"
+  max_concurrent:       3
+  max_retries:          3
+  download_timeout_sec: 30
+  chunk_size_kb:        256
+  # How long a free-account download waits for the user to click Mod Manager
+  # Download before giving up on that file.
+  nxm_timeout_sec:      300
+  # Let a waiting download open a browser tab itself. Leave false when the server
+  # is headless or remote — the UI shows item.nexus_url instead.
+  nxm_open_browser:     false
+
+  # ── Browser link minting (translator/nexus/browser.py) ─────────────────────
+  # What makes a free account download unattended: a real Chrome holding your Nexus
+  # session asks the site for the same signed CDN URL its own download page asks for.
+  # You sign in once, in a window you can see; nothing is asked of you after that.
+  browser_enabled:      true
+  # Empty = auto-detect the usual install locations.
+  chrome_path:          ""
+  # A dedicated profile, not your everyday one. The sign-in lives here.
+  browser_profile_dir:  "cache/nexus_chrome"
+  # Headless Chrome cannot be signed in by hand and reads differently to bot
+  # management; leave false unless the profile is already signed in and you know why.
+  browser_headless:     false
+  # Seconds between mints — pacing, not throttling around a limit.
+  browser_mint_interval_sec: 1.5
+  # How long a download waits for a sign-in when the profile has none. 0 = fail at
+  # once with an actionable message (right for a headless host).
+  browser_login_wait_sec:    300
+  # Cloudflare declines a headless browser (measured: 403 + challenge page), so there
+  # is a real window. These keep it out of the way rather than pretend otherwise.
+  # minimized (default) | offscreen | normal
+  browser_window_mode:       "minimized"
+  # Close Chrome after this long with nothing to mint. 0 = keep it for the process.
+  browser_idle_close_sec:    600
+  # A minted link lasts four hours; caching them means retries, re-submitted batches
+  # and restarts need no browser at all.
+  link_cache_enabled:        true
+  link_cache_path:           "cache/nexus_links.json"
+
+  # ── Search (translator/nexus/search.py) ────────────────────────────────────
+  # Search lives on Nexus's GraphQL API, not on the v1 REST API — v1 has no search
+  # at all. Seconds between search calls; 0 is fine for a UI search box, raise it
+  # when sweeping a whole modlist for translations.
+  search_min_interval_sec: 0.0
+
+  # ── Translate From Mod ─────────────────────────────────────────────────────
+  # Pull an existing published translation of a mod into our strings. Needs 7-Zip
+  # to unpack .7z/.rar donors; empty auto-detects, including Nolvus's lib/7z.exe.
+  archive_tool_path:    ""
+  # Scratch space for donor archives. They are deleted once their strings are out.
+  donor_dir:            "cache/donors"
+
 # ── Ensemble Pipeline ─────────────────────────────────────────────────────────
 ensemble:
   # Model A — MT specialist (fast, WMT25 champion)

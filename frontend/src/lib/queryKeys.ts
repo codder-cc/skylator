@@ -28,4 +28,9 @@ export const QK = {
   checkpoints:     () => ['checkpoints'] as const,
   modReservations: (name: string) => ['mods', name, 'reservations'] as const,
   stringHistory:   (id: number) => ['strings', id, 'history'] as const,
+  nexusAccount:    () => ['nexus', 'account'] as const,
+  nexusSearch:     (q: string, mode: string, language: string) => ['nexus', 'search', q, mode, language] as const,
+  nexusBatch:      (id: string) => ['nexus', 'batch', id] as const,
+  nexusDonors:     (mod: string, language: string) => ['nexus', 'donors', mod, language] as const,
+  nexusSettings:   () => ['nexus', 'settings'] as const,
 } as const

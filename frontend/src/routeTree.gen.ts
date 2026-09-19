@@ -15,6 +15,7 @@ import { Route as SingleRouteImport } from './routes/single'
 import { Route as ServersRouteImport } from './routes/servers'
 import { Route as ReviewRouteImport } from './routes/review'
 import { Route as OperationsRouteImport } from './routes/operations'
+import { Route as NexusRouteImport } from './routes/nexus'
 import { Route as LogsRouteImport } from './routes/logs'
 import { Route as ConfigRouteImport } from './routes/config'
 import { Route as BackupsRouteImport } from './routes/backups'
@@ -55,6 +56,11 @@ const ReviewRoute = ReviewRouteImport.update({
 const OperationsRoute = OperationsRouteImport.update({
   id: '/operations',
   path: '/operations',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const NexusRoute = NexusRouteImport.update({
+  id: '/nexus',
+  path: '/nexus',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LogsRoute = LogsRouteImport.update({
@@ -119,6 +125,7 @@ export interface FileRoutesByFullPath {
   '/backups': typeof BackupsRoute
   '/config': typeof ConfigRoute
   '/logs': typeof LogsRoute
+  '/nexus': typeof NexusRoute
   '/operations': typeof OperationsRoute
   '/review': typeof ReviewRoute
   '/servers': typeof ServersRoute
@@ -138,6 +145,7 @@ export interface FileRoutesByTo {
   '/backups': typeof BackupsRoute
   '/config': typeof ConfigRoute
   '/logs': typeof LogsRoute
+  '/nexus': typeof NexusRoute
   '/operations': typeof OperationsRoute
   '/review': typeof ReviewRoute
   '/servers': typeof ServersRoute
@@ -158,6 +166,7 @@ export interface FileRoutesById {
   '/backups': typeof BackupsRoute
   '/config': typeof ConfigRoute
   '/logs': typeof LogsRoute
+  '/nexus': typeof NexusRoute
   '/operations': typeof OperationsRoute
   '/review': typeof ReviewRoute
   '/servers': typeof ServersRoute
@@ -179,6 +188,7 @@ export interface FileRouteTypes {
     | '/backups'
     | '/config'
     | '/logs'
+    | '/nexus'
     | '/operations'
     | '/review'
     | '/servers'
@@ -198,6 +208,7 @@ export interface FileRouteTypes {
     | '/backups'
     | '/config'
     | '/logs'
+    | '/nexus'
     | '/operations'
     | '/review'
     | '/servers'
@@ -217,6 +228,7 @@ export interface FileRouteTypes {
     | '/backups'
     | '/config'
     | '/logs'
+    | '/nexus'
     | '/operations'
     | '/review'
     | '/servers'
@@ -237,6 +249,7 @@ export interface RootRouteChildren {
   BackupsRoute: typeof BackupsRoute
   ConfigRoute: typeof ConfigRoute
   LogsRoute: typeof LogsRoute
+  NexusRoute: typeof NexusRoute
   OperationsRoute: typeof OperationsRoute
   ReviewRoute: typeof ReviewRoute
   ServersRoute: typeof ServersRoute
@@ -293,6 +306,13 @@ declare module '@tanstack/react-router' {
       path: '/operations'
       fullPath: '/operations'
       preLoaderRoute: typeof OperationsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/nexus': {
+      id: '/nexus'
+      path: '/nexus'
+      fullPath: '/nexus'
+      preLoaderRoute: typeof NexusRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/logs': {
@@ -381,6 +401,7 @@ const rootRouteChildren: RootRouteChildren = {
   BackupsRoute: BackupsRoute,
   ConfigRoute: ConfigRoute,
   LogsRoute: LogsRoute,
+  NexusRoute: NexusRoute,
   OperationsRoute: OperationsRoute,
   ReviewRoute: ReviewRoute,
   ServersRoute: ServersRoute,

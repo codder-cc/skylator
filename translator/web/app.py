@@ -47,6 +47,9 @@ def create_app(config_path: Path | None = None) -> Flask:
         log.warning(f"Could not load config: {exc}")
 
     app.config["TRANSLATOR_CFG"] = cfg
+    # Kept so a route that persists a setting writes back to the file this process
+    # actually loaded, rather than guessing at "config.yaml" in the working directory.
+    app.config["CONFIG_PATH"] = cfg_file if "cfg_file" in dir() else (ROOT / "config.yaml")
     app.config["HF_TOKEN"] = getattr(cfg, "hf_token", "") if cfg else ""
 
     # Apply embedded-string output encoding (default utf-8; 'cp1251' for RU installs).

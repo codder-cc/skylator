@@ -33,6 +33,9 @@ pydantic>=2.0.0           # Request/response models for FastAPI
 zeroconf>=0.132.0         # mDNS service announcement + LAN discovery
 truststore>=0.9.0         # verify TLS against the OS trust store (AV/proxy TLS interception)
 
+# ── Nexus mod downloader (translator/nexus) ─────────────────────────────────
+websockets>=12.0          # DevTools Protocol socket to the Chrome that mints CDN links
+
 # ── Dev / testing ──────────────────────────────────────────────────────────────
 pytest>=8.3.0
 pytest-timeout>=2.3.0   # per-test timeout safety net (see pyproject [tool.pytest])

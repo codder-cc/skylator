@@ -43,6 +43,71 @@ class NexusConfig:
     game:                str  = "skyrimspecialedition"
     request_timeout_sec: int  = 10
     cache_ttl_days:      int  = 30
+    # ── Download stack (translator/nexus) ────────────────────────────────────
+    # Where finished archives land. Point at the Nolvus ARCHIVE folder to have the
+    # downloader fill an existing install in place.
+    download_dir:         Optional[Path] = None
+    # "auto" asks Nexus whether the key is Premium and picks accordingly; "premium"
+    # forces the API-only path; "browser" mints through a signed-in Chrome; "nxm"
+    # always goes through the click handoff.
+    link_mode:            str = "auto"
+    # Three transfers keeps a large modlist inside both the CDN's patience and the
+    # per-key API budget (tier-dependent; check /api/nexus/account) without feeling serial.
+    max_concurrent:       int = 3
+    max_retries:          int = 3
+    download_timeout_sec: int = 30
+    chunk_size_kb:        int = 256
+    # How long a free-account download waits for the user to click Mod Manager Download.
+    nxm_timeout_sec:      int = 300
+    # Whether a waiting download may open a browser tab itself. Off by default: the
+    # Flask host is often a headless or remote machine, and popping tabs there helps
+    # nobody. The UI surfaces item.nexus_url instead and the user clicks it.
+    nxm_open_browser:     bool = False
+
+    # ── Browser link minting (translator/nexus/browser.py) ────────────────────
+    # The route that makes a free account behave like a Premium one: a real Chrome
+    # holding the user's Nexus session asks the site for the same signed CDN URL its
+    # own download page asks for. Set false to keep the stack on API + nxm only.
+    browser_enabled:           bool = True
+    # Leave empty to auto-detect the usual install locations.
+    chrome_path:               str = ""
+    # A dedicated profile, not the user's own: Chrome refuses remote debugging on the
+    # default one, and this keeps Skylator's cookies out of their everyday browsing.
+    # The one-time Nexus sign-in lives here and survives restarts.
+    browser_profile_dir:       Optional[Path] = None
+    # Headless Chrome presents a different surface to bot management and cannot be
+    # signed in by hand, so the window stays visible by default -- as Nolvus's does.
+    browser_headless:          bool = False
+    # Seconds between mints. Nexus is a shared service and a modlist is thousands of
+    # files; pacing them is the difference between a client and a scraper.
+    browser_mint_interval_sec: float = 1.5
+    # How long a download waits for someone to sign in when the profile has no session.
+    # 0 fails immediately with an actionable message, which is what a headless host
+    # wants; the default gives a person at the keyboard time to finish signing in.
+    browser_login_wait_sec:    float = 300
+    # Where the window goes. Cloudflare declines headless (measured: the session
+    # endpoint answers 403 with a challenge page), so there IS a window; these decide
+    # how much it is in the way. "minimized" | "offscreen" | "normal".
+    browser_window_mode:       str = "minimized"
+    # Close Chrome once nothing has needed it this long. 0 keeps it for the process.
+    browser_idle_close_sec:    float = 600
+    # A minted link is good for four hours, so caching them is what keeps the window
+    # from appearing at all for retries, re-submitted batches and restarts.
+    link_cache_enabled:        bool = True
+    link_cache_path:           Optional[Path] = None
+
+    # ── Search (translator/nexus/search.py) ───────────────────────────────────
+    # Seconds between GraphQL search calls. 0 is fine for a UI search box; raise it
+    # when sweeping a whole modlist for translations.
+    search_min_interval_sec:   float = 0.0
+
+    # ── Translate From Mod (translator/nexus/translate_from_mod.py) ───────────
+    # 7-Zip, for unpacking donor archives. Empty auto-detects, including the copy
+    # Nolvus ships at lib/7z.exe. .zip still works without it; .7z and .rar do not.
+    archive_tool_path:         str = ""
+    # Where donor archives land while they are being read. They are deleted once the
+    # strings are out unless the caller asks to keep them.
+    donor_dir:                 Optional[Path] = None
 
 
 @dataclass
@@ -203,6 +268,34 @@ def load_config(config_file: Path = _CONFIG_FILE) -> TranslatorConfig:
         game                = nx.get("game", "skyrimspecialedition"),
         request_timeout_sec = nx.get("request_timeout_sec", 10),
         cache_ttl_days      = nx.get("cache_ttl_days", 30),
+        # Downloads default under the project root so a fresh checkout works without
+        # editing config.yaml; set nexus.download_dir to the Nolvus ARCHIVE to fill an
+        # existing install instead.
+        download_dir        = _resolve(root, nx.get("download_dir", "cache/downloads")),
+        link_mode           = nx.get("link_mode", "auto"),
+        max_concurrent      = nx.get("max_concurrent", 3),
+        max_retries         = nx.get("max_retries", 3),
+        download_timeout_sec= nx.get("download_timeout_sec", 30),
+        chunk_size_kb       = nx.get("chunk_size_kb", 256),
+        nxm_timeout_sec     = nx.get("nxm_timeout_sec", 300),
+        nxm_open_browser    = bool(nx.get("nxm_open_browser", False)),
+        browser_enabled     = bool(nx.get("browser_enabled", True)),
+        chrome_path         = nx.get("chrome_path", "") or "",
+        # Under the project root by default, next to the other caches, so a fresh
+        # checkout needs no path edited before the browser route works.
+        browser_profile_dir = _resolve(
+            root, nx.get("browser_profile_dir", "cache/nexus_chrome")),
+        browser_headless    = bool(nx.get("browser_headless", False)),
+        browser_mint_interval_sec = float(nx.get("browser_mint_interval_sec", 1.5)),
+        browser_login_wait_sec    = float(nx.get("browser_login_wait_sec", 300)),
+        browser_window_mode       = nx.get("browser_window_mode", "minimized"),
+        browser_idle_close_sec    = float(nx.get("browser_idle_close_sec", 600)),
+        link_cache_enabled        = bool(nx.get("link_cache_enabled", True)),
+        link_cache_path           = _resolve(root, nx.get("link_cache_path",
+                                                          "cache/nexus_links.json")),
+        search_min_interval_sec   = float(nx.get("search_min_interval_sec", 0.0)),
+        archive_tool_path         = nx.get("archive_tool_path", "") or "",
+        donor_dir                 = _resolve(root, nx.get("donor_dir", "cache/donors")),
     )
 
     ens = raw["ensemble"]
@@ -267,6 +360,19 @@ def load_config(config_file: Path = _CONFIG_FILE) -> TranslatorConfig:
         hf_token    = (raw.get("models", {}) or {}).get("hf_token", "") or raw.get("hf_token", ""),
     )
     return _config
+
+
+def reload_config(config_file: Path = _CONFIG_FILE) -> TranslatorConfig:
+    """Re-read config.yaml, discarding the cached singleton.
+
+    load_config() returns the cached object once one exists, which is right for the
+    hundred call sites that just want the config and wrong for the one that has just
+    rewritten the file: without this, a saved setting is in config.yaml and not in the
+    running process, and the UI shows the old value back.
+    """
+    global _config
+    _config = None
+    return load_config(config_file)
 
 
 def get_config() -> TranslatorConfig:

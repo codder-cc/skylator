@@ -150,7 +150,10 @@ class Downloader:
         offset  = part.stat().st_size if part.exists() else 0
         resumed = offset > 0
 
-        if expected_size and offset > expected_size:
+        # Запас в килобайт — по той же причине, что и в _verify: заявленный размер
+        # округлён до килобайта, и без запаса полностью докачанный файл каждый раз
+        # объявлялся бы чужим и качался заново до бесконечности.
+        if expected_size and offset > expected_size + 1024:
             # A part-file larger than the target means the mod was re-uploaded under the
             # same name. Resuming would splice two different archives together.
             log.warning("%s: part-file exceeds expected size - restarting", display_name)
@@ -271,9 +274,24 @@ class Downloader:
     @staticmethod
     def _verify(part: Path, expected_size: int, expected_md5: str, name: str) -> None:
         actual = part.stat().st_size
-        if expected_size and actual != expected_size:
+        # Nexus отдаёт размер, округлённый до килобайта: у файла Legacy of the Dragonborn
+        # заявлено 6 740 992 байта (ровно 6583 × 1024), а пришло 6 741 540 — и проверка
+        # на равенство отвергала совершенно целый архив. Так отваливается любой донор,
+        # чей размер не кратен 1024, то есть практически любой.
+        #
+        # Размер здесь и не был гарантией целостности — ею служит MD5, который Nexus
+        # отдаёт точным. Поэтому размер остаётся грубой проверкой «не оборвалось ли
+        # скачивание»: недобор больше килобайта — ошибка, перебор в пределах округления —
+        # нет. Когда MD5 известен, он решает всё равно.
+        if expected_size and actual < expected_size - 1024:
             raise ChecksumMismatch(
-                f"{name}: size mismatch -- expected {expected_size} bytes, got {actual}",
+                f"{name}: truncated -- expected about {expected_size} bytes, got {actual}",
+                expected=str(expected_size), actual=str(actual))
+        if expected_size and actual > expected_size + 1024 and not expected_md5:
+            # Перебор без MD5 проверить нечем, и молча принять его нельзя.
+            raise ChecksumMismatch(
+                f"{name}: size mismatch -- expected about {expected_size} bytes, "
+                f"got {actual}, and no MD5 to settle it",
                 expected=str(expected_size), actual=str(actual))
         if expected_md5:
             digest = md5_of(part)

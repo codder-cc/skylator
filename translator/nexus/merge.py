@@ -270,9 +270,17 @@ def plan(
     `esp_map` renames donor plugins onto ours for the case where the translation was
     uploaded under a different filename -- rare, but it costs one dict to support and
     the alternative is the whole merge silently matching nothing.
+
+    Заданный вручную, он теперь ещё и достраивается сам: переводчики сплошь и рядом
+    переименовывают плагин, помечая язык. Legacy of the Dragonborn приехал как
+    `LegacyoftheDragonborn_RUS.esm` против нашего `LegacyoftheDragonborn.esm` — 17 769
+    строк донора не совпали НИ С ОДНОЙ, и выглядело это как «донор не подошёл», а не как
+    разные имена файлов.
     """
     ours = repo.get_all_strings(mod_name)
     exact_ix, local_ix = _index_ours(ours)
+    esp_map = dict(esp_map or {})
+    esp_map.update(_guess_esp_map(donor_plugins, ours, esp_map))
     result = MergePlan(mod_name=mod_name, language=language, our_total=len(ours))
 
     for dp in donor_plugins:
@@ -520,4 +528,56 @@ def confirmed_by_official(merge_plan: MergePlan, official: dict) -> list:
             if hit:
                 out.append((c, hit[0], hit[1]))
                 break
+    return out
+
+
+# Пометки языка, которыми переводчики украшают имя плагина. Список приставок и
+# окончаний, а не «убрать всё лишнее»: имя плагина — ключ совпадения, и вольничать с
+# ним значит склеить два разных файла.
+_LANG_TAGS = ("rus", "ru", "russian", "rusloc", "eng", "en", "english", "loc", "tr")
+_TAG_SEPS = ("_", "-", " ", ".")
+
+
+def _bare_esp(name: str) -> str:
+    """Имя плагина без языковой пометки на конце или в начале."""
+    stem, _, ext = (name or "").lower().rpartition(".")
+    if not stem:
+        stem, ext = (name or "").lower(), ""
+    for tag in _LANG_TAGS:
+        for sep in _TAG_SEPS:
+            if stem.endswith(sep + tag):
+                stem = stem[: -len(sep + tag)]
+                break
+            if stem.startswith(tag + sep):
+                stem = stem[len(tag + sep):]
+                break
+    return f"{stem}.{ext}" if ext else stem
+
+
+def _guess_esp_map(donor_plugins: list, ours: list, already: dict) -> dict:
+    """Донорские плагины, чьё имя отличается от нашего только пометкой языка.
+
+    Сопоставляется только ОДНОЗНАЧНОЕ: если под очищенное имя подходит не один наш
+    плагин, мы не знаем, который из них, и угадывать здесь нельзя — цена ошибки это
+    чужой перевод, разложенный по чужим записям.
+    """
+    our_names = {(r.get("esp_name") or "").lower() for r in ours}
+    our_names.discard("")
+    by_bare: dict = {}
+    for n in our_names:
+        by_bare.setdefault(_bare_esp(n), []).append(n)
+
+    out: dict = {}
+    for dp in donor_plugins:
+        for ds in dp.strings:
+            if ds.kind != "esp":
+                continue
+            name = (ds.esp_name or "").lower()
+            if not name or name in our_names or name in already or name in out:
+                continue
+            match = by_bare.get(_bare_esp(name)) or []
+            if len(match) == 1:
+                out[ds.esp_name] = match[0]
+                log.info("merge: donor plugin %s mapped onto %s — the names differ only "
+                         "by a language tag", ds.esp_name, match[0])
     return out

@@ -500,3 +500,43 @@ def test_a_button_label_is_not_an_entity():
     table = merge_mod.entity_table(OFFICIAL)
     assert "to place" not in table and "the cause" not in table
     assert "bleak falls barrow" in table and "soul cairn" in table
+
+
+# ── переименованный плагин донора ─────────────────────────────────────────────
+
+
+def test_a_donor_plugin_renamed_with_a_language_tag_still_matches(repo):
+    """Legacy of the Dragonborn приехал как `LegacyoftheDragonborn_RUS.esm` против
+    нашего `LegacyoftheDragonborn.esm`: 17 769 строк донора не совпали ни с одной, и
+    выглядело это как «донор не подошёл», а не как разные имена файлов."""
+    _seed(repo, esp="Legacy.esm",
+          rows=[("01000800", "Iron Sword", "", "pending")])
+    plan = merge_mod.plan(repo, "TestMod",
+                          _donor(esp="Legacy_RUS.esm", items=[("01000800", "Железный меч")]))
+    assert plan.counts == {FILL: 1}
+    assert plan.candidates[0].donor_text == "Железный меч"
+
+
+def test_an_ambiguous_rename_is_left_alone(repo):
+    # Под очищенное имя подходят два наших плагина — который из них, мы не знаем, а
+    # цена ошибки это чужой перевод, разложенный по чужим записям.
+    _seed(repo, esp="Legacy.esm", rows=[("01000800", "Iron Sword", "", "pending")])
+    _seed(repo, esp="Legacy_EN.esm", rows=[("01000801", "Steel Sword", "", "pending")])
+    plan = merge_mod.plan(repo, "TestMod",
+                          _donor(esp="Legacy_RUS.esm", items=[("01000800", "Железный меч")]))
+    assert plan.counts.get(FILL, 0) == 0
+
+
+def test_a_plugin_whose_name_already_matches_is_not_remapped(repo):
+    _seed(repo, esp="Test.esp", rows=[("01000800", "Iron Sword", "", "pending")])
+    plan = merge_mod.plan(repo, "TestMod", _donor(items=[("01000800", "Железный меч")]))
+    assert plan.counts == {FILL: 1}
+
+
+def test_the_language_tag_is_stripped_only_at_the_edges():
+    # «Ruins.esp» не должен превратиться в «ins.esp»: пометка это отдельная часть имени,
+    # отделённая разделителем, а не любая встреченная буквенная пара.
+    assert merge_mod._bare_esp("Ruins.esp") == "ruins.esp"
+    assert merge_mod._bare_esp("Legacy_RUS.esm") == "legacy.esm"
+    assert merge_mod._bare_esp("RUS_Legacy.esm") == "legacy.esm"
+    assert merge_mod._bare_esp("Legacy - RU.esp") == "legacy -.esp"

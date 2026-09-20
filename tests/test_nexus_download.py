@@ -740,3 +740,33 @@ def test_chrome_is_given_an_absolute_profile_path(tmp_path, monkeypatch):
 
     session = BrowserSession(Path("profile"), chrome_path=sys.executable)
     assert session.profile_dir.is_absolute()
+
+
+def test_a_size_rounded_to_kilobytes_is_not_a_corrupt_archive(tmp_path):
+    """Nexus отдаёт размер, округлённый до килобайта, и равенства тут не бывает.
+
+    У донора Legacy of the Dragonborn заявлено 6 740 992 байта — ровно 6583 × 1024, — а
+    пришло 6 741 540. Совершенно целый архив отвергался как битый, и так отваливался бы
+    любой донор, чей размер не кратен 1024, то есть практически любой.
+    """
+    part = tmp_path / "f.7z.part"
+    part.write_bytes(PAYLOAD)
+    # Заявлено меньше на 548 байт — ровно случай округления вниз.
+    Downloader._verify(part, len(PAYLOAD) - 548, PAYLOAD_MD5, "f.7z")
+
+
+def test_a_truncated_download_is_still_refused(tmp_path):
+    part = tmp_path / "f.7z.part"
+    part.write_bytes(PAYLOAD[:10])
+    with pytest.raises(ChecksumMismatch, match="truncated"):
+        Downloader._verify(part, len(PAYLOAD), PAYLOAD_MD5, "f.7z")
+
+
+def test_a_wrong_archive_is_caught_by_md5_even_when_the_size_passes(tmp_path):
+    # Размер перестал быть гарантией целостности — ею и был MD5, который Nexus отдаёт
+    # точным. Проверка обязана это подтверждать, иначе послабление по размеру означало
+    # бы, что не проверяется ничего.
+    part = tmp_path / "f.7z.part"
+    part.write_bytes(b"x" * len(PAYLOAD))
+    with pytest.raises(ChecksumMismatch, match="MD5"):
+        Downloader._verify(part, len(PAYLOAD), PAYLOAD_MD5, "f.7z")

@@ -58,7 +58,6 @@ import random
 import shutil
 import socket
 import subprocess
-import sys
 import threading
 import time
 import urllib.error
@@ -187,32 +186,32 @@ class LinkMinter:
         ]
         if self.headless:
             args.append("--headless=new")
-        elif self.window_mode == "offscreen":
-            # Far outside any real desktop. Chrome still lays out and paints normally.
+        elif self.window_mode in ("offscreen", "minimized"):
+            # Launched off-screen even when the end state is "minimized": Chrome paints
+            # its window before anything can be attached over CDP, and that first frame
+            # is the flash the user would otherwise see. Windows clamps the coordinate
+            # (measured: -32000 lands at -16384), which is still well outside any
+            # desktop, so the window exists and renders and nobody looks at it.
             args += ["--window-position=-32000,-32000", "--window-size=1200,900"]
         args.append(_HOME)
-
-        popen_kwargs: dict = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-        if (self.window_mode == "minimized" and not self.headless
-                and sys.platform == "win32"):
-            # SW_SHOWMINNOACTIVE: start minimized and do not take focus. Asking Windows
-            # to place the window is more polite than fighting Chrome's own flags, and
-            # it leaves the browser otherwise ordinary.
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            si.wShowWindow = 7                       # SW_SHOWMINNOACTIVE
-            popen_kwargs["startupinfo"] = si
 
         log.info("Launching Chrome on port %d (profile %s, window=%s)",
                  self.port, self.profile_dir,
                  "headless" if self.headless else self.window_mode)
-        self._proc = subprocess.Popen(args, **popen_kwargs)
+        # NOTE: STARTUPINFO.wShowWindow is not a lever here. It only supplies the
+        # nCmdShow an application passes on to its first ShowWindow call, and Chrome
+        # does not pass it on -- it places its window from its own profile state.
+        # Measured: launching with SW_SHOWMINNOACTIVE gave visible=True, minimized=False,
+        # rect=(0,0,800,600). The window state is set below, over CDP, which works.
+        self._proc = subprocess.Popen(
+            args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         ws_url = await self._await_target()
         import websockets
         self._ws = await websockets.connect(ws_url, max_size=32 * 1024 * 1024)
         await self._send("Page.enable")
         await self._send("Runtime.enable")
+        await self.set_window_state(self.window_mode)
         await self._goto(_HOME)
 
     async def _await_target(self, deadline: float = 30.0) -> str:
@@ -352,6 +351,62 @@ class LinkMinter:
             await asyncio.sleep(0.4)
         raise NexusError(f"Navigation to {url} did not settle")
 
+    # -- window ---------------------------------------------------------------
+
+    async def set_window_state(self, mode: str) -> bool:
+        """Put the browser window where `mode` says. Returns whether it took.
+
+        Chrome ignores the launch-time show flag, so this is the mechanism that works:
+        Browser.setWindowBounds is the DevTools Protocol's own way to say "minimize".
+
+        Never fatal. A window that stays visible is untidy; a mint that fails because
+        the window could not be minimized would be absurd.
+        """
+        if self.headless or mode == "normal":
+            return False
+        try:
+            win = await self._send("Browser.getWindowForTarget")
+            window_id = win.get("windowId")
+            if window_id is None:
+                return False
+            if mode == "minimized":
+                # windowState must travel alone: Chrome rejects bounds combined with a
+                # non-normal state.
+                await self._send("Browser.setWindowBounds", windowId=window_id,
+                                 bounds={"windowState": "minimized"})
+            else:                                   # offscreen
+                await self._send("Browser.setWindowBounds", windowId=window_id,
+                                 bounds={"left": -32000, "top": -32000,
+                                         "width": 1200, "height": 900})
+            return True
+        except NexusError as exc:
+            log.warning("could not set the browser window to %r: %s", mode, exc)
+            return False
+
+    async def show_window(self) -> bool:
+        """Bring the window back where a person can use it.
+
+        Needed before asking for a sign-in: a minimized or off-screen window cannot be
+        typed into, and telling somebody to sign in to a window they cannot find is
+        worse than not hiding it in the first place.
+        """
+        if self.headless:
+            return False
+        try:
+            win = await self._send("Browser.getWindowForTarget")
+            window_id = win.get("windowId")
+            if window_id is None:
+                return False
+            await self._send("Browser.setWindowBounds", windowId=window_id,
+                             bounds={"windowState": "normal"})
+            await self._send("Browser.setWindowBounds", windowId=window_id,
+                             bounds={"left": 80, "top": 60, "width": 1200, "height": 900})
+            await self._send("Page.bringToFront")
+            return True
+        except NexusError as exc:
+            log.warning("could not bring the browser window forward: %s", exc)
+            return False
+
     # -- session --------------------------------------------------------------
 
     async def whoami(self) -> dict:
@@ -400,14 +455,18 @@ class LinkMinter:
         """
         if await self.is_logged_in():
             return await self.whoami()
-        log.warning("Not signed in to Nexus. Sign in in the open Chrome window "
-                    "(waiting up to %.0f s)...", wait_seconds)
+        # The window is normally minimized or parked off-screen. Asking somebody to sign
+        # in to a window they cannot find is worse than never hiding it.
+        await self.show_window()
+        log.warning("Not signed in to Nexus. Sign in in the Chrome window that has just "
+                    "come forward (waiting up to %.0f s)...", wait_seconds)
         end = time.monotonic() + wait_seconds
         while time.monotonic() < end:
             await asyncio.sleep(3.0)
             if await self.is_logged_in():
                 log.info("Nexus session established; it will persist in %s",
                          self.profile_dir)
+                await self.set_window_state(self.window_mode)
                 return await self.whoami()
         raise NexusAuthError("timed out waiting for a Nexus sign-in in the browser")
 

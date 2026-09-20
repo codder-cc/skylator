@@ -56,6 +56,9 @@ sys.path.insert(0, str(ROOT))
 out = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 MODS_DIR = Path("H:/Nolvus/Instances/Nolvus Awakening/MODS/mods")
+# Data самой игры: там лежат VTYP ванильных голосов и все записи RACE. Без неё индекс
+# NPC_ собирается наполовину пустым, и молча.
+GAME_DATA = Path("H:/Nolvus/Instances/Nolvus Awakening/STOCK GAME/Data")
 # FormID в имени файла: восемь шестнадцатеричных знаков между подчёркиваниями.
 _FORMID_RE = re.compile(r"_([0-9A-Fa-f]{8})_\d+\.(?:fuz|wav|lip)$")
 _FEMALE_RE = re.compile(r"female", re.I)
@@ -101,8 +104,34 @@ def _bsa_voice_paths(bsa: Path) -> list[tuple[str, str, str]]:
     return got
 
 
+def npc_voice_gender() -> dict:
+    """Тип голоса (в нижнем регистре) → пол, взятый из записи NPC_.
+
+    Имя типа голоса называет пол только у ванильных: `MaleNord` — да, `BergrisarVoice` —
+    нет, а таких в паке большинство. Но VTCK записи NPC_ ссылается ровно на этот тип, а
+    пол в ней стоит флагом ACBS, и читать его не надо угадывать.
+
+    Замер: покрытие реплик по полу 11,7% → 66,2%, и два источника расходятся на 0,9%.
+    Ошибка здесь не обязана останавливать перевод, поэтому неудача — пустой словарь, а
+    не исключение: было 11,7%, столько и останется.
+    """
+    try:
+        from translator.characters import npc_index as _ni
+        idx = _ni.scan(MODS_DIR, Path(__file__).resolve().parents[1] / "cache" / "npc_index.json",
+                       game_data=GAME_DATA)
+        return {vt: c["sex"] for vt, c in _ni.by_voice_type(idx).items() if c["sex"]}
+    except Exception as exc:                                    # noqa: BLE001
+        print(f"  индекс NPC_ недоступен ({exc}) — пол только по имени голоса",
+              file=out, flush=True)
+        return {}
+
+
 def scan_bsa(mods_dir: Path, cache: Path) -> dict:
-    """{(плагин, FormID6): {пол}} из BSA. Список архивов кэшируется на диск."""
+    """{(плагин, FormID6): {типы голоса}} из BSA. Список архивов кэшируется на диск.
+
+    Возвращается ТИП, а не пол: пол теперь берётся из двух источников — из имени типа и
+    из записи NPC_, — и сводить их в один ответ должно одно место, а не два.
+    """
     import json as _json
     known = {}
     if cache.exists():
@@ -121,12 +150,9 @@ def scan_bsa(mods_dir: Path, cache: Path) -> dict:
             if i % 50 == 0:
                 print(f"      прочитано архивов: {i}/{len(bsas)}", file=out, flush=True)
         for plugin, vt, fname in known[key]:
-            g = gender_of(vt)
-            if g is None:
-                continue
             m = _FORMID_RE.search(fname)
             if m:
-                seen[(plugin.lower(), m.group(1).upper()[2:])].add(g)
+                seen[(plugin.lower(), m.group(1).upper()[2:])].add(vt.lower())
     if changed:
         cache.write_text(_json.dumps(known), encoding="utf-8")
     return seen
@@ -150,22 +176,29 @@ def scan(mods_dir: Path = MODS_DIR, with_bsa: bool = True) -> tuple[dict, collec
             for vt_dir in plugin_dir.iterdir():
                 if not vt_dir.is_dir():
                     continue
-                g = gender_of(vt_dir.name)
-                if g is None:
-                    stat["тип голоса без пола"] += 1
-                    continue
                 for f in vt_dir.iterdir():
                     m = _FORMID_RE.search(f.name)
                     if not m:
                         continue
                     stat["файлов озвучки"] += 1
-                    seen[(plugin, m.group(1).upper()[2:])].add(g)
+                    seen[(plugin, m.group(1).upper()[2:])].add(vt_dir.name.lower())
+
+    # Два источника, и они не конкурируют: имя типа отвечает за ванильные голоса,
+    # запись NPC_ — за персональные, которых в паке большинство. Расходятся они на 0,9%
+    # реплик, и там мы по-прежнему молчим: неверный род ломает текст, отсутствующий нет.
+    by_record = npc_voice_gender()
+    stat["типов голоса с полом из NPC_"] = len(by_record)
+
     gender: dict[tuple[str, str], str] = {}
-    for key, gs in seen.items():
+    for key, vts in seen.items():
+        gs = {g for g in (gender_of(v) for v in vts) if g}
+        gs |= {by_record[v] for v in vts if v in by_record}
         if len(gs) == 1:
             gender[key] = next(iter(gs))
+        elif len(gs) > 1:
+            stat["источники расходятся — пол не определён"] += 1
         else:
-            stat["реплика звучит и мужским, и женским — пол не определён"] += 1
+            stat["тип голоса без пола"] += 1
     stat["реплик с определённым полом"] = len(gender)
     return gender, stat
 

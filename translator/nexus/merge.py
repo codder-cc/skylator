@@ -194,10 +194,12 @@ def row_match_id(row: dict) -> Optional[tuple]:
 
     key = row.get("key") or ""
 
+    # Both MCM encodings share one namespace: a table packed in a .bsa and the same
+    # table shipped loose are the same strings, and the game resolves loose over packed.
     if key.startswith("bsa-mcm:"):
         parts = key[len("bsa-mcm:"):].split(":", 3)
         if len(parts) == 4 and parts[2].isdigit():
-            return ("bsa-mcm", table_stem(parts[1].rsplit("/", 1)[-1]), parts[3])
+            return ("mcm", table_stem(parts[1].rsplit("/", 1)[-1]), parts[3])
         return None
 
     if key.startswith("mcm:"):
@@ -230,6 +232,12 @@ def _index_ours(rows: Iterable[dict]) -> tuple[dict, dict]:
         mid = row_match_id(r)
         if mid is None:
             continue
+        # A mod can carry the same MCM table loose and inside its .bsa. Skyrim reads the
+        # loose one, so that is the row a translation should land on; without this the
+        # winner would be whichever the query happened to return last.
+        if mid in exact and mid[0] == "mcm":
+            if (r.get("key") or "").startswith("bsa-mcm:"):
+                continue
         exact[mid] = r
         if mid[0] != "esp":
             continue                     # only a FormID has a master byte to mask

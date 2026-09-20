@@ -188,8 +188,13 @@ def harvest_mcm(path: Path, kind: str = "mcm") -> DonorSource:
         text = (text or "").strip()
         if not mcm_key or not text:
             continue
+        # Matched as "mcm" whether the table was loose or inside a .bsa. Where the file
+        # physically sits is packaging, not identity: our copy of A Matter of Time keeps
+        # its table in a BSA and the published translation ships the same table loose,
+        # and keying on the container made all 133 of its strings unmatched. `kind` stays
+        # on the row for reporting, because a person still wants to know which it was.
         src.strings.append(DonorString(
-            kind=kind, match_id=(kind, stem, mcm_key), text=text, origin=path.name))
+            kind=kind, match_id=("mcm", stem, mcm_key), text=text, origin=path.name))
     return src
 
 

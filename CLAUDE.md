@@ -50,6 +50,7 @@ translator/
   cli.py                  nolvus-translate CLI entry point
 
   db/                     ← SQLite translation store (NEW)
+    asset_seed.py         Seeds MCM/SWF rows — bulk_insert_strings cannot carry their keys
     database.py           TranslationDB — WAL-mode SQLite, thread-local connections
     repo.py               StringRepo — CRUD, paginated queries, diff checkpoints
     importer.py           Background .trans.json → SQLite import (runs on startup)
@@ -311,6 +312,13 @@ Checkpoints are diff-based — only the changed strings are stored, not full cop
 402 Premium required, 404 mod/file gone, 429 quota, 400 no hint matched, 409 browser
 route unavailable on this host.
 
+**Asset strings must be seeded first.** `bulk_insert_strings` rebuilds a row's key from
+its FormID fields, which an MCM line does not have, so the bootstrap skipped asset rows and
+nothing else inserted them — 463 461 plugin rows and zero asset rows on this install, with
+every `mcm`/`bsa`/`swf` scope silently selecting from an empty set. Run the `seed_assets`
+job (`translator/db/asset_seed.py`) to fill them; it needs BSArch for packed MCM and FFDec
+for SWF, and skips the plugins rather than re-parse them.
+
 **Translate From Mod** (`translator/nexus/merge.py`) folds a published translation into
 the string store. Matching is by identity, never by text similarity — the donor's text is
 in the target language and ours is in the source. Plugins match on
@@ -367,6 +375,7 @@ after one manual sign-in; `nxm://` stays as the fallback. `/api/nexus/account` r
 { "type": "apply_mod",      "mods": ["ModName"] }
 { "type": "translate_bsa",  "mods": ["ModName"] }
 { "type": "scan",           "mods": ["ModName"] }
+{ "type": "seed_assets",    "mods": ["ModName"] }   // MCM/SWF rows; omit mods for all
 { "type": "validate",       "mods": ["ModName"] }
 { "type": "fetch_nexus",    "mods": ["ModName"] }
 { "type": "translate_all",  "options": { "resume": true } }

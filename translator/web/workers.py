@@ -27,15 +27,14 @@ def save_translation(
         from translator.data_manager.string_manager import StringManager
         mgr = StringManager(repo, Path(mods_dir))
 
-        if key_str.startswith("mcm:"):
-            parts   = key_str.split(":", 3)
-            esp_key = parts[1] if len(parts) > 1 else "mcm"
-        elif key_str.startswith("bsa-mcm:"):
-            parts   = key_str.split(":", 4)
-            esp_key = parts[1] if len(parts) > 1 else "bsa"
-        elif key_str.startswith("swf:"):
-            parts   = key_str.split(":", 2)
-            esp_key = parts[1] if len(parts) > 1 else "swf"
+        from translator.db.asset_seed import asset_esp_name, is_asset_key
+
+        if is_asset_key(key_str):
+            # esp_name is part of a row's identity, so it must not depend on which code
+            # path created the row. This used to take the key's second segment — a path —
+            # while the seeder and the scanner used the file name, which would file one
+            # string under two names and produce two rows for it.
+            esp_key = asset_esp_name(key_str) or esp_name or "asset"
         else:
             esp_key = esp_name
             # Bootstrap ESP into SQLite before first write (TOCTOU-safe)

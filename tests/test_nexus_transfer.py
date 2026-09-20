@@ -412,3 +412,39 @@ def test_planning_writes_nothing(repo):
     _seed(repo, rows=[("01000800", "Iron Sword", "", "pending")])
     merge_mod.plan(repo, "TestMod", _donor(items=[("01000800", "Железный меч")]))
     assert repo.get_all_strings("TestMod")[0]["translation"] == ""
+
+
+def test_a_packed_table_matches_a_loose_one(repo):
+    # Where an MCM table physically sits is packaging, not identity. Our copy of
+    # A Matter of Time keeps its table inside a .bsa and the published Russian
+    # translation ships the same table loose; keying on the container made all 133 of
+    # its strings unmatched while looking like the donor simply had nothing to offer.
+    _seed_mcm(repo, rel="interface/translations/amatteroftime_english.txt",
+              rows=[(0, "$AMOT Page General", "General", "", "pending")])
+    # Restate ours in the packed form, leaving the donor loose.
+    repo.db.execute(
+        "UPDATE strings SET key = ?, esp_name = ?",
+        ("bsa-mcm:AMOT.bsa:interface/translations/amatteroftime_english.txt"
+         ":0:$AMOT Page General", "AMOT.bsa/amatteroftime_english.txt"))
+    repo.db.commit()
+
+    plan = merge_mod.plan(repo, "TestMod",
+                          _mcm_donor("amatteroftime_russian.txt",
+                                     [("$AMOT Page General", "Общие")]))
+    assert plan.counts == {FILL: 1}
+
+
+def test_a_loose_table_wins_over_the_packed_copy(repo):
+    # Skyrim reads a loose table over the one in the archive, so that is the row a
+    # translation must land on. Without this the winner is whichever row the query
+    # happened to return last.
+    _seed_mcm(repo, rel="interface/translations/x_english.txt",
+              rows=[(0, "$K", "Loose original", "", "pending")])
+    repo.upsert(mod_name="TestMod", esp_name="X.bsa/x_english.txt",
+                key="bsa-mcm:X.bsa:interface/translations/x_english.txt:0:$K",
+                original="Packed original", translation="", status="pending",
+                form_id="$K", rec_type="BSA-MCM", field_type="TEXT", field_index=0)
+
+    plan = merge_mod.plan(repo, "TestMod", _mcm_donor("x_russian.txt", [("$K", "Текст")]))
+    assert plan.counts == {FILL: 1}
+    assert plan.candidates[0].original == "Loose original"

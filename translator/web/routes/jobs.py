@@ -151,6 +151,14 @@ def create_job():
             repo      = current_app.config.get("STRING_REPO"),
             cfg       = cfg,
         )
+    elif job_type == "seed_assets":
+        job = _create_seed_assets_job(
+            jm, current_app.config["SCANNER"],
+            mod_name  = mod_names[0] if mod_names else None,
+            bsa_cache = current_app.config.get("BSA_CACHE"),
+            swf_cache = current_app.config.get("SWF_CACHE"),
+            repo      = current_app.config.get("STRING_REPO"),
+        )
     elif job_type == "repair_strings":
         job = _create_repair_job(jm, apply=bool(options.get("apply", True)))
     elif job_type == "ensemble":
@@ -1449,6 +1457,64 @@ def _create_scan_job(jm, scanner, mod_name: str | None = None,
         params   = {"mod_name": mod_name} if mod_name else {},
         fn       = run,
     )
+
+
+
+def _create_seed_assets_job(jm, scanner, mod_name=None, bsa_cache=None,
+                            swf_cache=None, repo=None):
+    """Put a mod's MCM and SWF strings into the store.
+
+    The scan job seeds plugins only: it walks .esp/.esm/.esl directly and hands them to
+    bulk_insert_strings, which keys a row by its FormID fields. An MCM line has no
+    FormID, so its key is the path and $KEY the scanner built, and nothing ever inserted
+    it. Asset rows therefore only appeared one at a time, when somebody saved a
+    translation for one — which on a store of 463 461 plugin rows meant none at all, and
+    every mcm/bsa/swf scope quietly selected from an empty set.
+
+    Unpacking a BSA and exporting a SWF is the expensive part and cannot be avoided, so
+    the plugins are skipped (`assets_only`) rather than re-parsed to be thrown away.
+    """
+    from translator.db.asset_seed import asset_counts, seed_asset_strings
+
+    def _work(job):
+        if repo is None:
+            raise RuntimeError("the translation store is not loaded")
+
+        folders = ([mod_name] if mod_name
+                   else [m.folder_name for m in (scanner.scan_all() if scanner else [])])
+        job.progress.total = len(folders)
+        job.add_log(f"Seeding asset strings for {len(folders)} mod(s)")
+        if bsa_cache is None or not getattr(bsa_cache, "available", lambda: False)():
+            job.add_log("BSArch is unavailable — MCM text inside .bsa will be skipped")
+        if swf_cache is None or not getattr(swf_cache, "available", lambda: False)():
+            job.add_log("FFDec is unavailable — SWF interface text will be skipped")
+
+        totals = {"inserted": 0, "mods": 0}
+        for i, folder in enumerate(folders, 1):
+            job.progress.current = i
+            job.progress.message = folder
+            try:
+                strings = scanner.get_mod_strings(
+                    folder, bsa_cache=bsa_cache, swf_cache=swf_cache, assets_only=True)
+                out = seed_asset_strings(repo, folder, strings)
+            except Exception as exc:                  # one bad mod must not end the run
+                job.add_log(f"{folder}: {type(exc).__name__}: {exc}")
+                continue
+            if out["inserted"]:
+                totals["inserted"] += out["inserted"]
+                totals["mods"] += 1
+                job.add_log(f"{folder}: +{out['inserted']} {out.get('by_kind')}")
+
+        after = asset_counts(repo)
+        msg = (f"Seeded {totals['inserted']} asset string(s) across {totals['mods']} mod(s); "
+               f"store now holds {after}")
+        job.add_log(msg)
+        job.result = msg
+        job.progress.message = msg
+
+    name = f"Seed asset strings: {mod_name}" if mod_name else "Seed asset strings"
+    return jm.create(name=name, job_type="seed_assets",
+                     params={"mod_name": mod_name}, fn=_work)
 
 
 def _create_recompute_scores_job(jm, cfg, mod_name: str = None, repo=None):

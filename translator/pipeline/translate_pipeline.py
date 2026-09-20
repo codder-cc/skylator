@@ -562,6 +562,15 @@ class TranslatePipeline:
                     })
                 for esp_name, esp_rows in by_esp.items():
                     repo.bulk_insert_strings(mod_name, esp_name, esp_rows)
+                # MCM and SWF rows are keyed by their own path/$KEY, not by a FormID, so
+                # bulk_insert_strings cannot carry them — it rebuilds the key. Skipping
+                # them here (as this did) meant the reload below dropped them entirely,
+                # and every mcm/bsa/swf scope downstream selected from an empty set.
+                from translator.db.asset_seed import seed_asset_strings
+                seeded = seed_asset_strings(repo, mod_name, strings)
+                if seeded.get("inserted"):
+                    job.add_log(f"Bootstrap: seeded {seeded['inserted']} asset string(s) "
+                                f"{seeded.get('by_kind')}")
                 # Reload from DB so strings have IDs
                 db_rows = repo.get_all_strings(mod_name)
                 strings = [{

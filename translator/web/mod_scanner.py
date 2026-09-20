@@ -178,7 +178,8 @@ class ModScanner:
     def get_mod_strings(self, folder_name: str,
                         global_dict=None,
                         bsa_cache=None,
-                        swf_cache=None) -> list[dict]:
+                        swf_cache=None,
+                        assets_only: bool = False) -> list[dict]:
         """
         Extract strings from ESP/ESM, loose MCM, BSA-embedded MCM, and SWF.
         Returns list of dicts: {form_id, rec_type, field, original, translation,
@@ -188,6 +189,9 @@ class ModScanner:
         global_dict: GlobalTextDict instance (optional).
         bsa_cache: BsaStringCache instance (optional) — enables BSA-embedded MCM.
         swf_cache: SwfStringCache instance (optional) — enables SWF text strings.
+        assets_only: skip the plugins and return only MCM/BSA/SWF strings. Seeding asset
+            rows into a store that already holds the plugin rows would otherwise re-parse
+            every ESP in the modlist to throw the result away.
 
         This is the NO-DATABASE path. Both callers reach it only when SQLite has no rows
         for the mod — the strings page falls back to it while an import is still running,
@@ -207,7 +211,7 @@ class ModScanner:
 
         from scripts.esp_engine import compute_string_status as _compute_status
 
-        for ext in ("*.esp", "*.esm", "*.esl"):
+        for ext in (() if assets_only else ("*.esp", "*.esm", "*.esl")):
             for esp_path in folder.rglob(ext):
                 try:
                     mod_cache = trans_cache.get(esp_path.stem, {})

@@ -147,6 +147,33 @@ class StringRepo:
             self.db.commit()
         return len(rows)
 
+    def bulk_insert_asset_strings(self, rows: list[tuple]) -> int:
+        """Insert MCM/BSA/SWF rows, keeping the key the scanner gave them.
+
+        Separate from bulk_insert_strings because that one *rebuilds* the key out of
+        (form_id, rec_type, field_type, field_index, vmad_idx) — the shape a plugin
+        record has. A line in an MCM table has no FormID, so its key is the path and
+        $KEY the scanner produced, and rebuilding it would produce a row nothing can
+        find again.
+
+        DO NOTHING on conflict: seeding is additive and must never tread on a
+        translation that already exists.
+        """
+        if not rows:
+            return 0
+        sql = """
+        INSERT INTO strings
+            (mod_name, esp_name, key, original, translation, status,
+             quality_score, form_id, rec_type, field_type, field_index,
+             vmad_str_idx, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(mod_name, esp_name, key) DO NOTHING
+        """
+        with _write_lock:
+            self.db.executemany(sql, rows)
+            self.db.commit()
+        return len(rows)
+
     # ── Existence checks ─────────────────────────────────────────────────────
 
     def esp_exists(self, mod_name: str, esp_name: str) -> bool:

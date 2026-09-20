@@ -202,3 +202,41 @@ async def test_a_model_lost_to_a_failure_still_reads_as_a_problem(monkeypatch):
     ok = await rs._ensure_model_for_work(state, asyncio.get_running_loop())
     assert ok is False
     assert state.backend is None
+
+
+@pytest.mark.asyncio
+async def test_work_with_a_remembered_model_and_no_failure_restores_it(monkeypatch):
+    """Модель просто отсутствует — и этим состоянием не владеет никто.
+
+    Так выглядит агент после перезапуска: выгрузки по простою не было, сорванной
+    загрузки тоже, запомненный спек на месте. Контроллер ждёт отсрочки, которой нет, а
+    хост может лежать — и M5 дважды простоял так с пакетом 0/3197, исправно опрашивая
+    хост и выглядя живым. Работа на руках и открытое окно — достаточная причина.
+    """
+    called = []
+
+    async def _fake_wake(state, _loop):
+        called.append(True)
+        state.backend = _Backend()
+        return True
+
+    monkeypatch.setattr(rs, "_wake_up", _fake_wake)
+    state = _State(ALWAYS, backend=None, idle_unloaded=False, asleep=False,
+                   model_spec={"model_path": "m.gguf"}, wake_failures=0)
+
+    assert await rs._ensure_model_for_work(state, asyncio.get_running_loop()) is True
+    assert called, "веса должен был вернуть сам чанк"
+
+
+@pytest.mark.asyncio
+async def test_a_pending_retry_is_not_overridden_by_work(monkeypatch):
+    """Загрузка сорвалась — за ней стоит отсрочка, и лезть поверх неё чанком значит
+    разогнать повторные попытки и спрятать настоящую поломку."""
+    monkeypatch.setattr(rs, "_wake_up",
+                        lambda *_a, **_k: pytest.fail("чанк перебил отсрочку повтора"))
+    state = _State(ALWAYS, backend=None, idle_unloaded=False, asleep=False,
+                   model_spec={"model_path": "m.gguf"}, wake_failures=2,
+                   wake_retry_at=time.monotonic() + 60)
+
+    assert await rs._ensure_model_for_work(state, asyncio.get_running_loop()) is False
+    assert state.backend is None

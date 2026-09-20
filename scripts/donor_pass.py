@@ -49,6 +49,40 @@ def _post(path: str, payload: dict, timeout: int = 3600):
     return json.load(urllib.request.urlopen(req, timeout=timeout))
 
 
+def sweep_parts(donors_dir: Path, older_than_sec: float = 3600) -> int:
+    """Убрать недокачанные хвосты, которые уже никто не докачает.
+
+    `.part` живёт ради возобновления, и это правильно — пока скачивание идёт. Оборванное
+    скачивание оставляет его навсегда, а хвост от донора на 400 мегабайт занимает ровно
+    столько же, сколько сам донор.
+    """
+    freed = 0
+    now = time.time()
+    for p in donors_dir.glob("*.part"):
+        try:
+            if now - p.stat().st_mtime < older_than_sec:
+                continue        # возможно, качается прямо сейчас
+            freed += p.stat().st_size
+            p.unlink()
+        except OSError:
+            pass
+    return freed
+
+
+def donor_size_mb(mod_id: int) -> float:
+    """Размер самого большого файла донора в мегабайтах, 0 — если не удалось узнать."""
+    try:
+        files = _get(f"/api/nexus/mods/{mod_id}/files?categories=main,update",
+                     timeout=180) or {}
+    except Exception:
+        return 0.0
+    best = 0
+    for f in (files.get("files") or files.get("results") or []):
+        size = f.get("size_in_bytes") or (f.get("size") or 0) * 1024
+        best = max(best, int(size or 0))
+    return best / 2**20
+
+
 def mods_by_size(limit: int) -> list:
     con = sqlite3.connect(str(ROOT / "cache" / "translations.db"), timeout=180)
     con.execute("PRAGMA busy_timeout=180000")
@@ -66,7 +100,20 @@ def main() -> None:
     ap.add_argument("--write", action="store_true")
     ap.add_argument("--language", default="Russian")
     ap.add_argument("--skip", action="append", default=[])
+    # Донор — источник текста, а не дистрибутив. Сорок килобайт перевода внутри
+    # четырёхсотмегабайтного архива патч-хаба стоят дороже, чем дают: архив всё равно
+    # качается целиком, транзитом через диск. Порог отсекает такие, и они остаются
+    # доступны поимённо, когда действительно нужны.
+    ap.add_argument("--max-mb", type=float, default=150.0,
+                    help="не брать доноров тяжелее этого (0 — без порога)")
     args = ap.parse_args()
+
+    donors_dir = ROOT / "cache" / "donors"
+    donors_dir.mkdir(parents=True, exist_ok=True)
+    freed = sweep_parts(donors_dir)
+    if freed:
+        print(f"убрано недокачанных хвостов: {freed / 2**20:,.0f} МБ\n",
+              file=out, flush=True)
 
     mods = [(m, n) for m, n in mods_by_size(args.top) if m not in args.skip]
     print(f"модов к обходу: {len(mods)}   строк в них: {sum(n for _, n in mods):,}\n",
@@ -89,6 +136,13 @@ def main() -> None:
         # Самый скачиваемый — не гарантия качества, но лучший доступный признак того,
         # что перевод живой и кто-то его проверял.
         best = max(donors, key=lambda d: d.get("downloads") or 0)
+        if args.max_mb:
+            mb = donor_size_mb(best.get("mod_id"))
+            if mb > args.max_mb:
+                totals["слишком тяжёлый"] = totals.get("слишком тяжёлый", 0) + 1
+                print(f"  {mod[:44]:<44} {n:>7,}  донор {mb:,.0f} МБ — пропускаю "
+                      f"(порог {args.max_mb:,.0f})", file=out, flush=True)
+                continue
         t0 = time.time()
         try:
             rep = _post("/api/nexus/transfer/plan",

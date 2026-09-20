@@ -164,12 +164,20 @@ class TranslationDB:
         log.info("DB backup written to %s", dest_path)
         return dest_path
 
-    def rotating_backup(self, backup_dir: Path, keep: int = 7, stamp: str | None = None) -> Path:
+    def rotating_backup(self, backup_dir: Path, keep: int = 7, stamp: str | None = None,
+                        max_bytes: int | None = None) -> Path:
         """Write a *timestamped* integrity-verified snapshot and prune to the newest `keep`.
 
         Rotation matters: overwriting one fixed backup file means a single bad snapshot
         destroys the last good copy. Timestamped files keep older good snapshots intact even
         if a later one is rejected. Returns the snapshot path.
+
+        `max_bytes` — потолок на ВСЮ папку, и он важнее счёта. «Храним восемь» писалось,
+        когда база была небольшой; она выросла до 2 ГБ, и та же восьмёрка стала занимать
+        шестнадцать. Счёт снимков не говорит ничего о занятом месте, поэтому после
+        обрезки по числу идёт обрезка по объёму — с конца, самые старые первыми, но
+        последний снимок не удаляется никогда: сетка безопасности без единственной ячейки
+        это не сетка.
         """
         import time as _t
         backup_dir = Path(backup_dir)
@@ -185,4 +193,18 @@ class TranslationDB:
                 old.unlink()
             except OSError:
                 pass
+
+        if max_bytes:
+            snaps = sorted(backup_dir.glob("translations.*.db"))
+            total = sum(p.stat().st_size for p in snaps)
+            while total > max_bytes and len(snaps) > 1:
+                oldest = snaps.pop(0)
+                try:
+                    size = oldest.stat().st_size
+                    oldest.unlink()
+                    total -= size
+                    log.info("db backup: dropped %s to stay under %.1f GB",
+                             oldest.name, max_bytes / 2**30)
+                except OSError:
+                    break
         return dest

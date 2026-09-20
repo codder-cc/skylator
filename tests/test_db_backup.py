@@ -60,3 +60,29 @@ def test_backup_rejects_corrupt_snapshot(db, tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         db.backup_to(dest, verify=True)
     assert not dest.exists()                              # corrupt snapshot not left behind
+
+
+def test_the_folder_stays_under_its_size_cap(db, tmp_path):
+    """Счёт снимков ничего не говорит о занятом месте.
+
+    «Храним восемь» писалось при небольшой базе; она выросла до 2 ГБ, и та же восьмёрка
+    стала занимать шестнадцать — на диске лежало 7,3 ГБ из пяти снимков.
+    """
+    bdir = tmp_path / "b"
+    for i in range(1, 6):
+        db.rotating_backup(bdir, keep=8, stamp=f"2026010{i}-000000")
+    one = next(bdir.glob("translations.*.db")).stat().st_size
+
+    # Потолок ровно на два снимка — лишние обязаны уйти, начиная со старейших.
+    db.rotating_backup(bdir, keep=8, stamp="20260106-000000", max_bytes=one * 2)
+    left = sorted(p.name for p in bdir.glob("translations.*.db"))
+    assert sum(p.stat().st_size for p in bdir.glob("translations.*.db")) <= one * 2
+    assert left[-1] == "translations.20260106-000000.db", "свежий снимок остаётся"
+
+
+def test_the_last_snapshot_is_never_dropped(db, tmp_path):
+    # Сетка безопасности без единственной ячейки — это не сетка: даже потолок меньше
+    # одного снимка не должен оставить папку пустой.
+    bdir = tmp_path / "b"
+    db.rotating_backup(bdir, keep=8, stamp="20260101-000000", max_bytes=1)
+    assert len(list(bdir.glob("translations.*.db"))) == 1

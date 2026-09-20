@@ -318,7 +318,13 @@ def create_app(config_path: Path | None = None) -> Flask:
             try:
                 # Rotating, integrity-verified snapshots: a corrupt snapshot is rejected and
                 # can never clobber the last good one (timestamped, newest 8 kept ≈ 2 days).
-                _db.rotating_backup(_backup_dir, keep=8)
+                #
+                # Плюс потолок на папку. «Восемь снимков» писалось при небольшой базе; она
+                # выросла до 2 ГБ, и восьмёрка стала занимать шестнадцать — на диске
+                # лежало 7,3 ГБ из пяти. Счёт снимков о занятом месте не говорит ничего,
+                # поэтому решает объём: шесть гигабайт это три последних снимка, то есть
+                # почти сутки истории, и дальше папка не растёт.
+                _db.rotating_backup(_backup_dir, keep=8, max_bytes=6 * 2**30)
             except Exception as exc:
                 log.warning("DB backup failed: %s", exc)
 

@@ -39,6 +39,14 @@ cache/
 translated_mods.txt
 translation_progress.json
 
+# ── Local runtime artefacts with absolute paths ───────────────────────────────
+# .coverage is a SQLite database of this machine's file layout; settings.local.json
+# is per-machine by convention and holds absolute permission paths. Neither belongs
+# in a repository other people read.
+.coverage
+.coverage.*
+.claude/settings.local.json
+
 # ── Git worktrees ─────────────────────────────────────────────────────────────
 # `git worktree add` under .claude/ puts a whole checkout inside the repo, and it
 # shows up as untracked — one `git add -A` away from committing a copy of the tree.

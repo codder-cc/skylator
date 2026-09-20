@@ -70,21 +70,21 @@ def worker(label: str) -> dict:
 
 
 def idle_and_delivered(label: str) -> bool:
-    """Машина свободна И всё доставлено — только тогда трогать её безопасно."""
+    """Машина свободна — то есть не держит ни одного пакета.
+
+    Считается по тому, что докладывает САМ АГЕНТ, а не по таблице назначений. Первая
+    версия смотрела в неё и ждала вечно: отменённое назначение остаётся `leased` с
+    недоставленным остатком, которого уже никто не сделает, и условие «всё доставлено»
+    для него не наступает никогда.
+
+    Недоставленное при этом не теряется и ждать его не нужно: цикл доставки у агента
+    отдельный от производства, продолжает слать сделанное после отмены, а хост принимает
+    результаты даже по забытому пакету — «take the work and drop only the attribution».
+    """
     w = worker(label)
     if not w:
         return False
-    if (w.get("offline_jobs") or []):
-        return False
-    # Доставка идёт отдельным циклом от производства: пустой список пакетов ещё не
-    # означает, что последняя партия доехала до хоста.
-    con = sqlite3.connect(str(ROOT / "cache" / "translations.db"), timeout=180)
-    con.execute("PRAGMA busy_timeout=180000")
-    left = con.execute(
-        "SELECT COALESCE(SUM(total - delivered), 0) FROM assignments "
-        "WHERE agent_id=? AND state='leased'", (label,)).fetchone()[0]
-    con.close()
-    return int(left or 0) == 0
+    return not (w.get("offline_jobs") or [])
 
 
 def sample_strings(n: int) -> list:

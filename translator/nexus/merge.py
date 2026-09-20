@@ -347,7 +347,20 @@ def apply(
     if status not in ("needs_review", "translated"):
         raise ValueError(f"status must be needs_review or translated, not {status!r}")
 
-    wanted = set(only_keys) if only_keys is not None else None
+    # JSON не знает кортежей: тикнутые в интерфейсе строки приезжают как ["esp", "key"],
+    # и `set(only_keys)` на них падает с «unhashable type: 'list'» — то есть ровно та
+    # форма запроса, которую документирует /transfer/apply, не работала. Приводим пары
+    # к кортежам здесь: это функция, чей договор — «набор (esp_name, key)», и терпимой
+    # к форме должна быть она, а не каждый вызывающий.
+    wanted = None
+    if only_keys is not None:
+        wanted = set()
+        for pair in only_keys:
+            if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                wanted.add((pair[0], pair[1]))
+            else:
+                # Молча пропустить — значит «применено 0» без объяснения; лучше сказать.
+                raise ValueError(f"only_keys wants (esp_name, key) pairs, got {pair!r}")
     applied = skipped = dict_added = 0
     touched_esps: set = set()
 

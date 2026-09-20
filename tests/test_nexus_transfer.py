@@ -349,6 +349,31 @@ def test_only_the_ticked_rows_are_written(repo):
     assert rows["01000800"] == "Железный меч" and rows["01000801"] == ""
 
 
+def test_ticked_rows_arrive_from_json_as_lists(repo):
+    # Тест выше передаёт кортежи и потому ничего не проверял: JSON кортежей не знает, и
+    # интерфейс присылает ["esp", "key"]. На них `set(only_keys)` падал с «unhashable
+    # type: 'list'» — то есть форма запроса, которую документирует /transfer/apply,
+    # не работала вовсе.
+    _seed(repo, rows=[("01000800", "Iron Sword", "", "pending"),
+                      ("01000801", "Steel Sword", "", "pending")])
+    plan = merge_mod.plan(repo, "TestMod", _donor(items=[
+        ("01000800", "Железный меч"), ("01000801", "Стальной меч")]))
+    out = merge_mod.apply(repo, plan, only_keys=[["Test.esp", _key("01000800")]])
+
+    assert out["applied"] == 1
+    rows = {r["form_id"]: r["translation"] for r in repo.get_all_strings("TestMod")}
+    assert rows["01000800"] == "Железный меч" and rows["01000801"] == ""
+
+
+def test_a_malformed_ticked_row_says_so_instead_of_writing_nothing(repo):
+    # Пропустить молча — значит вернуть «применено 0» без причины, и искать её будет
+    # человек, глядя на пустой результат.
+    _seed(repo, rows=[("01000800", "Iron Sword", "", "pending")])
+    plan = merge_mod.plan(repo, "TestMod", _donor(items=[("01000800", "Железный меч")]))
+    with pytest.raises(ValueError, match="only_keys"):
+        merge_mod.apply(repo, plan, only_keys=["Test.esp"])
+
+
 def test_an_applied_row_records_where_it_came_from(repo):
     # A translation taken from someone else's mod must never be mistaken later for our
     # own output — not in a quality report, and not in a training set.

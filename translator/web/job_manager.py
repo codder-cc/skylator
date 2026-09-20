@@ -106,6 +106,23 @@ class Job:
         end = self.finished_at or time.time()
         return round(end - self.started_at, 1)
 
+    def note_progress(self, current: int) -> None:
+        """Записать продвижение вместе с отметкой времени, на которой считается ETA.
+
+        Отметки — единственный вход ETA, и без них `_eta_seconds` видит меньше двух
+        замеров и молчит. Именно так и вышло с офлайн-пакетами: прогресс им обновляли
+        напрямую через `progress.current`, проценты считались верно, а ETA оставался
+        None — то есть у самых длинных работ в системе, идущих сутками, времени окончания
+        не было вовсе, и его приходилось считать руками.
+        """
+        self.progress.current = current
+        if self.progress.total > 0 and current > 0:
+            self._timing.append(time.time())
+            self._timing_counts.append(current)
+            if len(self._timing) > 20:
+                self._timing = self._timing[-20:]
+                self._timing_counts = self._timing_counts[-20:]
+
     def _eta_seconds(self) -> float | None:
         if (len(self._timing) < 2 or self.progress.total <= 0
                 or self.progress.current >= self.progress.total):

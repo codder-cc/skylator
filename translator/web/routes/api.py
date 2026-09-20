@@ -1374,7 +1374,9 @@ def workers_heartbeat():
             all_oj   = registry.get_offline_jobs_for_host_job(oj["host_job_id"])
             new_done = sum(o.get("done", 0) for o in all_oj)
             if new_done > host_job.progress.current:
-                host_job.progress.current = new_done
+                # note_progress, а не присваивание: ETA считается по отметкам времени,
+                # и без них у пакета, идущего сутки, времени окончания просто не было.
+                host_job.note_progress(new_done)
                 host_job.progress.message = (
                     f"Receiving offline results ({new_done}/{host_job.progress.total})"
                 )
@@ -2771,10 +2773,7 @@ def workers_offline_results(label: str):
                     pass
     elif job is not None:
         # Update progress count
-        job.progress.current = min(
-            job.progress.current + len(results),
-            job.progress.total,
-        )
+        job.note_progress(min(job.progress.current + len(results), job.progress.total))
         job.progress.message = f"Receiving offline results ({job.progress.current}/{job.progress.total})"
         jm._notify(job)
 

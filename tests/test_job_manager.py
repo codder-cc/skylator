@@ -410,3 +410,49 @@ def test_clear_finished_removes_done_failed_cancelled(jm):
     assert "r" in remaining
     assert "o" in remaining
     assert not {"d", "f", "c"} & remaining
+
+
+# ── ETA у офлайн-пакета ───────────────────────────────────────────────────────
+
+
+def test_offline_progress_produces_an_eta():
+    """Проценты считались, а ETA оставался None — у самых длинных работ в системе.
+
+    Прогресс офлайн-пакета обновляли присваиванием в `progress.current`, а отметки
+    времени, на которых ETA и держится, при этом не писались. `_eta_seconds` видел
+    меньше двух замеров и молчал, поэтому время окончания пакета, идущего сутки,
+    приходилось считать руками.
+    """
+    from translator.web.job_manager import Job, JobStatus
+
+    job = Job(id="j", name="n", job_type="translate_strings", status=JobStatus.OFFLINE_DISPATCHED)
+    job.progress.total = 1000
+    assert job.to_dict()["eta_seconds"] is None, "одного замера мало — это верно"
+
+    job.note_progress(100)
+    time.sleep(0.05)
+    job.note_progress(200)
+
+    eta = job.to_dict()["eta_seconds"]
+    assert eta is not None and eta > 0
+    # 800 осталось при той же скорости, что дала 100 за прошедшее время.
+    assert job.to_dict()["pct"] == pytest.approx(20.0)
+
+
+def test_a_finished_package_has_no_eta():
+    from translator.web.job_manager import Job, JobStatus
+    job = Job(id="j", name="n", job_type="translate_strings", status=JobStatus.OFFLINE_DISPATCHED)
+    job.progress.total = 10
+    job.note_progress(5)
+    time.sleep(0.02)
+    job.note_progress(10)
+    assert job.to_dict()["eta_seconds"] is None
+
+
+def test_progress_without_a_total_claims_nothing():
+    # Ноль в знаменателе — не повод выдумать время окончания.
+    from translator.web.job_manager import Job
+    job = Job(id="j", name="n", job_type="tool")
+    job.note_progress(5)
+    job.note_progress(9)
+    assert job.to_dict()["eta_seconds"] is None

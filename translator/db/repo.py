@@ -520,17 +520,31 @@ class StringRepo:
 
         Matching on the old text is what makes this safe: a twin that says something
         different was translated separately and is not this correction's business.
+
+        Но одного совпадения текста мало, и это стоило 860 строк за три часа. Донор
+        положил человеческий перевод в строку A; её близнец B держал тот же текст;
+        машина поправила B — и разнос переписал A машинным вариантом, поставив
+        source='duplicate'. Чужой человеческий перевод исчезал молча, а замер говорит,
+        что на классе с известным ответом он бьёт нас 258 раз против 90.
+
+        Поэтому правка разносится только на то, что писала МАШИНА. Понятие уже есть:
+        `MACHINE_SOURCES` из authority.py, которым пользуется правило официальной
+        таблицы, — и оно по той же причине не переспоривает руку. Всё, чего нет в этом
+        списке (перевод донора, ручная правка), разнос не трогает.
         """
         if not string_hash or not new_translation or not old_translation:
             return 0
         if old_translation.strip() == new_translation.strip():
             return 0
-        sql = """UPDATE strings
+        from translator.validation.authority import MACHINE_SOURCES
+        holes = ",".join("?" * len(MACHINE_SOURCES))
+        sql = f"""UPDATE strings
                     SET translation=?, status=?, quality_score=?, updated_at=?,
                         source='duplicate'
-                  WHERE string_hash=? AND TRIM(translation)=TRIM(?)"""
+                  WHERE string_hash=? AND TRIM(translation)=TRIM(?)
+                    AND LOWER(COALESCE(source,'')) IN ({holes})"""
         params = [new_translation, status, quality_score, time.time(),
-                  string_hash, old_translation]
+                  string_hash, old_translation, *sorted(MACHINE_SOURCES)]
         if exclude_id is not None:
             sql += " AND id != ?"
             params.append(exclude_id)

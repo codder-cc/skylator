@@ -159,3 +159,58 @@ def test_the_status_written_to_a_twin_comes_from_the_text(fakedb):
     rows = fakedb.execute("SELECT status FROM strings WHERE string_hash='h1'").fetchall()
     assert {r["status"] for r in rows} == {"needs_review"}, (
         "двойник получил статус, которого его текст не заслуживает")
+
+
+def test_a_human_translation_is_not_overwritten_by_a_machine_correction(fakedb, repo):
+    """Разнос переписывал и то, что положил человек, — 860 строк за три часа.
+
+    Донор кладёт человеческий перевод в строку A; её близнец B держит тот же текст;
+    машина правит B — и разнос переписывает A машинным вариантом, ставя
+    source='duplicate'. Чужой перевод исчезал молча, а замер говорит, что на классе с
+    известным ответом он бьёт нас 258 раз против 90.
+    """
+    _seed(fakedb, [
+        ("k1", "Robes of Alteration", "Мантия алхимии", "needs_review"),
+        ("k2", "Robes of Alteration", "Мантия алхимии", "needs_review"),
+    ])
+    # Первая пришла от донора, вторая — от машины.
+    fakedb.execute("UPDATE strings SET source='nexus-translation' WHERE key='k1'")
+    fakedb.execute("UPDATE strings SET source='ai' WHERE key='k2'")
+    fakedb.commit()
+
+    n = repo.apply_correction_to_duplicates(
+        _hash("Robes of Alteration"), "Мантия алхимии", "Мантия изменения",
+        "translated", 100)
+
+    rows = {r["key"]: r for r in fakedb.execute(
+        "SELECT key, translation, source FROM strings")}
+    assert rows["k1"]["translation"] == "Мантия алхимии", "перевод донора не трогаем"
+    assert rows["k1"]["source"] == "nexus-translation"
+    assert rows["k2"]["translation"] == "Мантия изменения", "машинную правку разносим"
+    assert n == 1
+
+
+def test_a_manual_edit_is_not_overwritten_either(fakedb, repo):
+    # Та же причина, что и у правила официальной таблицы: руку не переспоривает ничто.
+    _seed(fakedb, [
+        ("k1", "Robes of Alteration", "Мантия алхимии", "translated"),
+        ("k2", "Robes of Alteration", "Мантия алхимии", "needs_review"),
+    ])
+    fakedb.execute("UPDATE strings SET source='manual' WHERE key='k1'")
+    fakedb.commit()
+    repo.apply_correction_to_duplicates(
+        _hash("Robes of Alteration"), "Мантия алхимии", "Мантия изменения",
+        "translated", 100)
+    rows = {r["key"]: r["translation"] for r in fakedb.execute(
+        "SELECT key, translation FROM strings")}
+    assert rows["k1"] == "Мантия алхимии"
+
+
+def test_a_row_with_no_source_still_counts_as_machine_work(fakedb, repo):
+    # Пустой источник — это старый импорт, а не чья-то рука: он в MACHINE_SOURCES.
+    _seed(fakedb, [("k1", "Robes of Alteration", "Мантия алхимии", "needs_review")])
+    fakedb.execute("UPDATE strings SET source=NULL WHERE key='k1'")
+    fakedb.commit()
+    assert repo.apply_correction_to_duplicates(
+        _hash("Robes of Alteration"), "Мантия алхимии", "Мантия изменения",
+        "translated", 100) == 1

@@ -39,6 +39,11 @@ cache/
 translated_mods.txt
 translation_progress.json
 
+# ── Git worktrees ─────────────────────────────────────────────────────────────
+# `git worktree add` under .claude/ puts a whole checkout inside the repo, and it
+# shows up as untracked — one `git add -A` away from committing a copy of the tree.
+.claude/worktrees/
+
 # ── IDEs ──────────────────────────────────────────────────────────────────────
 .vscode/
 .idea/

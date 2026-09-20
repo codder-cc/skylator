@@ -810,15 +810,39 @@ def transfer_apply():
                          + [(c.esp_name, c.key) for c, _k, _n in rows])
             overwrite = True
 
+        # Запись переноса заводится ДО применения, чтобы у строк была куда ссылаться:
+        # номер нужен в момент записи, а не после. Итоги дописываются следом.
+        from translator.nexus import provenance as prov
+        repo = _repo()
+        status = d.get("status") or "needs_review"
+        policy = ("confirmed_only" if d.get("confirmed_only")
+                  else "only_keys" if d.get("only_keys")
+                  else "overwrite" if overwrite else "fill_only")
+        import_id = None
+        try:
+            import_id = prov.record_import(repo.db, report, {}, policy, status)
+        except Exception as exc:                                   # noqa: BLE001
+            log.warning("could not record donor provenance: %s", exc)
+
         result = merge_mod.apply(
-            _repo(), report.plan,
+            repo, report.plan,
             overwrite   = overwrite,
-            status      = d.get("status") or "needs_review",
+            status      = status,
             only_keys   = only_keys,
+            translated_by = prov.mark(import_id) if import_id else None,
             global_dict = _global_dict(),
         )
         if d.get("confirmed_only"):
             result["confirmed_by_official"] = confirmed
+        if import_id:
+            try:
+                repo.db.execute(
+                    "UPDATE donor_imports SET applied=?, confirmed=? WHERE import_id=?",
+                    (int(result.get("applied") or 0), int(confirmed), import_id))
+                repo.db.commit()
+            except Exception as exc:                               # noqa: BLE001
+                log.warning("could not finish donor provenance row: %s", exc)
+            result["import_id"] = import_id
         report.applied = result
 
         # The strings are in the store now; the mod's cached counts are stale.
@@ -1094,5 +1118,36 @@ def save_settings():
         log.info("nexus settings updated: %s", sorted(changes))
         return jsonify({"ok": True, "saved": changes,
                         "download_dir": str(new_cfg.nexus.download_dir)})
+    except Exception as exc:
+        return _fail(exc)
+
+
+@bp.route("/imports")
+def donor_imports():
+    """GET /api/nexus/imports — что и откуда мы взяли.
+
+    Список переносов, свежие первыми: наш мод, мод-донор, архив с его версией, сколько
+    строк предложено и сколько принято, по какому правилу и когда. Это и отчёт, и то, с
+    чем не стыдно поделиться: чужой перевод без указания источника — чужая работа без
+    имени автора.
+    """
+    try:
+        from translator.nexus import provenance as prov
+        rows = prov.summary(_repo().db)
+        return jsonify({"ok": True, "count": len(rows), "imports": rows})
+    except Exception as exc:
+        return _fail(exc)
+
+
+@bp.route("/imports/string/<int:string_id>")
+def donor_import_of_string(string_id: int):
+    """GET /api/nexus/imports/string/<id> — откуда взялась одна конкретная строка."""
+    try:
+        from translator.nexus import provenance as prov
+        got = prov.import_of(_repo().db, string_id)
+        if not got:
+            return jsonify({"ok": True, "string_id": string_id, "import": None,
+                            "note": "не от донора, или перенос был до учёта происхождения"})
+        return jsonify({"ok": True, "string_id": string_id, "import": got})
     except Exception as exc:
         return _fail(exc)

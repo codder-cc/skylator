@@ -348,6 +348,7 @@ def apply(
     status: str = "needs_review",
     only_keys: Optional[Iterable[tuple]] = None,
     source: str = "nexus-translation",
+    translated_by: Optional[str] = None,
     global_dict=None,
 ) -> dict:
     """Write the plan's translations into the store.
@@ -400,7 +401,10 @@ def apply(
             # The donor's provenance travels with the row: a translation taken from
             # someone else's mod should never be mistaken later for our own output.
             source   = source,
-            translated_by = source,
+            # `source` отвечает «это не наша работа», `translated_by` — «чья именно»:
+            # ссылка на запись переноса, где лежат мод-донор, файл, версия и время.
+            # Без неё обновившийся донор нельзя перечитать, а плохой — откатить.
+            translated_by = translated_by or source,
             translated_at = time.time(),
         )
         applied += 1

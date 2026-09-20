@@ -540,3 +540,59 @@ def test_the_language_tag_is_stripped_only_at_the_edges():
     assert merge_mod._bare_esp("Legacy_RUS.esm") == "legacy.esm"
     assert merge_mod._bare_esp("RUS_Legacy.esm") == "legacy.esm"
     assert merge_mod._bare_esp("Legacy - RU.esp") == "legacy -.esp"
+
+
+# ── происхождение ─────────────────────────────────────────────────────────────
+
+
+class _Report:
+    """То, что переносчик знает о доноре к моменту записи."""
+    def __init__(self, plan):
+        self.mod_name = "TestMod"
+        self.donor_mod_id = 37214
+        self.donor_name = "Interesting NPCs SE (3DNPC) - RUSSIAN TRANSLATION-37214-4-4"
+        self.archive = r"H:\cache\donors\INPC RUSSIAN-37214-4-4-1591979229.7z"
+        self.archive_bytes = 5326445
+        self.language = "Russian"
+        self.plan = plan
+
+
+def test_an_applied_string_points_at_the_import_it_came_from(repo):
+    """`source` отвечает «это не наша работа», и больше ни на что не отвечает.
+
+    Обновившийся донор нельзя перечитать, плохой — откатить, а поделиться собранным без
+    указания источника значит присвоить чужую работу.
+    """
+    from translator.nexus import provenance as prov
+
+    _seed(repo, rows=[("01000800", "Iron Sword", "", "pending")])
+    plan = merge_mod.plan(repo, "TestMod", _donor(items=[("01000800", "Железный меч")]))
+    iid = prov.record_import(repo.db, _Report(plan), {}, "confirmed_only", "needs_review")
+    merge_mod.apply(repo, plan, translated_by=prov.mark(iid))
+
+    row = repo.get_all_strings("TestMod")[0]
+    assert row["source"] == "nexus-translation"
+    stamped = repo.db.execute("SELECT translated_by FROM strings WHERE id=?",
+                              (row["id"],)).fetchone()
+    assert stamped["translated_by"] == f"nexus:{iid}"
+
+    got = prov.import_of(repo.db, row["id"])
+    assert got["donor_mod_id"] == 37214
+    assert "37214-4-4-1591979229" in got["archive_name"], "версия и время — в имени архива"
+    assert got["mod_name"] == "TestMod" and got["language"] == "Russian"
+    assert got["policy"] == "confirmed_only"
+
+
+def test_a_string_of_our_own_has_no_import(repo):
+    from translator.nexus import provenance as prov
+    _seed(repo, rows=[("01000800", "Iron Sword", "Железный меч", "translated")])
+    prov.ensure_schema(repo.db)
+    assert prov.import_of(repo.db, repo.get_all_strings("TestMod")[0]["id"]) is None
+
+
+def test_the_summary_lists_what_came_from_where(repo):
+    from translator.nexus import provenance as prov
+    plan = merge_mod.plan(repo, "TestMod", _donor(items=[("01000800", "Железный меч")]))
+    prov.record_import(repo.db, _Report(plan), {"applied": 3}, "confirmed_only", "needs_review")
+    rows = prov.summary(repo.db)
+    assert len(rows) == 1 and rows[0]["donor_mod_id"] == 37214

@@ -309,6 +309,13 @@ def create_app(config_path: Path | None = None) -> Flask:
         target=pull_loop, args=(app, _registry), daemon=True, name="pull-reconcile",
     ).start()
 
+    # ── Оценка времени, считающая в работе, а не в штуках ────────────────────
+    try:
+        from translator.web import eta as _eta
+        _eta.install(app)
+    except Exception as exc:
+        log.warning("ETA provider not installed: %s", exc)
+
     # ── Periodic DB backup (months-long run safety net) ──────────────────────
     _backup_dir = (cfg.paths.translation_cache.parent if cfg else ROOT / "cache") / "db_backups"
 

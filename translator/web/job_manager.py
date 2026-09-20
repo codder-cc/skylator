@@ -124,6 +124,17 @@ class Job:
                 self._timing_counts = self._timing_counts[-20:]
 
     def _eta_seconds(self) -> float | None:
+        # Внешняя оценка старше собственной: она считает в работе, а не в штуках, и
+        # знает длины оставшихся строк. Своя остаётся запасной — на инлайновые джобы,
+        # у которых назначений нет вовсе.
+        provider = JobManager._eta_provider
+        if provider is not None:
+            try:
+                got = provider(self)
+            except Exception:
+                got = None
+            if got is not None:
+                return got
         if (len(self._timing) < 2 or self.progress.total <= 0
                 or self.progress.current >= self.progress.total):
             return None
@@ -156,6 +167,13 @@ class JobManager:
     """
 
     _instance: Optional["JobManager"] = None
+    # Оценка времени, умеющая считать в работе. Ставится приложением при старте;
+    # без неё job_manager остаётся без зависимостей от базы и реестра.
+    _eta_provider: Optional[Callable] = None
+
+    @classmethod
+    def set_eta_provider(cls, fn: Optional[Callable]) -> None:
+        cls._eta_provider = fn
 
     @classmethod
     def get(cls) -> "JobManager":

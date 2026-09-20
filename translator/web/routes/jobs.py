@@ -1801,14 +1801,31 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
             where.append(f"LENGTH(original) >= {int(min_chars)}")
         if max_len:
             where.append(f"LENGTH(original) < {int(max_len)}")
-        sql = f"SELECT id, mod_name, esp_name, key, original, translation, rec_type, " \
-              f"field_type FROM strings WHERE {' AND '.join(where)}"
+        sql = f"SELECT id, mod_name, esp_name, key, form_id, original, translation, " \
+              f"rec_type, field_type FROM strings WHERE {' AND '.join(where)}"
         if sweep:
             sql += " ORDER BY (status='needs_review') DESC, LENGTH(original) DESC"
         if limit:
             sql += f" LIMIT {int(limit)}"
 
         terms_map = _load_glossary(cfg) if fixing_terms else {}
+        # Карточка говорящего: кто произносит реплику, какого он пола и расы, как он
+        # говорит и какие слова у него свои. Промпт до сих пор не нёс о строке ничего,
+        # и род первого лица выбирался наугад — 9 726 мужских форм против 3 318 женских
+        # без всякой связи с говорящим. Карточка платится за ЗАПРОС, а не за строку,
+        # поэтому ниже строки раскладываются так, чтобы один говорящий шёл подряд.
+        speakers_state = {}
+        try:
+            from translator.characters import speakers as _sp
+            _mods = cfg.paths.mods_dir
+            # Data игры лежит рядом с папкой модов: .../MODS/mods и .../STOCK GAME/Data.
+            # Без неё не находятся ни ванильные типы голоса, ни одна раса.
+            _game = (_mods.parents[1] / "STOCK GAME" / "Data") if _mods else None
+            speakers_state = _sp.load(
+                _mods, _game if (_game and _game.is_dir()) else None, repo=repo)
+        except Exception as exc:                                   # noqa: BLE001
+            job.add_log(f"Speaker cards unavailable ({exc}) — dispatching without them")
+
         by_mod: dict[str, list] = {}
         skipped_no_violation = 0
         skipped_too_long = 0
@@ -1816,6 +1833,10 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
             item = {"id": r["id"], "mod_name": r["mod_name"], "esp": r["esp_name"],
                     "key": r["key"], "original": r["original"],
                     "rec_type": r["rec_type"] or ""}
+            if speakers_state:
+                block = _sp.block_for(r["esp_name"], r["form_id"], speakers_state)
+                if block:
+                    item["speaker"] = block
             if fixing_terms:
                 from translator.validation.terminology import glossary_violations
                 # Тип поля обязателен: имя из реестра требуется только там, где оно и
@@ -1835,11 +1856,21 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                 # Именно наличие этого поля делает пакет ревью, а не переводом.
                 item["current"] = _clean_current(r["original"], r["translation"])
             by_mod.setdefault(r["mod_name"], []).append(item)
+        # Один говорящий — подряд. Агент обрезает батч по смене говорящего, поэтому
+        # вперемешку карточка досталась бы одной строке из каждой пары, а порядок внутри
+        # мода ни на что другое не влияет.
+        with_card = 0
+        for strs in by_mod.values():
+            strs.sort(key=lambda s: s.get("speaker") or "")
+            with_card += sum(1 for s in strs if s.get("speaker"))
         n = sum(len(v) for v in by_mod.values())
         kind = ("Terminology fix" if fixing_terms else
                 "Blind re-translation" if blind else "Review")
         job.add_log(f"{kind}: {n} string(s) across {len(by_mod)} mod(s) "
                     f"→ {', '.join(lbl for lbl, _ in backends)}")
+        if with_card:
+            job.add_log(f"Speaker card attached to {with_card:,} of {n:,} strings "
+                        f"— gender, race, speech register and the speaker's own words")
         if skipped_no_violation:
             job.add_log(f"Skipped {skipped_no_violation} flagged for something a term "
                         f"fix cannot repair")

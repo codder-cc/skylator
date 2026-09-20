@@ -58,9 +58,19 @@ _ACBS_FEMALE = 0x00000001
 
 
 def _cstr(raw: bytes | None) -> str:
+    """Строка плагина. UTF-8 пробуется первой, cp1252 — запасной.
+
+    Плагины, которым мы уже применили перевод, несут русский в UTF-8, и чтение их как
+    cp1252 даёт «Ð‘ÐµÑ€Ð³» вместо «Бергрисар». Обратный порядок безопасен: cp1252
+    принимает любой байт, поэтому первым он проглотил бы и UTF-8.
+    """
     if not raw:
         return ""
-    return raw.split(b"\0", 1)[0].decode("cp1252", "replace")
+    head = raw.split(b"\0", 1)[0]
+    try:
+        return head.decode("utf-8")
+    except UnicodeDecodeError:
+        return head.decode("cp1252", "replace")
 
 
 def _masters(data: bytes) -> list[str]:
@@ -118,8 +128,15 @@ def read_plugin(path: Path) -> dict:
                 sex = None
                 if acbs and len(acbs) >= 4:
                     sex = "f" if (u32(acbs, 0) & _ACBS_FEMALE) else "m"
+                # FULL — имя на экране, EDID — имя в редакторе. Модели нужно первое
+                # («Говорит: Берг»), но в локализованном плагине FULL это числовой
+                # идентификатор строки, а не текст, и тогда остаётся EDID.
+                full = f.get(b"FULL")
+                name = ""
+                if full and len(full) != 4:
+                    name = _cstr(full)
                 rec = {"plugin": plugin, "form_id": f"{obj.form_id:08X}",
-                       "edid": _cstr(f.get(b"EDID")), "sex": sex}
+                       "edid": _cstr(f.get(b"EDID")), "name": name, "sex": sex}
                 for tag, name in ((b"VTCK", "voice"), (b"RNAM", "race")):
                     raw = f.get(tag)
                     if raw and len(raw) >= 4:
@@ -225,6 +242,7 @@ def by_voice_type(index: dict) -> dict:
             # типа вроде MaleNord это по-прежнему верно и полезно.
             "sex": next(iter(sexes)) if len(sexes) == 1 else None,
             "race": next(iter(racs)) if len(racs) == 1 else None,
+            "names": sorted({n.get("name") for n in group if n.get("name")})[:4],
             "edids": sorted({n["edid"] for n in group if n["edid"]})[:8],
             "plugins": sorted({n["plugin"] for n in group})[:4],
         }

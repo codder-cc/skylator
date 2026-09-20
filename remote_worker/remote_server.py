@@ -1618,12 +1618,23 @@ async def _ensure_model_for_work(state: ServerState, loop) -> bool:
     _mark_work(state)
     if state.backend is not None:
         return True
-    if not getattr(state, "idle_unloaded", False):
-        # Not our unload — a failed load or a sleep. Those are owned by the controller's
-        # retry branch and the schedule respectively; a chunk must not paper over them.
-        return False
     if not _schedule_permits_loading(state):
+        # Закрытое окно — единственный отказ, который здесь окончателен: часы оператора
+        # старше любой работы.
         return False
+    if not getattr(state, "idle_unloaded", False):
+        # Раньше здесь был отказ: «выгрузили не мы — пусть разбирается контроллер». На
+        # деле разбираться было некому. M5 дважды простоял с пакетом 0/3197: модель
+        # пропала после перезапуска агента, `idle_unloaded` остался False, чанк грузить
+        # отказался, а контроллер без мастера ничего не восстанавливает. Машина при этом
+        # исправно опрашивала хост — то есть выглядела живой и работающей.
+        #
+        # Работа на руках и разрешённое окно — достаточная причина вернуть веса, какой
+        # бы ни была причина их отсутствия. Повторные попытки при этом не разгоняются:
+        # `_wake_up` сам ставит отсрочку через `_owe_another_wake`, если загрузка не
+        # удалась.
+        log.info("Pull worker: work arrived with no model loaded (idle_unloaded=%s) — "
+                 "restoring the remembered model", getattr(state, "idle_unloaded", None))
     state.idle_unloaded = False
     return await _wake_up(state, loop)
 
@@ -1993,7 +2004,19 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                 # Reload an idle-unloaded model BEFORE the runner starts: the runner parks
                 # on `state.backend is None` between batches and would silently produce
                 # nothing at all.
-                await _ensure_model_for_work(state, loop)
+                #
+                # «Молча» здесь и было главной бедой: пакет стоял на нуле десять часов, а
+                # машина всё это время опрашивала хост и выглядела живой. Если модели нет
+                # и вернуть её нельзя, об этом надо сказать вслух — не отказываясь от
+                # пакета (окно откроется, и работа пойдёт), но так, чтобы причина была
+                # видна в логе, а не выводилась из нулевого счётчика.
+                if not await _ensure_model_for_work(state, loop):
+                    log.warning(
+                        "Pull worker: offline job %s accepted but NO MODEL is loaded and "
+                        "one cannot be restored now (idle_unloaded=%s, schedule permits=%s). "
+                        "The package will not advance until a model is available.",
+                        offline_job_id[:8], getattr(state, "idle_unloaded", None),
+                        _schedule_permits_loading(state))
                 asyncio.create_task(
                     _run_offline_job(chunk, state, loop, base, label)
                 )

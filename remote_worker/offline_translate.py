@@ -296,6 +296,16 @@ class OfflineTranslateRunner:
                     while end < len(batch) and (batch[end].get("mod_name") or "") == lead_mod:
                         end += 1
                     batch = batch[:end]
+                # То же и для говорящего: карточка персонажа описывает ОДНОГО, и батч,
+                # смешавший двоих, получил бы род и словарь первого на реплики второго.
+                # Хост раскладывает строки так, чтобы говорящий шёл подряд, поэтому
+                # обрезание ведущего отрезка ничего не дробит без нужды.
+                if batch:
+                    lead_speaker = batch[0].get("speaker") or ""
+                    end = 1
+                    while end < len(batch) and (batch[end].get("speaker") or "") == lead_speaker:
+                        end += 1
+                    batch = batch[:end]
                 originals = [b.get("original") or "" for b in batch]
                 # A review package carries the translation already stored. Present it and
                 # the model corrects rather than translates; absent, nothing changes.
@@ -331,6 +341,12 @@ class OfflineTranslateRunner:
                 hint = rec_type_hint(batch)
                 if hint:
                     batch_ctx = ("These strings are " + hint + ".\n" + batch_ctx).strip()
+                # Карточка говорящего идёт ПЕРВОЙ и не отбрасывается на коротких строках:
+                # описание мода про «Iron Sword» бесполезно, а пол говорящего — нет, и
+                # именно на коротких репликах род первого лица и выбирался наугад.
+                speaker_block = (batch[0].get("speaker") or "") if batch else ""
+                if speaker_block:
+                    batch_ctx = (speaker_block + "\n" + batch_ctx).strip()
                 full_context = (batch_ctx + "\n" + tm_block).strip() if tm_block else batch_ctx
 
                 prompt = build_prompt(

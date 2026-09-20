@@ -770,12 +770,20 @@ def transfer_plan_detail(plan_id: str):
 def transfer_apply():
     """POST /api/nexus/transfer/apply — write a planned merge into the store.
 
-    Body: {plan_id, overwrite?, status?, only_keys?}
+    Body: {plan_id, overwrite?, status?, only_keys?, confirmed_only?}
 
     `overwrite=false` (the default) takes only the strings we have nothing for. `status`
     is "needs_review" by default, so a donor's work arrives as a proposal; "translated"
     accepts it outright. `only_keys` is a list of [esp_name, key] pairs for the case
     where the user ticked specific rows.
+
+    `confirmed_only=true` is the unattended policy, and it exists because a donor is a
+    second opinion rather than an authority: on the class where the answer is knowable it
+    beat us 258 times and lost 90, so taking every conflict would break eighty-odd strings
+    to mend two hundred. It writes what we have nothing for, plus the conflicts where the
+    official localisation itself confirms the donor — two independent authorities agreeing
+    against one machine translation. Everything else stays untouched and remains a
+    decision for a person looking at it.
     """
     try:
         d = request.get_json(silent=True) or {}
@@ -788,13 +796,29 @@ def transfer_apply():
         from translator.nexus import merge as merge_mod
 
         report = entry["report"]
+        only_keys = d.get("only_keys") or None
+        overwrite = bool(d.get("overwrite", False))
+        confirmed = 0
+        if d.get("confirmed_only"):
+            from translator.validation.authority import load_official
+            rows = merge_mod.confirmed_by_official(report.plan, load_official())
+            confirmed = len(rows)
+            # Пустые у нас строки берём всегда — это чистый выигрыш; поверх готового
+            # текста пишем только подтверждённое. Оба случая требуют overwrite, потому
+            # что второй — это именно расхождение.
+            only_keys = ([(c.esp_name, c.key) for c in report.plan.by_action(merge_mod.FILL)]
+                         + [(c.esp_name, c.key) for c, _k, _n in rows])
+            overwrite = True
+
         result = merge_mod.apply(
             _repo(), report.plan,
-            overwrite   = bool(d.get("overwrite", False)),
+            overwrite   = overwrite,
             status      = d.get("status") or "needs_review",
-            only_keys   = d.get("only_keys") or None,
+            only_keys   = only_keys,
             global_dict = _global_dict(),
         )
+        if d.get("confirmed_only"):
+            result["confirmed_by_official"] = confirmed
         report.applied = result
 
         # The strings are in the store now; the mod's cached counts are stale.

@@ -448,3 +448,55 @@ def test_a_loose_table_wins_over_the_packed_copy(repo):
     plan = merge_mod.plan(repo, "TestMod", _mcm_donor("x_russian.txt", [("$K", "Текст")]))
     assert plan.counts == {FILL: 1}
     assert plan.candidates[0].original == "Loose original"
+
+
+# ── вторая инстанция ──────────────────────────────────────────────────────────
+
+
+OFFICIAL = {"Bleak Falls Barrow": "Ветреный пик", "Soul Cairn": "Каирн Душ",
+            "The Bannered Mare": "Гарцующая кобыла", "Iron Sword": "Железный меч",
+            "To Place": "ПОМЕСТИТЬ", "The Cause": "Великое дело"}
+
+
+def test_a_conflict_the_game_itself_settles_is_singled_out(repo):
+    # Донор — мнение, и своё мнение он проигрывает нашему 90 раз из 2 031. Но когда имя
+    # написал и он, и сама игра, а мы нет — против машины стоят две независимые
+    # инстанции, и решает их совпадение, а не донор.
+    _seed(repo, rows=[("01000800", "Meet me at Bleak Falls Barrow tonight.",
+                       "Встретимся у Кургана Блек Фоллс сегодня.", "translated")])
+    plan = merge_mod.plan(repo, "TestMod", _donor(items=[
+        ("01000800", "Встретимся у Ветреного пика сегодня.")]))
+    got = merge_mod.confirmed_by_official(plan, OFFICIAL)
+    assert len(got) == 1 and got[0][2] == "Ветреный пик"
+
+
+def test_a_conflict_where_we_already_use_the_official_name_is_left_alone(repo):
+    _seed(repo, rows=[("01000800", "Meet me at Bleak Falls Barrow tonight.",
+                       "Встретимся у Ветреного пика вечером.", "translated")])
+    plan = merge_mod.plan(repo, "TestMod", _donor(items=[
+        ("01000800", "Увидимся у Ветреного пика вечером.")]))
+    assert merge_mod.confirmed_by_official(plan, OFFICIAL) == []
+
+
+def test_a_conflict_the_donor_gets_wrong_too_is_not_confirmed(repo):
+    # Донор не лучше нас — применять нечего.
+    _seed(repo, rows=[("01000800", "Meet me at Bleak Falls Barrow tonight.",
+                       "Встретимся у Кургана Блек Фоллс.", "translated")])
+    plan = merge_mod.plan(repo, "TestMod", _donor(items=[
+        ("01000800", "Встретимся у Холодного Кургана.")]))
+    assert merge_mod.confirmed_by_official(plan, OFFICIAL) == []
+
+
+def test_a_whole_string_name_is_not_this_rule_s_business(repo):
+    # Строку, которая ЦЕЛИКОМ есть в таблице, судят ворота записи, а не эта проверка.
+    _seed(repo, rows=[("01000800", "Bleak Falls Barrow", "Курган Блек Фоллс", "translated")])
+    plan = merge_mod.plan(repo, "TestMod", _donor(items=[("01000800", "Ветреный пик")]))
+    assert merge_mod.confirmed_by_official(plan, OFFICIAL) == []
+
+
+def test_a_button_label_is_not_an_entity():
+    # «To Place» и «The Cause» лежат в таблице игры как кнопка и реплика; внутри чужой
+    # фразы это обычные слова, и на них первая версия проверки набрала ложный урожай.
+    table = merge_mod.entity_table(OFFICIAL)
+    assert "to place" not in table and "the cause" not in table
+    assert "bleak falls barrow" in table and "soul cairn" in table

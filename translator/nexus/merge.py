@@ -419,3 +419,105 @@ def apply(
            "esps": sorted(touched_esps)}
     log.info("merge applied to %s: %s", merge_plan.mod_name, out)
     return out
+
+
+# -- вторая инстанция -------------------------------------------------------------
+
+_EN_WORD = re.compile(r"[A-Za-z][A-Za-z'\-]*")
+_ENTITY_MAX_WORDS = 4
+
+# Таблица игры хранит не только имена, но и кнопки с репликами: «To Place», «Bring It»,
+# «The Cause». Внутри чужой фразы это обычные слова, и совпадение с ними не значит
+# ничего — на них первая версия проверки и набрала почти весь ложный урожай.
+_COMMON_EN = frozenset("""
+a an the to of in on at by for with from and or but if it its is are was were be been am
+this that these those there here he she they we you i me him her them us my your his our
+place steal take give get put go come leave stay open close use drop wait yes no ok okay
+cause fallen warren warrens pit brain rot family heirloom eyes bring remove thing things
+all some any more most much many new old good bad great big small next last first second
+time day night year years way ways part parts end ends back front side sides top move
+""".split())
+
+
+def entity_table(official: dict) -> dict:
+    """Английское имя → его русское написание в игре. Только однозначные.
+
+    Берутся многословные имена собственные: у однословных слишком много совпадений с
+    обычной речью, а у имени, которое сама игра пишет по-разному, спорить не о чем.
+    """
+    buckets: dict = {}
+    for en, ru in (official or {}).items():
+        if not (5 <= len(en) <= 40) or "<" in en or "%" in en or "\n" in en or "<" in ru:
+            continue
+        words = _EN_WORD.findall(en)
+        if len(words) < 2 or len(words) > _ENTITY_MAX_WORDS or len(words) != len(en.split()):
+            continue
+        if sum(1 for w in words if w[:1].isupper()) < len(words):
+            continue
+        if not any(w.lower() not in _COMMON_EN for w in words):
+            continue
+        if not _SCRIPT_PATTERNS["russian"].search(ru) or ru.strip()[-1:] in ".!?…":
+            continue
+        buckets.setdefault(" ".join(w.lower() for w in words), set()).add(ru.strip())
+    return {k: next(iter(v)) for k, v in buckets.items() if len(v) == 1}
+
+
+_RU_NAME_WORD = re.compile(r"[А-Яа-яЁё]{3,}")
+# Служебные слова русского имени ничего не доказывают: «из», «в», «и» есть в любой фразе.
+_RU_STOP = frozenset("для из под над при без через про это тот эта".split())
+
+
+def _name_roots(ru_name: str) -> list:
+    """Корни русского имени — то, что переживает склонение."""
+    out = []
+    for w in _RU_NAME_WORD.findall(ru_name or ""):
+        lw = w.lower().replace("ё", "е")
+        if lw in _RU_STOP:
+            continue
+        out.append(lw[:-2] if len(lw) >= 6 else lw)
+    return out
+
+
+def confirmed_by_official(merge_plan: MergePlan, official: dict) -> list:
+    """Расхождения, в которых донора подтверждает сама игра.
+
+    Донор — мнение, и своё мнение он проигрывает нашему 90 раз из 2 031. Но есть
+    подмножество, где спорить не о чем: английский источник называет ванильную сущность,
+    официальная локализация печатает её русское имя, донор это имя написал, а мы нет.
+    Тогда против машинного перевода стоят ДВЕ независимые инстанции, согласные между
+    собой, и решает не донор, а их совпадение.
+
+    Сравнение по корням, а не дословное: русское имя склоняется, и «Ветреного пика» не
+    содержит «Ветреный пик» ни одной буквой подряд. Требуется, чтобы у донора нашлись
+    ВСЕ корни имени, а у нас отсутствовал хотя бы один — то есть он имя написал, а мы
+    нет. Замер на Interesting NPCs 3DNPC: 395 таких строк в одном моде.
+    """
+    table = entity_table(official)
+    if not table:
+        return []
+    out = []
+    for c in merge_plan.candidates:
+        if c.action != CONFLICT:
+            continue
+        low = [w.lower() for w in _EN_WORD.findall(c.original or "")]
+        donor = (c.donor_text or "").lower()
+        ours = (c.current or "").lower()
+        for n in range(_ENTITY_MAX_WORDS, 1, -1):
+            hit = None
+            for i in range(len(low) - n + 1):
+                key = " ".join(low[i:i + n])
+                name = table.get(key)
+                # Имя должно быть ЧАСТЬЮ строки: строку целиком уже судят ворота записи.
+                if not name or len(key) >= len(c.original or "") - 2:
+                    continue
+                roots = _name_roots(name)
+                if not roots:
+                    continue
+                if (all(r in donor for r in roots)
+                        and not all(r in ours for r in roots)):
+                    hit = (key, name)
+                    break
+            if hit:
+                out.append((c, hit[0], hit[1]))
+                break
+    return out

@@ -250,3 +250,37 @@ def test_translations_of_mod_reports_a_missing_source_distinctly():
     s, _ = _search_with(_Resp({"data": {"game": {"id": 1704}}}), _page([]))
     source, hits = s.translations_of_mod(999999)
     assert source is None and hits == []
+
+
+# ── имя, по которому ищется донор ─────────────────────────────────────────────
+
+
+def test_a_variant_folder_falls_back_to_the_base_name():
+    """«Inigo - Cleaned Esp» это тот же Inigo, и перевод у него общий.
+
+    Поиск шёл по одному имени — каноническому с Nexus, — и там, где папка это
+    дополнение или вариант, заголовок уводил в сторону: «Vigilant - English Voices
+    Addon» резолвится в мод «VIGILANT - English Translation (Plus Voiced Addon)», то
+    есть в АНГЛИЙСКИЙ перевод. Замер на ста крупнейших модах без донора: у одиннадцати
+    он есть, 35 833 строки, и во всех одиннадцати нашло имя папки или её основу.
+    """
+    from translator.web.routes.nexus_rt import _base_mod_name
+
+    assert _base_mod_name("Inigo - Cleaned Esp") == "Inigo"
+    assert _base_mod_name("Vigilant - English Voices Addon") == "Vigilant"
+    assert _base_mod_name("Midwood Isle - CTD and Main Quest Fixes") == "Midwood Isle"
+    assert _base_mod_name("Gourmet - Patches") == "Gourmet"
+    assert _base_mod_name("Interesting NPCs 3DNPC - Update") == "Interesting NPCs 3DNPC"
+
+
+def test_several_tails_come_off_together():
+    from translator.web.routes.nexus_rt import _base_mod_name
+    assert _base_mod_name("Some Mod - Patches - ESL") == "Some Mod"
+
+
+def test_a_plain_name_is_left_alone():
+    # Хвост снимается только узнаваемый: имя мода само по себе трогать нельзя.
+    from translator.web.routes.nexus_rt import _base_mod_name
+    for name in ("Ordinator", "Beyond Skyrim - Bruma", "Legacy of the Dragonborn",
+                 "Weapons Armor Clothing and Clutter Fixes"):
+        assert _base_mod_name(name) == name

@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
 import uuid
@@ -657,6 +658,25 @@ def _remember_plan(report) -> str:
     return plan_id
 
 
+# Хвосты, которыми Nolvus метит варианты и патчи одного и того же мода. Папка
+# «Inigo - Cleaned Esp» это тот же Inigo, и перевод у него общий — но под полным именем
+# он не ищется, а под основой ищется сразу.
+_MOD_NAME_TAIL = re.compile(
+    r"\s+-\s+(?:update|updated|cleaned\s+esp|cleaned|patch(?:es)?|fix(?:es|ed)?|"
+    r"ctd\s+and\s+main\s+quest\s+fixes|esl|esl\s+patch|addon|add-on|"
+    r"english\s+voices\s+addon|voices?\s+addon|replacer|tweaks?|"
+    r"\d+k|textures?|meshes?|se|sse|ru|rus)\s*$", re.I)
+
+
+def _base_mod_name(folder: str) -> str:
+    """Имя мода без хвоста варианта. Снимается столько раз, сколько хвостов."""
+    prev, name = None, (folder or "").strip()
+    while prev != name:
+        prev = name
+        name = _MOD_NAME_TAIL.sub("", name).strip(" -")
+    return name
+
+
 @bp.route("/donors")
 def donor_candidates():
     """GET /api/nexus/donors?mod=<our mod name>&language=Russian
@@ -677,7 +697,18 @@ def donor_candidates():
         # named by whoever built the modlist -- "Adamant" where Nexus says "Adamant - A
         # Perk Overhaul" -- and the ranking compares titles, so the folder name quietly
         # costs matches. meta.ini already carries the mod id that resolves it.
-        search_name, source_name, nexus_id = mod, "folder", None
+        # ...но одного имени мало, и это стоило дорого. Там, где папка — дополнение или
+        # вариант, канонический заголовок уводит в сторону: «Vigilant - English Voices
+        # Addon» резолвится в мод «VIGILANT - English Translation (Plus Voiced Addon)»,
+        # то есть в АНГЛИЙСКИЙ перевод, и русские, названные «Vigilant RU», под него не
+        # подходят. Замер на ста крупнейших модах, у которых проход сказал «донора нет»:
+        # у одиннадцати донор есть, 35 833 строки, и во ВСЕХ одиннадцати случаях нашло
+        # имя папки или её основа, а не каноническое. Среди пропущенных — Cutting Room
+        # Floor с 29 630 скачиваний перевода и Vigilant с 19 947.
+        #
+        # Поэтому пробуются все три имени, а результаты сливаются. Лишний поиск стоит
+        # доли секунды; пропущенный человеческий перевод стоит мода.
+        nexus_id = None
         scanner = current_app.config.get("SCANNER")
         if scanner is not None:
             try:
@@ -685,21 +716,49 @@ def donor_candidates():
                 nexus_id = getattr(info, "nexus_mod_id", None) if info else None
             except Exception:
                 log.debug("scanner lookup failed for %s", mod, exc_info=True)
+
+        names: list = []
         if nexus_id:
             try:
                 hit = search.by_mod_id(int(nexus_id))
                 if hit and hit.name:
-                    search_name, source_name = hit.name, "nexus"
+                    names.append(("nexus", hit.name))
             except Exception as exc:
                 log.info("could not resolve the Nexus title for %s: %s", mod, exc)
+        names.append(("folder", mod))
+        base = _base_mod_name(mod)
+        if base and base.lower() not in {n.lower() for _s, n in names}:
+            names.append(("base", base))
 
-        hits = search.translations_of(
-            search_name, language=language,
-            count=min(int(request.args.get("count") or 10), 50))
+        count = min(int(request.args.get("count") or 10), 50)
+        merged: dict = {}
+        tried: list = []
+        for source, name in names:
+            seen = {n.lower() for _s, n in tried}
+            if name.lower() in seen:
+                continue
+            tried.append((source, name))
+            try:
+                for h in search.translations_of(name, language=language, count=count):
+                    d = h.as_dict()
+                    key = d.get("mod_id")
+                    # Побеждает более скачиваемый: один и тот же перевод находится под
+                    # разными именами, и брать надо лучшую его версию, а не первую.
+                    if key not in merged or (d.get("downloads") or 0) > (
+                            merged[key].get("downloads") or 0):
+                        d["found_by"] = source
+                        d["searched_as"] = name
+                        merged[key] = d
+            except Exception as exc:
+                log.info("translation search failed for %r: %s", name, exc)
+
+        results = sorted(merged.values(),
+                         key=lambda d: -(d.get("downloads") or 0))[:count]
         return jsonify({"ok": True, "mod": mod, "language": language,
-                        "searched_as": search_name, "name_source": source_name,
+                        "searched_as": [n for _s, n in tried],
+                        "name_source": (results[0].get("found_by") if results else None),
                         "nexus_mod_id": nexus_id,
-                        "count": len(hits), "results": [h.as_dict() for h in hits]})
+                        "count": len(results), "results": results})
     except Exception as exc:
         return _fail(exc)
 

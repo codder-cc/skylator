@@ -347,6 +347,23 @@ class OfflineTranslateRunner:
                 speaker_block = (batch[0].get("speaker") or "") if batch else ""
                 if speaker_block:
                     batch_ctx = (speaker_block + "\n" + batch_ctx).strip()
+                # Как игра формулирует записи этого типа. Берётся у первой строки: хост
+                # раскладывает батч по типу записи, поэтому у остальных он тот же.
+                style_block = (batch[0].get("style") or "") if batch else ""
+                if style_block:
+                    batch_ctx = (batch_ctx + "\n" + style_block).strip()
+                # Имена, которые игра уже назвала. Складываются по всему батчу: строки
+                # разные, а промпт один, и подсказка нужна каждой из них.
+                ent_lines, ent_seen = [], set()
+                for b in batch:
+                    line = b.get("entities") or ""
+                    if line and line not in ent_seen:
+                        ent_seen.add(line)
+                        ent_lines.append(line)
+                    if len(ent_lines) >= 4:
+                        break
+                if ent_lines:
+                    batch_ctx = (batch_ctx + "\n" + "\n".join(ent_lines)).strip()
                 full_context = (batch_ctx + "\n" + tm_block).strip() if tm_block else batch_ctx
 
                 prompt = build_prompt(

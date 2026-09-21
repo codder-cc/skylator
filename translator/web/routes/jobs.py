@@ -1823,6 +1823,17 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         # и род первого лица выбирался наугад — 9 726 мужских форм против 3 318 женских
         # без всякой связи с говорящим. Карточка платится за ЗАПРОС, а не за строку,
         # поэтому ниже строки раскладываются так, чтобы один говорящий шёл подряд.
+        # Чем игра может подсказать строке, которой в её таблице нет: как она
+        # формулирует записи этого типа и как называет упомянутые в строке сущности.
+        # Точное совпадение уже закрыто воротами; это для всего остального, где мы и
+        # проигрываем — ACTI 34,6%, MGEF 66,1%.
+        style_examples = {}
+        try:
+            from translator.validation import official_context as _oc
+            style_examples = _oc.build_examples(repo)
+        except Exception as exc:                                   # noqa: BLE001
+            job.add_log(f"Style examples unavailable ({exc}) — dispatching without them")
+
         speakers_state = {}
         try:
             from translator.characters import speakers as _sp
@@ -1846,6 +1857,13 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                 block = _sp.block_for(r["esp_name"], r["form_id"], speakers_state)
                 if block:
                     item["speaker"] = block
+            if style_examples:
+                st = _oc.style_block(r["rec_type"] or "", style_examples)
+                if st:
+                    item["style"] = st
+                ent = _oc.entity_block(r["original"] or "")
+                if ent:
+                    item["entities"] = ent
             if fixing_terms:
                 from translator.validation.terminology import glossary_violations
                 # Тип поля обязателен: имя из реестра требуется только там, где оно и
@@ -1868,10 +1886,14 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         # Один говорящий — подряд. Агент обрезает батч по смене говорящего, поэтому
         # вперемешку карточка досталась бы одной строке из каждой пары, а порядок внутри
         # мода ни на что другое не влияет.
-        with_card = 0
+        with_card = with_style = with_ent = 0
         for strs in by_mod.values():
-            strs.sort(key=lambda s: s.get("speaker") or "")
+            # Сперва говорящий, потом тип записи: карточка и примеры стиля платятся за
+            # запрос, и обе верны только когда батч однороден по своему признаку.
+            strs.sort(key=lambda s: ((s.get("speaker") or ""), (s.get("rec_type") or "")))
             with_card += sum(1 for s in strs if s.get("speaker"))
+            with_style += sum(1 for s in strs if s.get("style"))
+            with_ent += sum(1 for s in strs if s.get("entities"))
         n = sum(len(v) for v in by_mod.values())
         kind = ("Terminology fix" if fixing_terms else
                 "Blind re-translation" if blind else "Review")
@@ -1880,6 +1902,9 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         if with_card:
             job.add_log(f"Speaker card attached to {with_card:,} of {n:,} strings "
                         f"— gender, race, speech register and the speaker's own words")
+        if with_style or with_ent:
+            job.add_log(f"Official wording shown for {with_style:,} strings; the game's "
+                        f"own name supplied for {with_ent:,} that mention one")
         if skipped_no_violation:
             job.add_log(f"Skipped {skipped_no_violation} flagged for something a term "
                         f"fix cannot repair")

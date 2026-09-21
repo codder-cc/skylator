@@ -166,6 +166,46 @@ class TranslationHit:
 # -- search client ---------------------------------------------------------------
 
 
+# -- structural relations: what the title cannot tell us -------------------------
+#
+# Поиск по названию — самый слабый признак, и он подводит предсказуемо: «Vigilant -
+# English Voices Addon» резолвится в мод «VIGILANT - English Translation», и русские
+# переводы под этот заголовок не подходят. Но у Nexus есть две настоящие связи, и обе
+# отдаются наружу, хотя специального поля «Translations» в схеме нет — ни у типа Mod
+# (38 полей), ни среди 63 корневых запросов.
+
+_REQUIRING_QUERY = """
+query($modId: ID!, $gameId: ID!, $count: Int!, $offset: Int!) {
+  mod(modId: $modId, gameId: $gameId) {
+    name
+    modRequirements {
+      modsRequiringThisMod(count: $count, offset: $offset) {
+        totalCount nodes { modId modName notes }
+      }
+    }
+  }
+}
+"""
+
+_FILE_CONTENTS_QUERY = """
+query($filter: ModFileContentSearchFilter!, $count: Int!, $offset: Int!) {
+  modFileContents(filter: $filter, count: $count, offset: $offset) {
+    totalCount
+    nodes { modId fileName }
+  }
+}
+"""
+
+_MODS_BY_ID_QUERY = """
+query($ids: [CompositeIdInput!]!) {
+  legacyMods(ids: $ids, count: 100, offset: 0) {
+    nodes { modId name summary downloads endorsements adultContent
+            uploader { name } }
+  }
+}
+"""
+
+
 class ModSearch:
     """Queries against Nexus's GraphQL API.
 
@@ -490,6 +530,99 @@ class ModSearch:
 
         scored.sort(key=lambda t: (-t.score, -t.mod.downloads))
         return scored[:count]
+
+    def requiring_mods(self, mod_id: int, game: Optional[str] = None,
+                       cap: int = 200) -> list[dict]:
+        """«Mods using this mod» — та самая секция со страницы мода.
+
+        Перевод объявляет исходный мод своим требованием и поэтому попадает сюда. Замер:
+        у Midwood Isle 119 использующих модов, и среди них китайский перевод — то есть
+        связь работает и для переводов, а не только для патчей.
+
+        Страницами по полсотни: без пагинации отдавались первые двадцать, и на тех же
+        119 модах перевод в них не попадал — путь выглядел бесполезным, хотя работал.
+        """
+        out: list[dict] = []
+        offset = 0
+        while offset < cap:
+            try:
+                data = self.execute(_REQUIRING_QUERY,
+                                    {"modId": str(int(mod_id)),
+                                     "gameId": str(self.game_id(game)),
+                                     "count": 50, "offset": offset})
+            except NexusError as exc:
+                log.info("requiring-mods lookup failed for %s: %s", mod_id, exc)
+                break
+            page = (((data.get("mod") or {}).get("modRequirements") or {})
+                    .get("modsRequiringThisMod") or {})
+            nodes = page.get("nodes") or []
+            if not nodes:
+                break
+            out += [{"mod_id": int(n["modId"]), "name": n.get("modName") or "",
+                     "notes": n.get("notes") or ""}
+                    for n in nodes if n.get("modId")]
+            offset += len(nodes)
+            if offset >= int(page.get("totalCount") or 0):
+                break
+        return out
+
+
+    def mods_containing_file(self, file_name: str, game: Optional[str] = None,
+                              cap: int = 200) -> set:
+        """Идентификаторы модов, в архивах которых есть файл с этим именем.
+
+        Самая сильная опора из доступных: перевод содержит ТОТ ЖЕ плагин, как бы он себя
+        ни назвал. Замер: `Inigo.esp` даёт 119 кандидатов, и русский перевод среди них;
+        `HLIORemi.esp` — 27, и тоже. Не всеобъемлюща — перевод, лежащий в .STRINGS рядом с
+        чужим плагином, так не находится, — поэтому идёт вместе с поиском по имени, а не
+        вместо него.
+        """
+        ids: set = set()
+        offset = 0
+        while offset < cap:
+            try:
+                data = self.execute(_FILE_CONTENTS_QUERY, {
+                    "filter": {"fileNameWildcard": {"value": file_name, "op": "WILDCARD"},
+                               "gameId": {"value": self.game_id(game), "op": "EQUALS"}},
+                    "count": 50, "offset": offset})
+            except NexusError as exc:
+                log.info("file-contents lookup failed for %r: %s", file_name, exc)
+                break
+            page = data.get("modFileContents") or {}
+            nodes = page.get("nodes") or []
+            if not nodes:
+                break
+            ids |= {int(n["modId"]) for n in nodes if n.get("modId")}
+            offset += len(nodes)
+            if offset >= int(page.get("totalCount") or 0):
+                break
+        return ids
+
+
+    def mods_by_ids(self, mod_ids, game: Optional[str] = None) -> list:
+        """Карточки модов по их идентификаторам, порциями по полсотни."""
+        out: list = []
+        ids = [int(i) for i in mod_ids]
+        gid = self.game_id(game)
+        for i in range(0, len(ids), 50):
+            chunk = ids[i:i + 50]
+            try:
+                data = self.execute(_MODS_BY_ID_QUERY, {
+                    "ids": [{"gameId": gid, "modId": m} for m in chunk]})
+            except NexusError as exc:
+                log.info("mods-by-id lookup failed: %s", exc)
+                continue
+            for n in ((data.get("legacyMods") or {}).get("nodes") or []):
+                out.append(ModHit(
+                    mod_id       = int(n.get("modId") or 0),
+                    name         = n.get("name") or "",
+                    summary      = n.get("summary") or "",
+                    downloads    = int(n.get("downloads") or 0),
+                    endorsements = int(n.get("endorsements") or 0),
+                    adult        = bool(n.get("adultContent")),
+                    uploader     = ((n.get("uploader") or {}).get("name") or ""),
+                ))
+        return out
 
 
 # -- name matching ---------------------------------------------------------------

@@ -697,18 +697,18 @@ def donor_candidates():
         # named by whoever built the modlist -- "Adamant" where Nexus says "Adamant - A
         # Perk Overhaul" -- and the ranking compares titles, so the folder name quietly
         # costs matches. meta.ini already carries the mod id that resolves it.
-        # ...но одного имени мало, и это стоило дорого. Там, где папка — дополнение или
-        # вариант, канонический заголовок уводит в сторону: «Vigilant - English Voices
-        # Addon» резолвится в мод «VIGILANT - English Translation (Plus Voiced Addon)»,
-        # то есть в АНГЛИЙСКИЙ перевод, и русские, названные «Vigilant RU», под него не
-        # подходят. Замер на ста крупнейших модах, у которых проход сказал «донора нет»:
-        # у одиннадцати донор есть, 35 833 строки, и во ВСЕХ одиннадцати случаях нашло
-        # имя папки или её основа, а не каноническое. Среди пропущенных — Cutting Room
-        # Floor с 29 630 скачиваний перевода и Vigilant с 19 947.
+        # ...но одного имени мало, и это стоило дорого. Там, где папка — дополнение
+        # или вариант, канонический заголовок уводит в сторону: «Vigilant - English
+        # Voices Addon» резолвится в АНГЛИЙСКИЙ перевод, и русские под него не подходят.
+        # Замер на ста крупнейших модах без донора: у одиннадцати он есть, 35 833 строки.
         #
-        # Поэтому пробуются все три имени, а результаты сливаются. Лишний поиск стоит
-        # доли секунды; пропущенный человеческий перевод стоит мода.
-        nexus_id = None
+        # Поэтому кандидаты собираются тремя путями — по именам, по «кто использует этот
+        # мод» и по нашему плагину, — и складываются. Ни один путь не полон: перевод
+        # Vigilant находится только по имени, переводы Inigo и Remiel только по плагину.
+        # Лишние кандидаты не страшны: судит слияние, а оно сопоставляет по FormID.
+        from translator.nexus.discover import discover
+
+        nexus_id, nexus_title = None, ""
         scanner = current_app.config.get("SCANNER")
         if scanner is not None:
             try:
@@ -716,49 +716,35 @@ def donor_candidates():
                 nexus_id = getattr(info, "nexus_mod_id", None) if info else None
             except Exception:
                 log.debug("scanner lookup failed for %s", mod, exc_info=True)
-
-        names: list = []
         if nexus_id:
             try:
                 hit = search.by_mod_id(int(nexus_id))
                 if hit and hit.name:
-                    names.append(("nexus", hit.name))
+                    nexus_title = hit.name
             except Exception as exc:
                 log.info("could not resolve the Nexus title for %s: %s", mod, exc)
-        names.append(("folder", mod))
-        base = _base_mod_name(mod)
-        if base and base.lower() not in {n.lower() for _s, n in names}:
-            names.append(("base", base))
 
-        count = min(int(request.args.get("count") or 10), 50)
-        merged: dict = {}
-        tried: list = []
-        for source, name in names:
-            seen = {n.lower() for _s, n in tried}
-            if name.lower() in seen:
-                continue
-            tried.append((source, name))
+        plugins = []
+        repo = current_app.config.get("STRING_REPO")
+        if repo is not None:
             try:
-                for h in search.translations_of(name, language=language, count=count):
-                    d = h.as_dict()
-                    key = d.get("mod_id")
-                    # Побеждает более скачиваемый: один и тот же перевод находится под
-                    # разными именами, и брать надо лучшую его версию, а не первую.
-                    if key not in merged or (d.get("downloads") or 0) > (
-                            merged[key].get("downloads") or 0):
-                        d["found_by"] = source
-                        d["searched_as"] = name
-                        merged[key] = d
+                plugins = [r["esp_name"] for r in repo.db.execute(
+                    "SELECT esp_name, COUNT(*) n FROM strings WHERE mod_name=? "
+                    "AND esp_name LIKE '%.es%' GROUP BY esp_name ORDER BY n DESC LIMIT 3",
+                    (mod,)).fetchall()]
             except Exception as exc:
-                log.info("translation search failed for %r: %s", name, exc)
+                log.debug("plugin lookup failed for %s: %s", mod, exc)
 
-        results = sorted(merged.values(),
-                         key=lambda d: -(d.get("downloads") or 0))[:count]
+        want = (request.args.get("routes") or "name,requiring,plugin").split(",")
+        got = discover(
+            search, mod_folder=mod, nexus_mod_id=nexus_id, nexus_title=nexus_title,
+            plugins=plugins, language=language,
+            count=min(int(request.args.get("count") or 10), 50),
+            by_name="name" in want, by_requiring="requiring" in want,
+            by_plugin="plugin" in want)
         return jsonify({"ok": True, "mod": mod, "language": language,
-                        "searched_as": [n for _s, n in tried],
-                        "name_source": (results[0].get("found_by") if results else None),
-                        "nexus_mod_id": nexus_id,
-                        "count": len(results), "results": results})
+                        "nexus_mod_id": nexus_id, "nexus_title": nexus_title,
+                        "plugins": plugins, **got.as_dict()})
     except Exception as exc:
         return _fail(exc)
 

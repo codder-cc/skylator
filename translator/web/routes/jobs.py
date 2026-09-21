@@ -1784,7 +1784,16 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         blind = scope == "flagged" or sweep
         fixing_terms = scope == "terms"
         where = ["TRIM(translation) <> ''", "translation <> original",
-                 "COALESCE(source,'') <> 'untranslatable'"]
+                 "COALESCE(source,'') <> 'untranslatable'",
+                 # Чужой человеческий перевод машине не отдаём. Он лежит в needs_review
+                 # не потому, что текст отвергли, а потому что это ПРЕДЛОЖЕНИЕ, ждущее
+                 # человека: применяется только то, что подтвердила официальная таблица,
+                 # а остальное в строке никто не проверял. Для слепого перевода это
+                 # выглядит как обычная помеченная строка, и машинный ответ, который
+                 # ворота примут, побьёт донорский по вердикту — 0 против 1, независимо
+                 # от того, чей текст лучше. Замер, определивший отношение: на классе с
+                 # известным ответом донор бьёт нас 258 раз против 90.
+                 "COALESCE(source,'') <> 'nexus-translation'"]
         if not sweep:
             where.append("status='needs_review'" if (blind or fixing_terms)
                          else "status='translated'")

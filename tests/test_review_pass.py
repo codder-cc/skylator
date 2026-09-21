@@ -433,3 +433,31 @@ def test_nothing_usable_left_keeps_the_original_text():
     """Если после снятия эха не остаётся ничего, лучше показать как есть, чем пустоту."""
     from translator.web.routes.jobs import _clean_current
     assert _clean_current("Bed", "Bed") == "Bed"
+
+
+def test_a_donor_translation_is_never_handed_to_a_machine():
+    """Чужой человеческий перевод в needs_review — предложение, а не брак.
+
+    Он лежит там не потому, что текст отвергли, а потому что применялось только
+    подтверждённое официальной таблицей, а остальное в строке никто не читал. Для
+    слепого перевода это неотличимо от обычной помеченной строки, и машинный ответ,
+    который ворота примут, побьёт донорский ПО ВЕРДИКТУ — 1 против 0, независимо от
+    того, чей текст лучше. Замер: на классе с известным ответом донор бьёт нас 258 раз
+    против 90, так что отдавать его машине — менять лучшее на худшее.
+    """
+    import inspect
+    from translator.web.routes.jobs import _create_review_fleet_job
+    src = inspect.getsource(_create_review_fleet_job)
+    assert "COALESCE(source,'') <> 'nexus-translation'" in src, (
+        "донорские строки должны быть исключены из ВСЕХ машинных областей, "
+        "включая sweep — он тоже переводит вслепую")
+
+
+def test_the_exclusion_is_not_inside_the_non_sweep_branch():
+    # Условие обязано стоять в общем списке, а не под `if not sweep`: sweep берёт всё,
+    # что имеет перевод, и донорские строки попали бы в него первыми.
+    import inspect
+    from translator.web.routes.jobs import _create_review_fleet_job
+    src = inspect.getsource(_create_review_fleet_job)
+    head = src[:src.index("if not sweep:")]
+    assert "nexus-translation" in head

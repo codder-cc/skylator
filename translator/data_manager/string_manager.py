@@ -197,6 +197,42 @@ class StringManager:
                 source = "vanilla"
                 merge = False          # таблица не соревнуется с хранимым текстом
 
+        # ── Род говорящего: та же причина, что и у таблицы выше ─────────────────
+        # Элдавин — женщина, и система это знает точно: `EldawynVoice`, флаг пола в
+        # записи NPC_. Её реплики всё равно звучали мужским родом, и история одной строки
+        # объясняет почему:
+        #
+        #   20 сен 13:47  [gender:voice]  правка рода — верно
+        #   21 сен 00:10  [ai]            ночной слепой прогон вернул мужской
+        #   21 сен 11:16  [duplicate]     разнос по двойникам добил
+        #
+        # Скрипт чинил симптом, а всё, что писалось после, ломало обратно — ровно как с
+        # официальной таблицей. Снимок не видит доставленного после него, поэтому
+        # суждение переносится в момент записи. На 23 сломанных строках Элдавин правило
+        # чинит 23.
+        if translation and original and rec_type == "INFO":
+            try:
+                from translator.characters import gender as _g
+                from translator.characters import speakers as _sp
+                _fid = form_id
+                if _fid is None:
+                    _row = self._repo.db.execute(
+                        "SELECT form_id FROM strings WHERE mod_name=? AND esp_name=? "
+                        "AND key=?", (mod_name, esp_name, key)).fetchone()
+                    _fid = _row["form_id"] if _row else None
+                _sex = _sp.gender_for(esp_name, _fid)
+                if _sex:
+                    _fixed = _g.enforce(original, translation, _sex)
+                    if _fixed != translation:
+                        log.info("gender: %s/%s — %s род говорящего", mod_name, key,
+                                 "женский" if _sex == "f" else "мужской")
+                        translation = _fixed
+                        computed_qs, _tok, _issues, computed_status = compute_string_status(
+                            original, translation, self._glossary(), rec_type, field_type)
+            except Exception as exc:                                   # noqa: BLE001
+                log.warning("gender: правило не отработало для %s/%s: %s",
+                            mod_name, key, exc)
+
         # ── Merge against what is already stored (agent deliveries only) ────────
         if merge and translation:
             existing = self._repo.db.execute(

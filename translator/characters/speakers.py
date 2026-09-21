@@ -107,3 +107,70 @@ def card_for(esp_name: str, form_id: str, state: dict):
 def block_for(esp_name: str, form_id: str, state: dict) -> str:
     card = card_for(esp_name, form_id, state)
     return card.prompt_block() if card else ""
+
+
+# -- пол говорящего для ворот записи ---------------------------------------------
+
+_GENDER_LOCK = threading.Lock()
+_GENDER: dict | None = None
+
+
+def gender_map(force: bool = False) -> dict:
+    """{(плагин, FormID6): 'm'|'f'} — собирается из двух кэшей, без обхода дисков.
+
+    Воротам записи нужен ответ на каждую строку, поэтому карта строится один раз и из
+    готового: списка озвучки (кто произносит) и индекса NPC_ (какого он пола). Обход
+    модов и архивов здесь недопустим — он занимает минуты.
+
+    Пол берётся из двух источников и только при их согласии. Имя типа голоса называет
+    его у ванильных (`MaleNord`), запись NPC_ — у персональных, которых большинство.
+    Расходятся они на 0,9% реплик, и там молчим: неверный род ломает текст, отсутствующий
+    нет.
+    """
+    global _GENDER
+    with _GENDER_LOCK:
+        if _GENDER is not None and not force:
+            return _GENDER
+        voice = _voice_index(_ROOT / "cache" / "bsa_voice_index.json")
+        by_vt: dict = {}
+        try:
+            from translator.characters import npc_index as _ni
+            idx_path = _ROOT / "cache" / "npc_index.json"
+            if idx_path.exists():
+                import json as _json
+                cache = _json.loads(idx_path.read_text(encoding="utf-8"))
+                npcs, vtyp, races = [], {}, {}
+                for entry in cache.values():
+                    if not isinstance(entry, dict):
+                        continue
+                    npcs += entry.get("npcs") or []
+                    vtyp.update(entry.get("vtyp") or {})
+                    races.update(entry.get("races") or {})
+                by_vt = {vt: c["sex"] for vt, c in _ni.by_voice_type(
+                    {"npcs": npcs, "vtyp": vtyp, "races": races}).items() if c["sex"]}
+        except Exception as exc:                                   # noqa: BLE001
+            log.warning("speakers: NPC index unusable (%s) — gender by voice name only", exc)
+
+        try:
+            from scripts.voice_gender import gender_of
+        except Exception:                                          # noqa: BLE001
+            def gender_of(_vt):                                    # type: ignore
+                return None
+
+        out: dict = {}
+        for key, vts in voice.items():
+            got = {g for g in (gender_of(v) for v in vts) if g}
+            got |= {by_vt[v] for v in vts if v in by_vt}
+            if len(got) == 1:
+                out[key] = next(iter(got))
+        _GENDER = out
+        log.info("speakers: gender known for %d voiced lines", len(out))
+        return _GENDER
+
+
+def gender_for(esp_name: str, form_id: str) -> str | None:
+    """Пол говорящего этой строки, или None."""
+    if not esp_name or not form_id:
+        return None
+    return gender_map().get(((esp_name or "").lower(),
+                             (form_id or "").upper()[-6:]))

@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import ast
 import logging
 import threading
 import time
@@ -58,6 +59,29 @@ def normalize_text(text: str) -> str:
 
 def _norm_hash(text: str) -> str | None:
     return _sha256_hash(normalize_text(text)) if text else None
+
+
+def _identity_from_key(key: str):
+    """(form_id, rec_type, field_type) из ключа строки, или None.
+
+    Ключ плагинной строки — это str() кортежа опознания, и разобрать его дешевле, чем
+    спрашивать базу. Нужно это потому, что тип записи доходит до ворот не всегда:
+    агент возвращает текст, ключ и своё мнение о качестве, а `rec_type` в его ответе
+    нет вовсе. Все правила, которые на тип смотрят, при этом молча стоят — за смену
+    мастера правило рода не сработало НИ РАЗУ при 182 592 репликах в корпусе, и не
+    пожаловалось, потому что «тип не INFO» выглядит как законный отказ.
+
+    Ключи MCM/SWF кортежами не являются — для них молчим.
+    """
+    if not key or not key.startswith("("):
+        return None
+    try:
+        parsed = ast.literal_eval(key)
+    except (ValueError, SyntaxError):
+        return None
+    if not isinstance(parsed, tuple) or len(parsed) < 3:
+        return None
+    return (parsed[0] or None, parsed[1] or None, parsed[2] or None)
 
 
 class StringManager:
@@ -129,6 +153,15 @@ class StringManager:
         edits and resets, which must win unconditionally.
         """
         from translator.validation.quality import compute_string_status
+
+        # Опознание строки — до всякого суждения: и оценка качества, и правила ниже
+        # смотрят на тип записи, а вызывающий передаёт его не всегда.
+        if rec_type is None or field_type is None or form_id is None:
+            _ident = _identity_from_key(key)
+            if _ident:
+                form_id = form_id or _ident[0]
+                rec_type = rec_type or _ident[1]
+                field_type = field_type or _ident[2]
 
         # Compute quality score / status outside the lock (CPU-only)
         computed_qs = quality_score

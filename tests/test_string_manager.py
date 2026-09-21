@@ -279,3 +279,25 @@ class TestTheGateIsTheOnlyJudge:
         src = inspect.getsource(api_rt)
         i = src.index("prefer_incoming=_reviewing,")
         assert "rec_type=" in src[i:i + 400]
+
+
+def test_the_gate_recovers_the_record_type_from_the_key():
+    """Агент не возвращает rec_type, и правила, смотрящие на тип, молча стоят.
+
+    Это не гипотеза: за целую смену мастера правило рода не сработало ни разу при
+    182 592 репликах в корпусе — и не пожаловалось, потому что «тип не INFO» выглядит
+    как законный отказ. Тип лежит в самом ключе, и брать его оттуда дешевле базы.
+    """
+    from translator.data_manager.string_manager import _identity_from_key
+
+    assert _identity_from_key("('0551C84A', 'INFO', 'NAM1', 4)") == (
+        "0551C84A", "INFO", "NAM1")
+
+
+def test_a_key_that_is_not_a_plugin_row_is_not_guessed_at():
+    # MCM/SWF ключами-кортежами не являются — молчим, а не выдумываем тип.
+    from translator.data_manager.string_manager import _identity_from_key
+
+    assert _identity_from_key("$SKI_INFO1") is None
+    assert _identity_from_key("") is None
+    assert _identity_from_key("(сломанный") is None

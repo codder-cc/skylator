@@ -100,6 +100,9 @@ def main() -> None:
     ap.add_argument("--write", action="store_true")
     ap.add_argument("--language", default="Russian")
     ap.add_argument("--skip", action="append", default=[])
+    # Повторный проход по тем, у кого донора не нашлось прошлым, более слабым поиском.
+    # Перебирать все 1 945 незачем: у кого донор уже есть, тем он и остаётся.
+    ap.add_argument("--only-file", help="файл со списком модов, по одному на строку")
     # Донор — источник текста, а не дистрибутив. Сорок килобайт перевода внутри
     # четырёхсотмегабайтного архива патч-хаба стоят дороже, чем дают: архив всё равно
     # качается целиком, транзитом через диск. Порог отсекает такие, и они остаются
@@ -116,6 +119,10 @@ def main() -> None:
               file=out, flush=True)
 
     mods = [(m, n) for m, n in mods_by_size(args.top) if m not in args.skip]
+    if args.only_file:
+        want = {ln.strip() for ln in Path(args.only_file).read_text(
+            encoding="utf-8").splitlines() if ln.strip()}
+        mods = [(m, n) for m, n in mods if m in want]
     print(f"модов к обходу: {len(mods)}   строк в них: {sum(n for _, n in mods):,}\n",
           file=out, flush=True)
 

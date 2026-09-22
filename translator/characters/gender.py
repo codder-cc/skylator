@@ -113,6 +113,39 @@ _SHORT_PAIRS = {
 }
 _SHORT_BACK = {v: k for k, v in _SHORT_PAIRS.items()}
 
+# Обращение существительным: «Ты грубиян» женщине. Морфология тут бессильна —
+# «грубиянка» это словообразование, а не склонение, — и промпт тоже: пять формулировок,
+# включая нарочито жёсткую и с образцом, оставили «грубиян» нетронутым.
+#
+# Список короткий намеренно. Замер по корпусу: таких мест 54 на 463 тысячи строк, и
+# добрая половина — ложные (имена «Шанат», «Дельфин», множественные «Драконы»). А для
+# большинства занятий мужская форма и есть верная: «Ты художник?» женщине по-русски
+# нормально, и «художница» здесь звучала бы хуже. Поэтому сюда попадают только те пары,
+# где женская форма бесспорна и общеупотребительна.
+_NOUN_PAIRS = {
+    "дурак": "дура", "грубиян": "грубиянка", "лжец": "лгунья", "вор": "воровка",
+    "трус": "трусиха", "глупец": "дура", "негодяй": "негодяйка",
+    "мерзавец": "мерзавка", "хитрец": "хитрюга", "счастливчик": "счастливица",
+}
+_NOUN_BACK = {"дура": "дурак", "грубиянка": "грубиян", "лгунья": "лжец",
+              "воровка": "вор", "трусиха": "трус", "негодяйка": "негодяй",
+              "мерзавка": "мерзавец", "счастливица": "счастливчик"}
+
+
+def _is_adjective(word: str) -> bool:
+    """Полное прилагательное перед словом — значит согласование, а не одно слово."""
+    parses = _morph().parse((word or "").lower())
+    return bool(parses) and parses[0].tag.POS == "ADJF"
+
+
+def noun_form(word: str, want: str) -> str | None:
+    """Обращение-существительное в нужном роде, или None."""
+    low = word.lower()
+    got = _NOUN_PAIRS.get(low) if want == "f" else _NOUN_BACK.get(low)
+    if not got or got == low:
+        return None
+    return got[:1].upper() + got[1:] if word[:1].isupper() else got
+
 
 def short_form(word: str, want: str) -> str | None:
     """Краткая форма в нужном роде, или None."""
@@ -251,7 +284,8 @@ def _retell(text: str, want: str, pronoun: str, carries, swap) -> tuple[str, int
             if not carries(words[j][0]):
                 continue
             anchors.append(words[j][2])
-            fixed = swap(words[j][0])
+            fixed = swap(words[j][0],
+                        words[j - 1][0] if j > 0 else "")
             if fixed and words[j][1] not in done_at:
                 edits.append((words[j][1], words[j][2], fixed))
                 done_at.add(words[j][1])
@@ -299,7 +333,7 @@ def _retell(text: str, want: str, pronoun: str, carries, swap) -> tuple[str, int
             continue                               # не глагол — цепочка кончилась
         if bridge and not bridge.lower().strip().endswith(pronoun)                 and _has_own_subject(text[m.end():]):
             continue                               # «что произошёл взрыв» — подлежащее своё
-        fixed = swap(verb)
+        fixed = swap(verb, "")
         if fixed and m.start(3) not in done_at:
             edits.append((m.start(3), m.end(3), fixed))
             done_at.add(m.start(3))
@@ -317,7 +351,7 @@ def retell(text: str, want: str) -> tuple[str, int]:
     def carries(word: str) -> bool:
         return past_gender(word) is not None
 
-    def swap(word: str) -> str | None:
+    def swap(word: str, _prev: str = "") -> str | None:
         if word.lower() in _NOT_A_VERB:
             return None
         have = past_gender(word)
@@ -337,12 +371,22 @@ def retell_addressee(text: str, want: str) -> tuple[str, int]:
     def carries(word: str) -> bool:
         low = word.lower()
         return (past_gender(word) is not None
-                or low in _SHORT_PAIRS or low in _SHORT_BACK)
+                or low in _SHORT_PAIRS or low in _SHORT_BACK
+                or low in _NOUN_PAIRS or low in _NOUN_BACK)
 
-    def swap(word: str) -> str | None:
+    def swap(word: str, prev: str = "") -> str | None:
         short = short_form(word, want)
         if short:
             return short
+        noun = noun_form(word, want)
+        if noun:
+            # «Ты эгоистичный дурак» → «эгоистичный дура»: правка существительного без
+            # прилагательного рвёт согласование, и фраза становится хуже нетронутой.
+            # Склонять оба — значит решать за модель две задачи там, где таких мест
+            # десятки на весь корпус. Молчим.
+            if prev and _is_adjective(prev):
+                return None
+            return noun
         if word.lower() in _NOT_A_VERB:
             return None
         have = past_gender(word)

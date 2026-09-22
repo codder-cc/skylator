@@ -1985,6 +1985,10 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                 "Blind re-translation" if blind else "Review")
         job.add_log(f"{kind}: {n} string(s) across {len(by_mod)} mod(s) "
                     f"→ {', '.join(lbl for lbl, _ in backends)}")
+        if judging:
+            _rivals = sum(1 for v in by_mod.values() for x in v if x.get("rival"))
+            job.add_log(f"Judge: stored text sent as a rival for {_rivals:,} of {n:,} "
+                        f"strings — the prompt does not see it")
         if with_card:
             job.add_log(f"Speaker card attached to {with_card:,} of {n:,} strings "
                         f"— gender, race, speech register and the speaker's own words")

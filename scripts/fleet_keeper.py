@@ -103,6 +103,12 @@ def main() -> None:
     # где они лежали бы сутки, пока быстрые машины стоят. Раздано работу назад не
     # забрать, поэтому порция должна кончаться быстрее, чем освобождается сосед.
     ap.add_argument("--chunk", type=int, default=700)
+    ap.add_argument("--scopes", help="что раздавать: terms,flagged,sweep")
+    ap.add_argument("--types", help="только эти типы записей, через запятую")
+    ap.add_argument("--candidates", type=int, default=1,
+                    help="сколько раз спросить строку; выбирает судья")
+    ap.add_argument("--judge", action="store_true",
+                    help="сравнивать победителя с хранимым текстом")
     # Машина может понадобиться хозяину. Раздавать на неё нельзя, и снимать с неё чужие
     # пакеты тоже: она не «зависла», она занята не нами.
     ap.add_argument("--skip", action="append", default=[],
@@ -110,7 +116,13 @@ def main() -> None:
     args = ap.parse_args()
     skip = set(args.skip)
     deadline = time.time() + args.hours * 3600
-    scopes = ["terms", "flagged"]
+    # Что раздавать. По умолчанию — прежнее чередование: правка терминологии и слепой
+    # переперевод помеченного. Ключом --scopes можно задать другое, и это не украшение:
+    # раздавать проход по типам записи умеет только смотритель, потому что он один
+    # видит, какая машина освободилась. Раздать всё разом нельзя — работа делится между
+    # ЖИВЫМИ машинами в момент отправки, и машина, вернувшаяся завтра, осталась бы ни с
+    # чем.
+    scopes = [x.strip() for x in (args.scopes or "terms,flagged").split(",") if x.strip()]
     scope_i = 0
     stuck: dict = {}        # метка → сколько опросов подряд машина стоит с пакетом
     zero: dict = {}         # id пакета → сколько опросов подряд он на нуле
@@ -230,6 +242,12 @@ def main() -> None:
             lo, hi, ceiling = band(label)
             opts = {"scope": scope, "machines": [label], "max_tokens": ceiling,
                     "limit": args.chunk}
+            if args.types:
+                opts["types"] = args.types
+            if args.candidates > 1:
+                opts["candidates"] = args.candidates
+            if args.judge:
+                opts["judge"] = True
             if lo:
                 opts["min_chars"] = lo
             if hi:

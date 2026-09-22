@@ -347,3 +347,24 @@ def test_the_sweep_does_the_valuable_part_first():
     assert "'ACTI','LSCR','MGEF','MESG'" in order
     assert order.index("translated_by") < order.index("LENGTH(original)"), \
         "непроверенное идёт раньше длинного, иначе длина снова решает"
+
+
+def test_the_sweep_can_be_aimed_at_the_weak_record_types():
+    """Бить по типу записи, а не по длине.
+
+    Замер по машинному тексту показывает, где запас и где его нет:
+
+        LSCR  0,0   ACTI 32,6   INFO 36,8   DIAL 42,2   MGEF 45,7
+        WEAP 97,4   CELL 95,7   NPC_ 95,8
+
+    Гнать проход по верхним типам — это тратить дни на то, что двигать некуда, и
+    рисковать испортить: переперевод на замере ухудшал чаще, чем чинил.
+    """
+    import inspect
+
+    from translator.web.routes import jobs as _jobs
+    src = inspect.getsource(_jobs._create_review_fleet_job)
+    assert "rec_type IN (" in src, "отбор по типу обязан попасть в запрос"
+    i = src.index("rec_type IN (")
+    # Значения приходят снаружи, поэтому в запрос они идут только после чистки.
+    assert "re.sub" in src[max(0, i - 400):i], "тип записи подставляется без очистки"

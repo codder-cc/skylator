@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json
 import logging
+import re
 import sys
 import time
 from pathlib import Path
@@ -191,7 +192,8 @@ def create_job():
                                            max_tokens = options.get("max_tokens"),
                                            batch_size = options.get("batch_size"),
                                            judge      = bool(options.get("judge")),
-                                           candidates = int(options.get("candidates") or 1))
+                                           candidates = int(options.get("candidates") or 1),
+                                           types      = options.get("types"))
         except ValueError as exc:
             return jsonify({"error": str(exc), "ok": False}), 400
     elif job_type == "validate" and mod_names:
@@ -1703,7 +1705,8 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                              max_tokens: int | None = None,
                              batch_size: int | None = None,
                              judge: bool = False,
-                             candidates: int = 1):
+                             candidates: int = 1,
+                             types: str | None = None):
     """Send stored translations back to the fleet to be checked and corrected.
 
     A review is a translation job with the answer already filled in: the package carries
@@ -1817,6 +1820,14 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         # 4 000 Cyrillic characters — a book comes back cut off mid-sentence: 217 of them
         # in the collection, 13 stored as finished work. So the caller splits the corpus
         # by length and gives the long half a ceiling that fits it.
+        if types:
+            # Бить по типам записи, а не по длине. Замер по машинному тексту показывает,
+            # где запас: LSCR 0,0  ACTI 32,6  INFO 36,8  DIAL 42,2  MGEF 45,7 — против
+            # WEAP 97,4  CELL 95,7  NPC_ 95,8, где двигать нечего и трогать опасно.
+            _t = [t.strip().upper() for t in types.split(",") if t.strip()]
+            if _t:
+                _safe = ",".join("'" + re.sub(r"[^A-Z_]", "", x) + "'" for x in _t)
+                where.append(f"rec_type IN ({_safe})")
         if min_chars:
             where.append(f"LENGTH(original) >= {int(min_chars)}")
         if max_len:
@@ -2051,7 +2062,7 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         params   = {"review": scope != "flagged", "scope": scope,
                     "min_chars": min_chars, "max_len": max_len,
                     "max_tokens": max_tokens, "judge": bool(judge),
-                    "candidates": int(candidates)},
+                    "candidates": int(candidates), "types": types},
         fn       = run,
     )
 

@@ -180,3 +180,30 @@ def test_the_runner_asks_again_with_spread_and_lets_the_judge_pick():
     assert "cand_temp" in block or "temperature" in block, "второй ответ берётся с разбросом"
     assert "self._judge(" in block, "выбор — судьёй, а не по счёту"
     assert "not in pool" in block, "совпавшие кандидаты не сравниваются между собой"
+
+
+def test_inference_params_reach_the_judge_as_a_dict():
+    """`dict(infer_params)` на объекте InferenceParams падает.
+
+    Ошибка стоила дорого и молча: она стояла в самом судье, поэтому каждый его вызов
+    кидал исключение, перехватывался как «не знаю» и оставлял хранимый текст. Замер
+    показал «судья выбрал хранимое 105 раз из 105» — и это выглядело выводом о
+    качестве, хотя судья не судил ни разу.
+    """
+    from models.inference_params import InferenceParams
+    from offline_translate import _as_params
+
+    got = _as_params(InferenceParams.from_dict({"temperature": 0.3, "batch_size": 4}))
+    assert isinstance(got, dict) and got.get("temperature") == 0.3
+    assert _as_params({"a": 1}) == {"a": 1}
+    assert _as_params(None) == {}
+
+
+def test_neither_the_judge_nor_the_candidates_call_dict_on_it():
+    import inspect
+
+    import offline_translate as ot
+    # Внутри самого помощника проверка на словарь законна — смотрим всё остальное.
+    src = inspect.getsource(ot).replace(inspect.getsource(ot._as_params), "")
+    assert "dict(infer_params" not in src, "объект InferenceParams словарём не станет"
+    assert src.count("_as_params(infer_params)") >= 2, "и судья, и кандидаты через него"

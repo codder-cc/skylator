@@ -138,6 +138,31 @@ def plan_batch(pending: list, start: int, cap: int) -> int:
     return max(1, n)
 
 
+def _as_params(infer_params) -> dict:
+    """Параметры инференса словарём.
+
+    `infer_params` здесь — объект InferenceParams, а не словарь, и `dict(...)` на нём
+    падает. Ошибка стоила дорого и молча: она была в самом судье, поэтому КАЖДЫЙ его
+    вызов кидал исключение, перехватывался как «не знаю» и оставлял хранимый текст.
+    Замер показал «судья выбрал хранимое 105 раз из 105», и это выглядело осмысленным
+    выводом о качестве — а судья не судил ни разу.
+    """
+    if infer_params is None:
+        return {}
+    if isinstance(infer_params, dict):
+        return dict(infer_params)
+    for name in ("as_dict", "model_dump", "dict"):
+        fn = getattr(infer_params, name, None)
+        if callable(fn):
+            try:
+                got = fn()
+                if isinstance(got, dict):
+                    return dict(got)
+            except Exception:                                      # noqa: BLE001
+                pass
+    return {}
+
+
 class OfflineTranslateRunner:
     """
     Store-driven autonomous translation.
@@ -188,7 +213,7 @@ class OfflineTranslateRunner:
         """
         from prompt.builder import build_judge_prompt
 
-        params = dict(infer_params or {})
+        params = _as_params(infer_params)
         params.update({"temperature": 0.0, "top_k": 1, "max_tokens": 8,
                        "thinking": False})
 
@@ -517,7 +542,7 @@ class OfflineTranslateRunner:
                 # иначе они повторят его слово в слово и выбирать будет не из чего.
                 if candidates > 1 and not reviewing:
                     pools: list[list[str]] = [list(translations)]
-                    hot = dict(infer_params or {})
+                    hot = _as_params(infer_params)
                     hot["temperature"] = max(cand_temp, float(hot.get("temperature") or 0))
                     hot["top_k"] = 40
                     for _ in range(candidates - 1):

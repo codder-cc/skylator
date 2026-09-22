@@ -186,12 +186,20 @@ def main() -> None:
         talk_text.setdefault(k, t["original"] or "")
 
     score = {"без контекста": [0, 0, 0], "с контекстом": [0, 0, 0]}
+    # Ветки идут по ОДНИМ И ТЕМ ЖЕ строкам, поэтому сравнивать их как две независимые
+    # доли — значит выбрасывать почти всю чувствительность. При 70 строках две доли
+    # различимы только с разницей около восьми пунктов, а расхождения по парам видны
+    # с трёх. Именно из-за этого два прогона одной модели разошлись на 1,4 пункта, и
+    # эффект контекста поменял знак — мы мерили шум.
+    pairs = {"обе верно": 0, "обе мимо": 0, "только без контекста": 0,
+             "только с контекстом": 0}
     done = 0
     for r in rows:
         en = (r["original"] or "").strip()
         want = hold[en].strip()
         term = _build_terminology([en])
         ctx = context_for(r, dlg, spk, repo, talk_text, parts, style_ex)
+        got_hit = {}
         for name, use in (("без контекста", ""), ("с контекстом", ctx)):
             try:
                 got = parse_numbered_output(
@@ -203,9 +211,16 @@ def main() -> None:
                 print(f"  сбой: {exc}", file=out, flush=True)
                 ans = ""
             s = score[name]
+            hit = loose(ans) == loose(want)
             s[0] += ans == want
-            s[1] += loose(ans) == loose(want)
+            s[1] += hit
             s[2] += by_lemma(want, ans)
+            got_hit[name] = hit
+        a, b = got_hit.get("без контекста"), got_hit.get("с контекстом")
+        if a is not None and b is not None:
+            key = ("обе верно" if a and b else "обе мимо" if not a and not b
+                   else "только без контекста" if a else "только с контекстом")
+            pairs[key] += 1
         done += 1
         if done % 20 == 0:
             print(f"  {done}/{len(rows)}…", file=out, flush=True)
@@ -215,6 +230,30 @@ def main() -> None:
         n = max(done, 1)
         print(f"{name:<16}{100.0*s[0]/n:>8.1f}%{100.0*s[1]/n:>13.1f}%"
               f"{100.0*s[2]/n:>11.1f}%", file=out)
+
+    # Парное сравнение. Решают только расхождения: строки, где обе ветки ответили
+    # одинаково, о разнице не говорят ничего, сколько бы их ни было.
+    only_a = pairs["только без контекста"]
+    only_b = pairs["только с контекстом"]
+    disc = only_a + only_b
+    print("\nпо парам (мера «без огрехов»):", file=out)
+    for k, v in pairs.items():
+        print(f"  {k:<24}{v:>5}", file=out)
+    if disc == 0:
+        print("\n  расхождений нет — ветки отвечают одинаково, мерить нечего", file=out)
+    else:
+        # Знаковый тест: при отсутствии эффекта расхождения делятся пополам.
+        import math
+        z = abs(only_b - only_a) / math.sqrt(disc)
+        verdict = ("разница не отличима от случайной" if z < 1.96 else
+                   "разница значима")
+        better = "с контекстом" if only_b > only_a else "без контекста"
+        print(f"\n  расхождений {disc}, из них в пользу «{better}» "
+              f"{max(only_a, only_b)}", file=out)
+        print(f"  z = {z:.2f} — {verdict}", file=out)
+        need = math.ceil(((1.96 + 0.84) ** 2) / max((only_b - only_a) / disc, 0.01) ** 2) \
+            if disc else 0
+        print(f"  чтобы поймать эффект такого размера, расхождений нужно ~{need}", file=out)
 
 
 if __name__ == "__main__":

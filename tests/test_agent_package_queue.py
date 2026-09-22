@@ -82,12 +82,45 @@ def test_a_package_that_makes_no_progress_does_not_spin(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rs, "_produce_assignment", _no_progress)
     monkeypatch.setattr(rs.asyncio, "sleep", _sleep)
+    monkeypatch.setattr(rs, "_STALL_TRIES", 99)      # здесь проверяется только пауза
     try:
         asyncio.run(rs._drain_open_assignments(state, None))
     except asyncio.CancelledError:
         pass
 
     assert calls["produce"] == calls["slept"] == 3, "каждая пустая попытка ждёт"
+
+
+def test_a_package_that_cannot_finish_stops_blocking_the_queue(tmp_path, monkeypatch):
+    """Пауза спасает от горячего цикла, но не от главного: пакет загораживает очередь.
+
+    Пока тот, что впереди, не может закончиться, следующие не начнутся никогда — а
+    выдать их заново может только мастер, которого на эти дни и выключают. Один
+    отложенный пакет дешевле вставшей машины.
+    """
+    store = _store(tmp_path)
+    store.add_assignment("stuck", items=_items("s", 2))
+    store.add_assignment("good", items=_items("g", 2))
+    state = SimpleNamespace(result_store=store, drain_task=None, offline_job=None)
+
+    seen = []
+
+    async def _produce(st, loop, aid, meta):
+        seen.append(aid)
+        if aid != "stuck":
+            _finish(store, aid)
+
+    async def _sleep(_sec):
+        pass
+
+    monkeypatch.setattr(rs, "_produce_assignment", _produce)
+    monkeypatch.setattr(rs.asyncio, "sleep", _sleep)
+    asyncio.run(rs._drain_open_assignments(state, None))
+
+    assert seen.count("stuck") == rs._STALL_TRIES, "пробуем ровно столько, сколько условлено"
+    assert "good" in seen, "следующий пакет обязан быть сделан"
+    assert store.get_assignment("stuck")["state"] == "stalled"
+    assert store.get_assignment("good")["state"] == "complete"
 
 
 def test_an_already_finished_assignment_is_closed_not_rerun(tmp_path, monkeypatch):

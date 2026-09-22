@@ -1375,6 +1375,9 @@ def _persist_offline_chunk(state, chunk: dict) -> None:
     )
 
 
+_STALL_TRIES = 3          # попыток без единой строки, после которых пакет откладывается
+
+
 async def _drain_open_assignments(state, loop) -> None:
     """Проработать ВСЕ открытые назначения подряд, а не одно.
 
@@ -1388,6 +1391,7 @@ async def _drain_open_assignments(state, loop) -> None:
     потому что путь восстановления читает ровно этот список.
     """
     import json as _json
+    tries: dict = {}
     try:
         while True:
             nxt = None
@@ -1401,18 +1405,32 @@ async def _drain_open_assignments(state, loop) -> None:
             if nxt is None:
                 return
             aid = nxt["assignment_id"]
-            _, before = state.result_store.assignment_progress(aid)
+            total, before = state.result_store.assignment_progress(aid)
             try:
                 meta = _json.loads(nxt.get("params_json") or "{}")
             except Exception:
                 meta = {}
             await _produce_assignment(state, loop, aid, meta)
             _, after = state.result_store.assignment_progress(aid)
-            if after <= before:
-                # Ни одной строки не прибавилось: модели нет, окно закрыто или
-                # прогон отменён. Назначение осталось открытым, и без паузы это
-                # горячий цикл на пустом месте.
-                await asyncio.sleep(30)
+            if after > before:
+                tries.pop(aid, None)
+                continue
+            # Ни одной строки не прибавилось: модели нет, окно закрыто, прогон отменён
+            # или часть работы неисполнима. Назначение осталось открытым — без паузы это
+            # горячий цикл на пустом месте.
+            tries[aid] = tries.get(aid, 0) + 1
+            if tries[aid] >= _STALL_TRIES:
+                # И, что важнее паузы, оно загораживает очередь. Пока пакет впереди не
+                # может закончиться, следующие не начнутся никогда — а выдать их заново
+                # может только мастер, которого на эти дни и выключают. Лучше отложить
+                # один пакет вслух, чем встать всей машиной молча.
+                log.warning("Assignment %s made no progress in %d attempts (%d/%d done) "
+                            "— setting it aside so the queue can move on",
+                            aid[:8], tries[aid], after, total)
+                state.result_store.set_assignment_state(aid, "stalled")
+                tries.pop(aid, None)
+                continue
+            await asyncio.sleep(30)
     except asyncio.CancelledError:
         raise
     except Exception as exc:

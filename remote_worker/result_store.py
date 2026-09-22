@@ -30,7 +30,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Wire-protocol version negotiated with the master at registration. Over a months-long
 # run an OTA update may change payloads on one side; both ends carry this so a mismatch
@@ -49,6 +49,18 @@ _AGENT_MIGRATIONS: list[tuple[int, list[str]]] = [
     # The rendering a line must use for the one term it got wrong. Stated per line it
     # binds; listed at the top of a batch it does not.
     (3, ["ALTER TABLE agent_manifest ADD COLUMN req_terms TEXT"]),
+    # Всё, что хост знает о строке сверх её текста. До сих пор манифест хранил только
+    # `current` и `req_terms`, а бегунок берёт батч ИЗ МАНИФЕСТА — поэтому карточка
+    # говорящего, примеры стиля, подсказки по именам, разговор и даже тип записи
+    # терялись здесь, уже после того как доехали по сети. Хост при этом рапортовал
+    # «Speaker card attached to N strings», а подсказка по типу записи всегда получала
+    # пустоту.
+    (4, ["ALTER TABLE agent_manifest ADD COLUMN rec_type TEXT",
+         "ALTER TABLE agent_manifest ADD COLUMN speaker TEXT",
+         "ALTER TABLE agent_manifest ADD COLUMN style TEXT",
+         "ALTER TABLE agent_manifest ADD COLUMN entities TEXT",
+         "ALTER TABLE agent_manifest ADD COLUMN talk TEXT",
+         "ALTER TABLE agent_manifest ADD COLUMN rival TEXT"]),
 ]
 
 _SCHEMA = """
@@ -81,6 +93,12 @@ CREATE TABLE IF NOT EXISTS agent_manifest (
     str_key       TEXT,
     current       TEXT,                          -- set only for a review package
     req_terms     TEXT,                          -- set only for a terminology-fix package
+    rec_type      TEXT,                          -- WEAP, INFO, MGEF: register differs
+    speaker       TEXT,                          -- карточка того, кто говорит или к кому
+    style         TEXT,                          -- как игра формулирует такие записи
+    entities      TEXT,                          -- имена, которые игра уже назвала
+    talk          TEXT,                          -- соседние реплики разговора
+    rival         TEXT,                          -- хранимый перевод для судьи
     done          INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (assignment_id, string_id)
 );
@@ -240,14 +258,18 @@ class ResultStore:
                 it.get("key") or it.get("str_key"),
                 it.get("current"),
                 it.get("req_terms"),
+                it.get("rec_type"),
+                it.get("speaker"), it.get("style"), it.get("entities"),
+                it.get("talk"), it.get("rival"),
             ))
 
         def _do():
             self._conn.executemany(
                 """INSERT OR IGNORE INTO agent_manifest
                    (assignment_id, string_id, string_hash, original, mod_name, esp_name,
-                    str_key, current, req_terms)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                    str_key, current, req_terms, rec_type, speaker, style, entities,
+                    talk, rival)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 rows,
             )
 
@@ -264,7 +286,8 @@ class ResultStore:
         with self._lock:
             cur = self._conn.execute(
                 """SELECT string_id, string_hash, original, mod_name, esp_name, str_key,
-                          current, req_terms
+                          current, req_terms, rec_type, speaker, style, entities,
+                          talk, rival
                    FROM agent_manifest WHERE assignment_id=? AND done=0
                    ORDER BY string_id""",
                 (assignment_id,),

@@ -118,3 +118,27 @@ def test_the_judge_is_asked_twice_with_the_variants_swapped():
     first, second = backend.asked
     assert first.index("ХРАНИМЫЙ") < first.index("НОВЫЙ")
     assert second.index("НОВЫЙ") < second.index("ХРАНИМЫЙ")
+
+
+# ── и то, что терялось ЗА проводом ───────────────────────────────────────────
+
+def test_the_manifest_keeps_the_context_the_wire_delivered(tmp_path):
+    """Бегунок берёт батч ИЗ МАНИФЕСТА, а не из пакета.
+
+    Поэтому мало довезти контекст по сети: манифест хранил только `current` и
+    `req_terms`, и всё остальное терялось здесь — уже после доставки. Карточка
+    говорящего, стиль, имена, разговор, соперник и даже тип записи: подсказка
+    rec_type_hint всегда получала пустоту, а хост рапортовал об успехе.
+    """
+    from result_store import ResultStore
+
+    st = ResultStore(str(tmp_path / "agent.db"))
+    st.add_assignment("aid", items=[{
+        "string_id": 1, "original": "You brute.", "esp": "M.esp", "key": "k",
+        "rec_type": "DIAL", "speaker": "TO: Eldawyn (female)", "style": "st",
+        "entities": "ent", "talk": 'the character answers: "..."',
+        "rival": "Ты грубиян."}])
+    row = st.pending_items("aid")[0]
+    for field in ("rec_type", "speaker", "style", "entities", "talk", "rival"):
+        assert row.get(field), f"поле {field} терялось в манифесте агента"
+    assert row["esp_name"] == "M.esp" and row["str_key"] == "k"

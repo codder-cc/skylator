@@ -500,8 +500,10 @@ def audit_stored(repo, terms: dict, mod_name: str | None = None,
     apply=False reports without touching anything, which is the safe default: the report is
     worth reading before thousands of strings move into someone's review queue.
     """
-    sql = ("SELECT id, mod_name, original, translation FROM strings "
-           "WHERE status='translated' AND translation != ''")
+    # Тип записи — не украшение: два правила читают его, и без него аудит и ворота
+    # расходятся ровно на них, хотя ниже обещано обратное.
+    sql = ("SELECT id, mod_name, original, translation, rec_type, field_type "
+           "FROM strings WHERE status='translated' AND translation != ''")
     params: tuple = ()
     if mod_name:
         sql += " AND mod_name=?"
@@ -525,7 +527,8 @@ def audit_stored(repo, terms: dict, mod_name: str | None = None,
         # with look-alike brackets renders as junk in-game, and both were stored as finished
         # work before the checks existed. compute_string_status is the same judgement the
         # write gate applies, so a re-audit and a fresh save agree by construction.
-        _qs, _tok_ok, issues, status = compute_string_status(original, translation, terms)
+        _qs, _tok_ok, issues, status = compute_string_status(
+            original, translation, terms, r["rec_type"], r["field_type"])
         if status == "translated":
             continue
         offenders.append(r["id"])

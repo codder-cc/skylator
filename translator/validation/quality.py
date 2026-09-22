@@ -1033,7 +1033,8 @@ def _glossary_or_none():
     return _GLOSSARY_CACHE[0]
 
 
-def _candidate_score(original: str, t: str) -> tuple[int, float, float]:
+def _candidate_score(original: str, t: str, rec_type: str | None = None,
+                     field_type: str | None = None) -> tuple[int, float, float]:
     """Comparable rank for picking between two candidates: (would the gate accept it,
     how little of it is copied source, then the score). Empty/missing sorts below all.
 
@@ -1050,7 +1051,8 @@ def _candidate_score(original: str, t: str) -> tuple[int, float, float]:
     # помеченная за «Mudcrab should be грязевой краб», получала вердикт «принята» и счёт
     # 105, и любой верный перевод обязан был победить призрака. На живом проходе это дало
     # 20 отказов из 20 — переделать помеченное было невозможно в принципе.
-    qs, tok_ok, _, status = compute_string_status(original, t, _glossary_or_none())
+    qs, tok_ok, _, status = compute_string_status(
+        original, t, _glossary_or_none(), rec_type, field_type)
     # Покрытие стоит ОТДЕЛЬНОЙ ступенью, выше баллов, и это не придирка к оформлению.
     # Вычитать долю списанного из оценки оказалось мало: у копии базовые 100 (разметка
     # на месте, длина совпадает — это же источник), у честного, но обрезанного перевода
@@ -1066,7 +1068,8 @@ def _candidate_score(original: str, t: str) -> tuple[int, float, float]:
 
 
 def pick_better(original: str, a: str | None, b: str | None,
-                prefer_b_on_tie: bool = False) -> dict:
+                prefer_b_on_tie: bool = False, rec_type: str | None = None,
+                field_type: str | None = None) -> dict:
     """Choose the better of two candidate translations (G6 — multi-agent quality). Lets a
     re-translation (e.g. on a bigger-model agent) only WIN if it actually scores higher, so
     quality is monotonic across passes. Returns {translation, quality_score, status, chose}.
@@ -1096,11 +1099,18 @@ def pick_better(original: str, a: str | None, b: str | None,
     lets a re-translation of a flagged string win, on the verdict, without arguing about
     the score.
     """
-    sa, sb = _candidate_score(original, a), _candidate_score(original, b)
+    sa = _candidate_score(original, a, rec_type, field_type)
+    sb = _candidate_score(original, b, rec_type, field_type)
     b_wins = sb > sa
     winner = b if b_wins else a
     chose  = "b" if b_wins else "a"
     if not winner:
         return {"translation": "", "quality_score": 0, "status": "pending", "chose": chose}
-    qs, _, _, st = compute_string_status(original, winner)
+    # Со ВСЕМ, чем судят ворота. Здесь стоял голый вызов — без глоссария и без
+    # типа записи, — и его вердикт ворота записывали поверх своего: на каждой
+    # доставке агента (а там всегда слияние) правила, смотрящие на тип, и
+    # глоссарий отменялись. Ранжирование при этом глоссарий применяло, то есть
+    # выбор и вердикт внутри одной функции считались по разным меркам.
+    qs, _, _, st = compute_string_status(
+        original, winner, _glossary_or_none(), rec_type, field_type)
     return {"translation": winner, "quality_score": qs, "status": st, "chose": chose}

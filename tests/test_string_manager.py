@@ -316,3 +316,44 @@ def test_a_key_that_is_not_a_plugin_row_is_not_guessed_at():
     assert _identity_from_key("$SKI_INFO1") is None
     assert _identity_from_key("") is None
     assert _identity_from_key("(сломанный") is None
+
+
+def test_the_merge_judges_by_the_same_rules_as_the_gate():
+    """Ворота считали статус со всем контекстом — и перезаписывали его вердиктом слияния.
+
+    `pick_better` считал заново, БЕЗ глоссария и без типа записи, а ворота брали именно
+    его результат. На каждой доставке агента — а там всегда слияние — правила, читающие
+    тип, и глоссарий отменялись. Внутри самой функции мерки тоже расходились:
+    ранжирование глоссарий применяло, итоговый вердикт нет.
+    """
+    import inspect
+
+    from translator.validation.quality import pick_better
+    src = inspect.getsource(pick_better)
+    i = src.index("compute_string_status(")
+    tail = src[i:i + 200]
+    assert "_glossary_or_none()" in tail, "вердикт обязан знать глоссарий"
+    assert "rec_type" in tail and "field_type" in tail, "и тип записи"
+
+    from translator.data_manager.string_manager import StringManager
+    gate = inspect.getsource(StringManager.save_string)
+    j = gate.index("pick_better(")
+    assert "rec_type=rec_type" in gate[j:j + 260], "ворота обязаны передать тип в слияние"
+
+
+def test_a_full_stop_on_a_name_survives_the_merge():
+    """Правило, читающее тип записи, обязано работать и на слиянии, а не только на входе."""
+    from translator.validation.quality import pick_better
+
+    # Соперника нет — победитель предрешён, и проверяется именно вердикт о нём.
+    a = pick_better("Vampiric Strength", None, "Вампирская сила.",
+                    rec_type="MGEF", field_type="FULL")
+    assert a["translation"] == "Вампирская сила."
+    assert a["status"] == "needs_review", "точка в конце имени — дефект, и на слиянии тоже"
+    b = pick_better("Vampiric Strength", None, "Вампирская сила.")
+    assert b["status"] == "translated", "без типа записи правило молчит — как и раньше"
+
+    # А когда выбор есть, ранжирование обязано предпочесть то, что ворота примут.
+    c = pick_better("Vampiric Strength", "Вампирская сила", "Вампирская сила.",
+                    rec_type="MGEF", field_type="FULL")
+    assert c["translation"] == "Вампирская сила" and c["chose"] == "a"

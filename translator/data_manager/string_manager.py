@@ -313,7 +313,8 @@ class StringManager:
                 # single meaning fix: the score cannot tell a forge from an anvil, both
                 # sides read 100, and the stored text keeps winning.
                 best = pick_better(original, prev, translation,
-                                   prefer_b_on_tie=prefer_incoming)
+                                   prefer_b_on_tie=prefer_incoming,
+                                   rec_type=rec_type, field_type=field_type)
                 if best["chose"] == "a":
                     # What we already have wins. Leave the row untouched and report it, so a
                     # late delivery from a returning agent cannot undo better work.

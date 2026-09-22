@@ -18,8 +18,14 @@ class ValidationResult:
 class Validator:
     """Validates a (original, translation) pair and returns a ValidationResult."""
 
-    def validate(self, original: str, translation: str) -> ValidationResult:
-        qs, tok_ok, issues, status = compute_string_status(original, translation)
+    def validate(self, original: str, translation: str,
+                 rec_type: str | None = None,
+                 field_type: str | None = None) -> ValidationResult:
+        """Тип записи необязателен, но два правила читают именно его: точка в конце
+        имени и оборот журнала квестов. Без него проверка их не применяет и потому
+        рапортует меньше, чем отвергли бы ворота."""
+        qs, tok_ok, issues, status = compute_string_status(
+            original, translation, None, rec_type, field_type)
         return ValidationResult(
             quality_score=qs,
             tok_ok=tok_ok,

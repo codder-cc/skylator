@@ -184,6 +184,7 @@ def create_job():
                                            machines = options.get("machines"),
                                            scope    = options.get("scope", "all"),
                                            limit    = options.get("limit"),
+                                           offset   = int(options.get("offset") or 0),
                                            max_chars = options.get("max_chars"),
                                            min_chars = options.get("min_chars"),
                                            max_len   = options.get("max_len"),
@@ -1693,6 +1694,7 @@ def _clean_current(original: str, stored: str) -> str:
 
 def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                              scope: str = "all", limit: int | None = None,
+                             offset: int = 0,
                              max_chars: int | None = None,
                              min_chars: int | None = None,
                              max_len: int | None = None,
@@ -1767,10 +1769,11 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         # `sweep` — слепой перевод ВСЕГО, что имеет перевод: помеченного и принятого
         # вместе. Он существует из-за двух замеров, сделанных дорого.
         #
-        # Первый: агент держит в работе ровно один пакет и сам к следующему не переходит
-        # (offline_queue только наполняется, снимать из неё некому). Значит на сутки без
-        # мастера нужна ОДНА область, покрывающая всю работу, иначе машина встаёт,
-        # доделав первое, — так и вышло: ночь кончилась через четыре часа.
+        # Первый БЫЛ: агент держал ровно один пакет и к следующему не переходил, поэтому
+        # на сутки без мастера требовалась одна область, покрывающая всю работу, — ночь
+        # тогда кончилась через четыре часа. Починено: очередь пакетов перенесена в
+        # долговечное хранилище агента и вычерпывается подряд, так что области снова
+        # можно раздавать по одной, в порядке убывания пользы.
         #
         # Второй: область `all` показывает модели готовый перевод и просит исправить, а
         # ворота принимают ответ только строго лучший — равноценная переформулировка
@@ -1813,9 +1816,33 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         sql = f"SELECT id, mod_name, esp_name, key, form_id, original, translation, " \
               f"rec_type, field_type FROM strings WHERE {' AND '.join(where)}"
         if sweep:
-            sql += " ORDER BY (status='needs_review') DESC, LENGTH(original) DESC"
+            # Порядок — по ожидаемой пользе, а не по длине. Замер на отложенном срезе
+            # официальной локализации (2 552 пары, система их не видела):
+            #
+            #   не проходило нынешние правила   84,0%   85 123 разных текстов
+            #   проходило                       90,1%
+            #   ACTI / LSCR / MGEF / MESG       61,6%   27 551 разных текстов
+            #
+            # Слабые типы и непроверенное — это и есть весь запас; у WEAP 99,6% и
+            # ARMO 98,6% двигать нечего. Длина же о пользе не говорит ничего: она
+            # говорила о потолке токенов, а его теперь задаёт max_tokens отдельно.
+            # Если машину выключат на середине, сделанной окажется та часть, где
+            # дефект уже назван или заведомо вероятен.
+            sql += (" ORDER BY (status='needs_review') DESC,"
+                    " (translated_by IS NULL OR source='duplicate') DESC,"
+                    " (rec_type IN ('ACTI','LSCR','MGEF','MESG')) DESC,"
+                    " LENGTH(original) DESC")
+        # Сдвиг позволяет раздать НЕСКОЛЬКО пакетов подряд: без него каждый следующий
+        # берёт те же первые N строк и машина получает ту же работу ещё раз. Для этого
+        # порядок обязан быть устойчивым, а длина для равных длин неоднозначна — поэтому
+        # последним ключом всегда id, и он же задаёт порядок там, где сортировки нет.
+        sql += ", id" if sweep else " ORDER BY id"
         if limit:
             sql += f" LIMIT {int(limit)}"
+            if offset:
+                sql += f" OFFSET {int(offset)}"
+        elif offset:
+            sql += f" LIMIT -1 OFFSET {int(offset)}"
 
         terms_map = _load_glossary(cfg) if fixing_terms else {}
         # Карточка говорящего: кто произносит реплику, какого он пола и расы, как он

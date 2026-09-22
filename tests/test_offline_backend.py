@@ -327,3 +327,23 @@ def test_dispatch_back_two_workers_two_cancel_chunks():
     assert len(enqueued) == 2
     labels = {label for label, _ in enqueued}
     assert labels == {"worker-a", "worker-b"}
+
+
+def test_the_sweep_does_the_valuable_part_first():
+    """Порядок прохода — по замеренной пользе, а не по длине строки.
+
+    На отложенном срезе официальной локализации: не проходившее нынешние правила
+    даёт 84,0%, проходившее 90,1%, а ACTI/LSCR/MGEF/MESG — 61,6%. У WEAP 99,6%
+    двигать нечего. Если машину выключат на середине четырёхсуточного окна,
+    сделанной должна оказаться слабая часть, а не самая длинная.
+    """
+    import inspect
+
+    from translator.web.routes import jobs as _jobs
+    src = inspect.getsource(_jobs._create_review_fleet_job)
+    order = src[src.index("if sweep:\n            # Порядок"):]
+    order = order[:order.index("if limit:")]
+    assert "translated_by IS NULL OR source='duplicate'" in order
+    assert "'ACTI','LSCR','MGEF','MESG'" in order
+    assert order.index("translated_by") < order.index("LENGTH(original)"), \
+        "непроверенное идёт раньше длинного, иначе длина снова решает"

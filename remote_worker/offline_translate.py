@@ -269,6 +269,13 @@ class OfflineTranslateRunner:
         # Судья включается пакетом. Он стоит двух коротких запросов на строку и
         # нужен не везде: у имени предмета спорить не о чем.
         judging         = bool(meta.get("judge"))
+        # Сколько раз спросить одну и ту же строку. Всё, что подаётся в ПРОМПТ,
+        # на замерах делало хуже: контекст 46→43%, примеры стиля 25→20%. А вот
+        # разнообразие ответов даёт запас — лучший из четырёх совпадает с
+        # официальным переводом в полтора раза чаще одиночного. Выбирать его
+        # модель умеет: генерировать разнообразие и оценивать его — разные задачи.
+        candidates      = max(int(meta.get("candidates") or 1), 1)
+        cand_temp       = float(meta.get("candidate_temp") or 0.7)
         mods_context: dict = meta.get("mods_context") or {}
         src_lang        = meta.get("src_lang") or "English"
         tgt_lang        = meta.get("tgt_lang") or "Russian"
@@ -504,6 +511,48 @@ class OfflineTranslateRunner:
                     log.warning("OfflineTranslateRunner[%s]: генерация упёрлась в потолок — "
                                 "строка %d из %d обрезана", self._aid[:8], last_filled + 1,
                                 len(batch))
+
+                # Несколько кандидатов на одну строку, выбор — судьёй. Первый ответ
+                # уже получен выше при своей температуре; остальные берутся с разбросом,
+                # иначе они повторят его слово в слово и выбирать будет не из чего.
+                if candidates > 1 and not reviewing:
+                    pools: list[list[str]] = [list(translations)]
+                    hot = dict(infer_params or {})
+                    hot["temperature"] = max(cand_temp, float(hot.get("temperature") or 0))
+                    hot["top_k"] = 40
+                    for _ in range(candidates - 1):
+                        if self._stop:
+                            break
+                        try:
+                            raw2 = await loop.run_in_executor(
+                                None,
+                                lambda p=prompt, h=hot: state.backend._infer(
+                                    p, params=h, stop_check=lambda: self._stop))
+                        except Exception as exc:                   # noqa: BLE001
+                            log.warning("candidate pass failed: %s", exc)
+                            break
+                        pools.append(parse_numbered_output(raw2 or "", len(batch)))
+                    for j in range(len(batch)):
+                        pool = []
+                        for one in pools:
+                            t = (one[j] if j < len(one) else "") or ""
+                            t = t.strip()
+                            if t and t not in pool:
+                                pool.append(t)
+                        if len(pool) < 2:
+                            continue
+                        winner = pool[0]
+                        for rival_text in pool[1:]:
+                            try:
+                                v = await self._judge(state, loop,
+                                                      batch[j].get("original") or "",
+                                                      winner, rival_text, infer_params)
+                            except Exception as exc:               # noqa: BLE001
+                                log.warning("judge between candidates failed: %s", exc)
+                                v = "unsure"
+                            if v == "fresh":
+                                winner = rival_text
+                        translations[j] = winner
 
                 # Судья между переводом и воротами. Численная оценка отвечает на
                 # «не сломано ли», и это её работа; на «живее ли» она ответить не может

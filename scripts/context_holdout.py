@@ -42,6 +42,7 @@ from prompt.parser import parse_numbered_output                  # noqa: E402
 from translator.characters import dialogue as DLG                # noqa: E402
 from translator.characters import speakers as SP                 # noqa: E402
 from translator.context import mod_summary as MS                 # noqa: E402
+from translator.validation import official_context as OC         # noqa: E402
 from translator.validation.authority import _in_holdout, load_official  # noqa: E402
 from translator.validation.terminology import _lemma, _text_lemmas      # noqa: E402
 from translator.web.offline_backend import _build_terminology     # noqa: E402
@@ -90,31 +91,45 @@ def infer(label: str, prompt: str) -> str:
     return p.get("result") or ""
 
 
-def context_for(row, dlg, spk, repo, talk_text) -> str:
-    """Тот же порядок, что и в раздаче: карточка первой, справка о моде следом."""
+def context_for(row, dlg, spk, repo, talk_text, parts=None, style_ex=None) -> str:
+    """Тот же порядок, что и в раздаче: карточка первой, справка о моде следом.
+
+    `parts` позволяет проверять рычаги по отдельности. Это не педантизм: сегодня
+    выяснилось, что ни один из них до модели не доходил, и меряя их скопом, мы
+    узнаем только сумму — а слагаемые могут иметь разные знаки.
+    """
+    want = set(parts or ("card", "summary", "talk", "style"))
     bits = []
     ref = DLG.addressee_ref(row["esp_name"], row["form_id"], row["rec_type"],
                             row["field_type"], dlg)
     card = None
-    if ref:
+    if ref and "card" in want:
         plug, fid = ref.split(":", 1)
         card = SP.card_for(plug, fid, spk)
         if card:
             bits.append(card.addressee_block())
-    if not card:
+    if not card and "card" in want:
         block = SP.block_for(row["esp_name"], row["form_id"], spk)
         if block:
             bits.append(block)
+    if "style" in want and style_ex:
+        # Как игра формулирует записи ЭТОГО типа, её собственными парами. До модели
+        # это не доходило никогда — терялось вместе с остальным контекстом, — а бьёт
+        # оно ровно по слабым классам: ACTI «Read = Прочесть:», «Investigate =
+        # Обследовать» это конвенция, которую из общего промпта не вывести.
+        st = OC.style_block(row["rec_type"] or "", style_ex)
+        if st:
+            bits.append(st)
     # Как в бою: справка о моде коротким строкам не достаётся. Про «Iron Sword» она
     # не говорит ничего, а платится на каждом запросе — и первый замер с контекстом я
     # провёл именно с ней на всех подряд, то есть померил настройку, которой нет.
-    if len((row["original"] or "")) > 60:
+    if "summary" in want and len((row["original"] or "")) > 60:
         summary = MS.build(repo, row["mod_name"])
         if summary:
             bits.append(summary)
     talk = []
-    for role, rk in DLG.neighbours(row["esp_name"], row["form_id"],
-                                   row["rec_type"], row["field_type"], dlg):
+    for role, rk in ([] if "talk" not in want else DLG.neighbours(row["esp_name"], row["form_id"],
+                                   row["rec_type"], row["field_type"], dlg)):
         txt = (talk_text.get(rk) or "").strip()
         if txt:
             talk.append(f'  (1) {LABELS[role]} "{txt[:180]}"')
@@ -128,6 +143,8 @@ def main() -> None:
     ap.add_argument("--worker", required=True)
     ap.add_argument("--n", type=int, default=120)
     ap.add_argument("--types", help="только эти типы записей, через запятую")
+    ap.add_argument("--parts", default="card,summary,talk,style",
+                    help="какие части контекста давать: card,summary,talk,style")
     args = ap.parse_args()
 
     full = load_official()
@@ -157,6 +174,9 @@ def main() -> None:
 
     dlg = DLG.load(MODS, GAME)
     spk = SP.load(MODS, GAME, repo=None)
+    style_ex = OC.build_examples(repo)
+    parts = tuple(x.strip() for x in args.parts.split(",") if x.strip())
+    print(f"части контекста: {', '.join(parts)}\n", file=out)
     talk_text = {}
     for t in con.execute(
             "SELECT esp_name, form_id, original FROM strings WHERE "
@@ -171,7 +191,7 @@ def main() -> None:
         en = (r["original"] or "").strip()
         want = hold[en].strip()
         term = _build_terminology([en])
-        ctx = context_for(r, dlg, spk, repo, talk_text)
+        ctx = context_for(r, dlg, spk, repo, talk_text, parts, style_ex)
         for name, use in (("без контекста", ""), ("с контекстом", ctx)):
             try:
                 got = parse_numbered_output(

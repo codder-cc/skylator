@@ -142,3 +142,41 @@ def test_the_manifest_keeps_the_context_the_wire_delivered(tmp_path):
     for field in ("rec_type", "speaker", "style", "entities", "talk", "rival"):
         assert row.get(field), f"поле {field} терялось в манифесте агента"
     assert row["esp_name"] == "M.esp" and row["str_key"] == "k"
+
+
+# ── несколько кандидатов ─────────────────────────────────────────────────────
+
+def test_the_dispatch_can_order_several_candidates():
+    """Всё, что подаётся в ПРОМПТ, на замерах делало хуже:
+
+        контекст (карточка, справка, разговор)   46,0% → 43,0%
+        примеры стиля на слабых типах            25,0% → 20,0%
+        переперевод копий                        61,7% → 58,1%
+
+    А разнообразие ответов даёт запас: лучший из четырёх совпадает с официальным
+    переводом в полтора раза чаще одиночного (15,0% против 10,0%), и судья забирает
+    половину этого запаса. Генерировать разнообразие и оценивать его — разные задачи.
+    """
+    import inspect
+
+    from translator.web.routes import jobs as _jobs
+    src = inspect.getsource(_jobs._create_review_fleet_job)
+    assert "candidates" in src
+    assert '_extra["candidates"]' in src, "число кандидатов обязано уехать в пакет"
+    assert '"candidates": int(candidates)' in src, "и остаться в параметрах задания"
+
+
+def test_the_runner_asks_again_with_spread_and_lets_the_judge_pick():
+    """Повтор с той же температурой даст тот же ответ слово в слово.
+
+    Тогда выбирать не из чего, и вся затея вырождается в лишние токены.
+    """
+    import inspect
+
+    import offline_translate as ot
+    src = inspect.getsource(ot.OfflineTranslateRunner.run)
+    i = src.index("candidates > 1")
+    block = src[i:i + 2200]
+    assert "cand_temp" in block or "temperature" in block, "второй ответ берётся с разбросом"
+    assert "self._judge(" in block, "выбор — судьёй, а не по счёту"
+    assert "not in pool" in block, "совпавшие кандидаты не сравниваются между собой"

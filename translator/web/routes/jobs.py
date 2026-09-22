@@ -190,7 +190,8 @@ def create_job():
                                            max_len   = options.get("max_len"),
                                            max_tokens = options.get("max_tokens"),
                                            batch_size = options.get("batch_size"),
-                                           judge      = bool(options.get("judge")))
+                                           judge      = bool(options.get("judge")),
+                                           candidates = int(options.get("candidates") or 1))
         except ValueError as exc:
             return jsonify({"error": str(exc), "ok": False}), 400
     elif job_type == "validate" and mod_names:
@@ -1701,7 +1702,8 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                              max_len: int | None = None,
                              max_tokens: int | None = None,
                              batch_size: int | None = None,
-                             judge: bool = False):
+                             judge: bool = False,
+                             candidates: int = 1):
     """Send stored translations back to the fleet to be checked and corrected.
 
     A review is a translation job with the answer already filled in: the package carries
@@ -2029,8 +2031,15 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
             # полосе, тем меньше батч.
             job.add_log(f"Batch size {int(batch_size)} for this dispatch — measured 2.8x "
                         f"at 32 with zero dropped entries; context is what caps it")
+        _extra = {}
+        if judging:
+            _extra["judge"] = True
+        if candidates > 1:
+            _extra["candidates"] = int(candidates)
+            job.add_log(f"Best of {int(candidates)}: each line is asked that many times "
+                        f"and the judge picks — measured ceiling is 1.5x the single answer")
         dispatch_multi(job, mods, params, backends, registry, jm, repo, cfg,
-                       extra={"judge": True} if judging else None)
+                       extra=_extra or None)
 
     return jm.create(
         name     = (("Re-translate flagged strings (blind)" if scope == "flagged"
@@ -2041,7 +2050,8 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         job_type = "translate_strings",
         params   = {"review": scope != "flagged", "scope": scope,
                     "min_chars": min_chars, "max_len": max_len,
-                    "max_tokens": max_tokens, "judge": bool(judge)},
+                    "max_tokens": max_tokens, "judge": bool(judge),
+                    "candidates": int(candidates)},
         fn       = run,
     )
 

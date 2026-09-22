@@ -177,6 +177,40 @@ class OfflineTranslateRunner:
     def cancel(self) -> None:
         self._stop = True
 
+    async def _judge(self, state, loop, source: str, stored: str, fresh: str,
+                     infer_params) -> str:
+        """Какой из двух переводов живее: 'fresh' | 'stored' | 'unsure'.
+
+        Спрашивается ДВАЖДЫ, с перестановкой вариантов. Модель, выбирающая по месту,
+        а не по существу, ответит одной и той же буквой и будет поймана; на замере из
+        семи пар так поймалась одна. Несогласие двух ответов — это «не знаю», и тогда
+        остаётся хранимый текст: менять его без уверенности не на что.
+        """
+        from prompt.builder import build_judge_prompt
+
+        params = dict(infer_params or {})
+        params.update({"temperature": 0.0, "top_k": 1, "max_tokens": 8,
+                       "thinking": False})
+
+        async def once(a: str, b: str) -> str:
+            raw = await loop.run_in_executor(
+                None,
+                lambda: state.backend._infer(build_judge_prompt(source, a, b),
+                                             params=params,
+                                             stop_check=lambda: self._stop))
+            for ch in (raw or "").upper():
+                if ch in "AB":
+                    return ch
+            return "?"
+
+        first = await once(stored, fresh)     # fresh побеждает, когда ответ B
+        second = await once(fresh, stored)    # fresh побеждает, когда ответ A
+        if first == "B" and second == "A":
+            return "fresh"
+        if first == "A" and second == "B":
+            return "stored"
+        return "unsure"
+
     async def _retranslate_singly(self, originals, state, loop, infer_params, *,
                                   src_lang, tgt_lang, context, system_prompt, thinking,
                                   terminology, preserve_tokens, stored, req_terms):
@@ -232,6 +266,9 @@ class OfflineTranslateRunner:
 
         meta            = self._meta
         context         = meta.get("context") or ""
+        # Судья включается пакетом. Он стоит двух коротких запросов на строку и
+        # нужен не везде: у имени предмета спорить не о чем.
+        judging         = bool(meta.get("judge"))
         mods_context: dict = meta.get("mods_context") or {}
         src_lang        = meta.get("src_lang") or "English"
         tgt_lang        = meta.get("tgt_lang") or "Russian"
@@ -467,6 +504,29 @@ class OfflineTranslateRunner:
                     log.warning("OfflineTranslateRunner[%s]: генерация упёрлась в потолок — "
                                 "строка %d из %d обрезана", self._aid[:8], last_filled + 1,
                                 len(batch))
+
+                # Судья между переводом и воротами. Численная оценка отвечает на
+                # «не сломано ли», и это её работа; на «живее ли» она ответить не может
+                # и молча оставляла хранимый текст. Здесь спрашивается то, чего она не
+                # умеет, — и только там, где ответы РАЗНЫЕ: совпавшие спорить не о чем.
+                if judging:
+                    for j, b in enumerate(batch):
+                        fresh = (translations[j] if j < len(translations) else "") or ""
+                        rival = (b.get("rival") or "").strip()
+                        if not fresh.strip() or not rival or fresh.strip() == rival:
+                            continue
+                        try:
+                            verdict = await self._judge(
+                                state, loop, b.get("original") or "", rival,
+                                fresh.strip(), infer_params)
+                        except Exception as exc:                       # noqa: BLE001
+                            log.warning("judge failed (%s) — keeping stored", exc)
+                            verdict = "unsure"
+                        if verdict != "fresh":
+                            # Хранимый победил или уверенности нет. Доставляем ЕГО, а не
+                            # пустоту: иначе строка остаётся несделанной в манифесте и
+                            # будет переспрошена следующим проходом без конца.
+                            translations[j] = rival
 
                 for j, b in enumerate(batch):
                     original    = b.get("original") or ""

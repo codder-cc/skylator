@@ -1609,6 +1609,25 @@ def job_is_review(repo, host_job_id: str) -> bool:
         return False
 
 
+def job_is_judged(repo, host_job_id: str) -> bool:
+    """Прошли ли ответы этого задания через судью.
+
+    Тогда доставленный текст — уже победитель сравнения, и ворота не должны отдавать
+    ничью хранимому: численная оценка на вопрос «живее ли» не отвечает, а судья
+    ответил. Пропавшее задание читается как False — как и у соседней проверки,
+    безопасный ответ при незнании: оставить хранимое.
+    """
+    if not host_job_id or repo is None:
+        return False
+    try:
+        row = repo.db.execute("SELECT payload FROM jobs WHERE id=?", (host_job_id,)).fetchone()
+        if not row or not row[0]:
+            return False
+        return bool((json.loads(row[0]).get("params") or {}).get("judge"))
+    except Exception:
+        return False
+
+
 def job_is_candidate_only(repo, host_job_id: str) -> bool:
     """Whether this job's answers are opinions to compare, not translations to store.
 
@@ -2493,6 +2512,7 @@ def workers_offline_results(label: str):
     # Read once per delivery, not per string: it decides a tie in the merge for every
     # result in the batch, and it is a database lookup.
     _reviewing = job_is_review(repo, host_job_id)
+    _judged    = job_is_judged(repo, host_job_id)
     _candidate = job_is_candidate_only(repo, host_job_id)
 
     if repo is not None and cfg is not None:
@@ -2582,7 +2602,7 @@ def workers_offline_results(label: str):
                     # on an equal score it is the later and better-informed one. The score
                     # cannot tell a forge from an anvil; without this the whole pass
                     # cannot land a single meaning fix.
-                    prefer_incoming=_reviewing,
+                    prefer_incoming=_reviewing or _judged,
                     # The record type reaches the gate so the full-stop-on-a-name
                     # check can run; without it that check stands down.
                     rec_type=r.get("rec_type") or None,

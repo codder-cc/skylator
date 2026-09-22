@@ -206,6 +206,19 @@ def _make_remote_strings(bucket: list[dict], default_mod: str):
             # use for the one term it got wrong. Stated per line it binds 88% of the
             # time; the same glossary listed at the top of a batch binds 50%.
             **({"req_terms": s["req_terms"]} if s.get("req_terms") else {}),
+            # Всё, что хост знает о строке сверх её текста, и что до сих пор терялось
+            # ровно здесь. Этот словарь собирается ЗАНОВО, с фиксированным набором
+            # ключей, поэтому поля, приложенные раздачей, в пакет не попадали — а хост
+            # при этом писал в журнал «Speaker card attached to N strings», считая то,
+            # что приложил, а не то, что отправил. Агент читал b.get("speaker") и
+            # всегда получал пустоту.
+            **({"speaker": s["speaker"]} if s.get("speaker") else {}),
+            **({"style": s["style"]} if s.get("style") else {}),
+            **({"entities": s["entities"]} if s.get("entities") else {}),
+            **({"talk": s["talk"]} if s.get("talk") else {}),
+            # Хранимый перевод как СОПЕРНИК, а не как подсказка: промпт его не видит,
+            # перевод остаётся слепым, а судья потом сравнивает два готовых ответа.
+            **({"rival": s["rival"]} if s.get("rival") else {}),
         })
         if sid is not None:
             items.append((sid, h))
@@ -349,6 +362,7 @@ def dispatch_multi(
     jm: "JobManager",
     repo: "StringRepo",
     cfg,
+    extra: dict | None = None,
 ) -> None:
     """
     Package strings from multiple mods and dispatch to remote workers.
@@ -435,6 +449,10 @@ def dispatch_multi(
             "terminology":     term_str,
             "preserve_tokens": [],
             "tm_pairs":        merged_tm,
+            # Ключи пакета, которые агент читает как настройки прохода (например
+            # judge). Кладутся рядом со строками, а не в params: params уходят в
+            # инференс как есть.
+            **(extra or {}),
         }
 
         log.info("offline_backend.dispatch_multi: dispatching %d strings to %s (offline_job_id=%s)",

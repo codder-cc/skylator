@@ -277,8 +277,23 @@ class TestTheGateIsTheOnlyJudge:
         import inspect
         from translator.web.routes import api as api_rt
         src = inspect.getsource(api_rt)
-        i = src.index("prefer_incoming=_reviewing,")
+        i = src.index("prefer_incoming=")
         assert "rec_type=" in src[i:i + 400]
+
+
+    def test_a_judged_answer_wins_a_tie(self):
+        """Вердикт судьи обязан решать ничью — иначе он не влияет ни на что.
+
+        Ворота принимают только строго лучшее по оценке, а оценка не отличает живой
+        русский от кальки: «растрачивается на твой язык» и «потрачено впустую» для
+        неё одинаковы. Если судья сказал, какой живее, ничья должна доставаться ему.
+        """
+        import inspect
+        from translator.web.routes import api as api_rt
+        src = inspect.getsource(api_rt)
+        assert "def job_is_judged(" in src
+        i = src.index("prefer_incoming=")
+        assert "_judged" in src[i:i + 60]
 
 
 def test_the_gate_recovers_the_record_type_from_the_key():

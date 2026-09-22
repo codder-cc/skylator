@@ -240,6 +240,40 @@ def build_prompt(
     )
 
 
+_JUDGE_SYSTEM = (
+    "You are a Russian editor for a Skyrim mod translation. You are given an English "
+    "source line and two Russian renderings of it. Choose the one a Russian player "
+    "would find natural. Judge the Russian, not its closeness to the English word "
+    "order: a literal calque that no one would say is the wrong answer. "
+    "Reply with exactly one character: A or B. Nothing else."
+)
+
+
+def build_judge_prompt(source: str, a: str, b: str) -> str:
+    """Промпт-судья: какой из двух переводов живее.
+
+    Нужен потому, что численная оценка на этот вопрос не отвечает и ответить не может.
+    Она ловит порчу — съеденную разметку, потерянные токены, эхо оригинала, обрезанную
+    книгу, — и это её работа. Но «вино растрачивается на твой язык» и «вино потрачено
+    впустую» она оценивает ОДИНАКОВО: оба грамматичны, термины на месте, разметка цела.
+    А ворота принимают только строго лучшее, поэтому живой вариант проигрывал кальке и
+    молча отбрасывался: за сутки 73 309 доставленных ответов изменили текст ровно ноль
+    раз.
+
+    Сочинить под ограничением модель не может — пять формулировок промпта не заставили
+    её написать «грубиянка» вместо «грубиян». Выбрать из двух может: на семи парах,
+    подобранных в обе стороны и спрошенных в обоих порядках, — шесть уверенно верных,
+    ни одной ошибки.
+
+    Ответ в один символ намеренно: любое рассуждение здесь стоит токенов и не
+    проверяемо, а буква сверяется с перестановкой.
+    """
+    user = (f"English source:\n{source}\n\n"
+            f"A:\n{a}\n\nB:\n{b}\n\n"
+            f"Which reading is better Russian? Answer A or B.")
+    return build_raw_chatml(_JUDGE_SYSTEM, user)
+
+
 def build_raw_chatml(system: str, user: str, thinking: bool = False) -> str:
     """Build a generic ChatML prompt from explicit system + user strings."""
     think_prefix = "" if thinking else "</think>\n\n"

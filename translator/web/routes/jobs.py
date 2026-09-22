@@ -189,7 +189,8 @@ def create_job():
                                            min_chars = options.get("min_chars"),
                                            max_len   = options.get("max_len"),
                                            max_tokens = options.get("max_tokens"),
-                                           batch_size = options.get("batch_size"))
+                                           batch_size = options.get("batch_size"),
+                                           judge      = bool(options.get("judge")))
         except ValueError as exc:
             return jsonify({"error": str(exc), "ok": False}), 400
     elif job_type == "validate" and mod_names:
@@ -1699,7 +1700,8 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                              min_chars: int | None = None,
                              max_len: int | None = None,
                              max_tokens: int | None = None,
-                             batch_size: int | None = None):
+                             batch_size: int | None = None,
+                             judge: bool = False):
     """Send stored translations back to the fleet to be checked and corrected.
 
     A review is a translation job with the answer already filled in: the package carries
@@ -1786,6 +1788,10 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         sweep = scope == "sweep"
         blind = scope == "flagged" or sweep
         fixing_terms = scope == "terms"
+        # Судья имеет смысл только на СЛЕПОМ проходе: там модель переводит, не видя
+        # хранимого текста, и есть что с чем сравнивать. В просмотре она этот текст уже
+        # видит и правит его же — сравнивать не с чем.
+        judging = bool(judge) and blind and not fixing_terms
         where = ["TRIM(translation) <> ''", "translation <> original",
                  "COALESCE(source,'') <> 'untranslatable'",
                  # Чужой человеческий перевод машине не отдаём. Он лежит в needs_review
@@ -1957,6 +1963,11 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
             elif not blind:
                 # Именно наличие этого поля делает пакет ревью, а не переводом.
                 item["current"] = _clean_current(r["original"], r["translation"])
+            if judging and (r["translation"] or "").strip():
+                # Соперник, а не подсказка: промпт его не видит, перевод остаётся
+                # слепым (recall 94% против 11–17% у просмотра), и только потом судья
+                # сравнивает два готовых ответа.
+                item["rival"] = _clean_current(r["original"], r["translation"])
             by_mod.setdefault(r["mod_name"], []).append(item)
         # Один говорящий — подряд. Агент обрезает батч по смене говорящего, поэтому
         # вперемешку карточка досталась бы одной строке из каждой пары, а порядок внутри
@@ -2014,7 +2025,8 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
             # полосе, тем меньше батч.
             job.add_log(f"Batch size {int(batch_size)} for this dispatch — measured 2.8x "
                         f"at 32 with zero dropped entries; context is what caps it")
-        dispatch_multi(job, mods, params, backends, registry, jm, repo, cfg)
+        dispatch_multi(job, mods, params, backends, registry, jm, repo, cfg,
+                       extra={"judge": True} if judging else None)
 
     return jm.create(
         name     = (("Re-translate flagged strings (blind)" if scope == "flagged"
@@ -2025,7 +2037,7 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         job_type = "translate_strings",
         params   = {"review": scope != "flagged", "scope": scope,
                     "min_chars": min_chars, "max_len": max_len,
-                    "max_tokens": max_tokens},
+                    "max_tokens": max_tokens, "judge": bool(judge)},
         fn       = run,
     )
 

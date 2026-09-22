@@ -141,3 +141,36 @@ def test_an_already_finished_assignment_is_closed_not_rerun(tmp_path, monkeypatc
 
     assert seen == ["todo"], "доделанное переспрашивать незачем"
     assert store.get_assignment("done")["state"] == "complete"
+
+
+def test_a_closed_window_is_obedience_not_a_stall(tmp_path, monkeypatch):
+    """Машина занята хозяином — это не застревание, и откладывать работу нельзя.
+
+    Без этого различия вычерпыватель отложил бы законный пакет за полторы минуты
+    рабочего дня: прогресса нет, потому что работать НЕ ДОЛЖНО.
+    """
+    store = _store(tmp_path)
+    store.add_assignment("waiting", items=_items("w", 2))
+    state = SimpleNamespace(result_store=store, drain_task=None, offline_job=None)
+
+    calls = {"produce": 0, "slept": 0}
+
+    async def _no_progress(st, loop, aid, meta):
+        calls["produce"] += 1
+
+    async def _sleep(_sec):
+        calls["slept"] += 1
+        if calls["slept"] >= 5:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(rs, "_produce_assignment", _no_progress)
+    monkeypatch.setattr(rs.asyncio, "sleep", _sleep)
+    monkeypatch.setattr(rs, "_schedule_permits_loading", lambda _st: False)
+    try:
+        asyncio.run(rs._drain_open_assignments(state, None))
+    except asyncio.CancelledError:
+        pass
+
+    assert store.get_assignment("waiting")["state"] == "open", \
+        "пакет обязан дождаться окна, а не быть отложенным"
+    assert calls["slept"] == 5, "ждём столько, сколько нужно, не считая попыток"

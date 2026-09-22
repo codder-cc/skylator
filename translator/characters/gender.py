@@ -52,6 +52,10 @@ _ONLY_GAP = re.compile(r"^[\s -]*$")
 
 # Другое подлежащее рядом — значит глагол не наш.
 _OTHER_SUBJECT = frozenset("он она оно они ты вы мы кто никто кто-то".split())
+# Скан останавливается на ЛЮБОМ подлежащем, кроме опорного местоимения: для «ты» чужим
+# становится и «я». Раньше «я» проверялось отдельной строкой, и при обобщении на второе
+# лицо это молча пропускало «Ты сказал, я пришёл» — правило дотянулось бы до «пришёл».
+_SUBJECTS = _OTHER_SUBJECT | {"я"}
 
 # Сколько слов может стоять между местоимением и сказуемым. Четыре покрывает «я никогда
 # его не знал»; дальше не пускает не счётчик, а знак препинания — он и есть граница.
@@ -67,9 +71,13 @@ _LOOK_BEHIND = 2
 # хуже нетронутого текста. Поэтому цепочка идёт от найденного сказуемого дальше, через
 # союз; «то» здесь тоже союз — «и когда закончил, ТО понял».
 _SUB = r"(?:что|чтобы|как|когда|пока|если|хотя|будто|то)\s+"
-_CHAIN_RE = re.compile(
-    r"(,\s+|\s+и\s+|\s+а\s+|\s+но\s+)((?:" + _SUB + r")?(?:я\s+)?)"
-    r"([а-яё]{3,})(?![А-Яа-яЁё])", re.I)
+def _chain_re(pronoun: str):
+    return re.compile(
+        r"(,\s+|\s+и\s+|\s+а\s+|\s+но\s+)((?:" + _SUB + r")?(?:" + pronoun + r"\s+)?)"
+        r"([а-яё]{3,})(?![А-Яа-яЁё])", re.I)
+
+
+_CHAIN = {p: _chain_re(p) for p in ("я", "ты")}
 
 # «Я видела, что произошёл взрыв» — у глагола за союзом бывает СВОЁ подлежащее справа,
 # и тогда его род принадлежит взрыву, а не говорящему. Проверяется только эта ветка:
@@ -92,6 +100,29 @@ _A_WORD = re.compile(r"[А-Яа-яЁё]")
 # Цепочку от такого «я» продолжать нельзя: на живом прогоне она дала ровно эту фразу.
 _RELATIVE = re.compile(r"(?<![А-Яа-яЁё])котор[а-яё]{2,}(?![А-Яа-яЁё])", re.I)
 
+# Краткие формы прилагательных — списком, а не морфологией. «Прав» лучшим разбором
+# читается как существительное («право» в родительном падеже множественного), и
+# pymorphy3 женского рода для него не даёт вовсе. Список закрыт намеренно: пропущенная
+# пара оставляет текст как был, а угаданная по неверному разбору его ломает.
+_SHORT_PAIRS = {
+    "готов": "готова", "должен": "должна", "уверен": "уверена", "рад": "рада",
+    "прав": "права", "виноват": "виновата", "согласен": "согласна", "жив": "жива",
+    "свободен": "свободна", "способен": "способна", "один": "одна", "сам": "сама",
+    "силён": "сильна", "силен": "сильна", "слаб": "слаба", "смел": "смела",
+    "добр": "добра", "зол": "зла", "хорош": "хороша", "глуп": "глупа", "умён": "умна",
+}
+_SHORT_BACK = {v: k for k, v in _SHORT_PAIRS.items()}
+
+
+def short_form(word: str, want: str) -> str | None:
+    """Краткая форма в нужном роде, или None."""
+    low = word.lower()
+    got = _SHORT_PAIRS.get(low) if want == "f" else _SHORT_BACK.get(low)
+    if not got or got == low:
+        return None
+    return got[:1].upper() + got[1:] if word[:1].isupper() else got
+
+
 # Похожи на глагол прошедшего времени, но им не являются.
 _NOT_A_VERB = frozenset("должен должна рад рада готов готова уверен уверена".split())
 
@@ -109,6 +140,9 @@ _SELF_MALE = re.compile(
 
 # Дешёвая проверка перед разбором: pymorphy3 на каждое слово каждой записи — это заметно,
 # а первое лицо прошедшего времени есть в единицах процентов строк.
+# Дешёвая проверка для обращения: без «ты» разбирать нечего.
+_ADDRESSEE_HINT = re.compile(r"(?<![А-Яа-яЁё])ты(?![А-Яа-яЁё])", re.I)
+
 _WORTH_LOOKING = re.compile(
     r"(?<![А-Яа-яЁё])я\s+[а-яё]|[а-яё]\s+(?:ли\s+)?я(?![А-Яа-яЁё])", re.I)
 
@@ -181,16 +215,14 @@ def _has_own_subject(tail: str) -> bool:
     return False
 
 
-def retell(text: str, want: str) -> tuple[str, int]:
-    """Текст с первым лицом в нужном роде и число правок."""
-    def swap(word: str) -> str | None:
-        if word.lower() in _NOT_A_VERB:
-            return None
-        have = past_gender(word)
-        if have is None or have == want:
-            return None
-        return to_gender(word, want)
+def _retell(text: str, want: str, pronoun: str, carries, swap) -> tuple[str, int]:
+    """Текст, в котором род при `pronoun` приведён к `want`, и число правок.
 
+    Разбор один на оба лица. Отличаются только три вещи: за каким местоимением
+    идти, какие слова считать несущими род и как их менять. Всё остальное —
+    границы предложения, чужое подлежащее, цепочка однородных, придаточные —
+    устроено одинаково, и разводить это в две копии значило бы разводить их молча.
+    """
     words = [(m.group(0), m.start(), m.end()) for m in _TOKEN.finditer(text)]
     edits: list[tuple[int, int, str]] = []
     done_at: set[int] = set()
@@ -212,11 +244,11 @@ def retell(text: str, want: str) -> tuple[str, int]:
             if not _ONLY_GAP.match(text[a:b]):
                 return False                       # знак препинания — конец предложения
             w = words[j][0].lower()
-            if w == "я" or w in _OTHER_SUBJECT:
+            if w in _SUBJECTS:
                 return False                       # подлежащее нашлось чужое
             if w in _NOT_A_VERB:
                 continue
-            if past_gender(words[j][0]) is None:
+            if not carries(words[j][0]):
                 continue
             anchors.append(words[j][2])
             fixed = swap(words[j][0])
@@ -227,7 +259,7 @@ def retell(text: str, want: str) -> tuple[str, int]:
         return False
 
     for i, (w, s, _e) in enumerate(words):
-        if w.lower() != "я":
+        if w.lower() != pronoun:
             continue
         # Своё придаточное — своё сказуемое, и дальше него цепочка не идёт.
         clause = text.rfind(",", 0, s) + 1
@@ -249,7 +281,7 @@ def retell(text: str, want: str) -> tuple[str, int]:
         if pos in seen:
             continue
         seen.add(pos)
-        m = _CHAIN_RE.search(text, pos)
+        m = _CHAIN[pronoun].search(text, pos)
         if not m:
             continue
         gap = text[pos:m.start()]
@@ -265,7 +297,7 @@ def retell(text: str, want: str) -> tuple[str, int]:
         bridge, verb = m.group(2), m.group(3)
         if past_gender(verb) is None:
             continue                               # не глагол — цепочка кончилась
-        if bridge and not bridge.lower().strip().endswith("я")                 and _has_own_subject(text[m.end():]):
+        if bridge and not bridge.lower().strip().endswith(pronoun)                 and _has_own_subject(text[m.end():]):
             continue                               # «что произошёл взрыв» — подлежащее своё
         fixed = swap(verb)
         if fixed and m.start(3) not in done_at:
@@ -277,6 +309,48 @@ def retell(text: str, want: str) -> tuple[str, int]:
     for s, e, fixed in sorted(edits, reverse=True):
         out_text = out_text[:s] + fixed + out_text[e:]
     return out_text, len(edits)
+
+
+
+def retell(text: str, want: str) -> tuple[str, int]:
+    """Первое лицо — род ГОВОРЯЩЕГО."""
+    def carries(word: str) -> bool:
+        return past_gender(word) is not None
+
+    def swap(word: str) -> str | None:
+        if word.lower() in _NOT_A_VERB:
+            return None
+        have = past_gender(word)
+        if have is None or have == want:
+            return None
+        return to_gender(word, want)
+
+    return _retell(text, want, "я", carries, swap)
+
+
+def retell_addressee(text: str, want: str) -> tuple[str, int]:
+    """Второе лицо — род СОБЕСЕДНИКА.
+
+    Здесь добавляются краткие формы: «Ты прав» → «Ты права». У глаголов их не бывает,
+    а в обращении они как раз обычны — 67 случаев из 485 на живом замере.
+    """
+    def carries(word: str) -> bool:
+        low = word.lower()
+        return (past_gender(word) is not None
+                or low in _SHORT_PAIRS or low in _SHORT_BACK)
+
+    def swap(word: str) -> str | None:
+        short = short_form(word, want)
+        if short:
+            return short
+        if word.lower() in _NOT_A_VERB:
+            return None
+        have = past_gender(word)
+        if have is None or have == want:
+            return None
+        return to_gender(word, want)
+
+    return _retell(text, want, "ты", carries, swap)
 
 
 def enforce(original: str, translation: str, gender: str | None) -> str:
@@ -297,5 +371,25 @@ def enforce(original: str, translation: str, gender: str | None) -> str:
         fixed, n = retell(translation, gender)
     except Exception as exc:                                       # noqa: BLE001
         log.debug("gender enforcement failed: %s", exc)
+        return translation
+    return fixed if n else translation
+
+
+def enforce_addressee(original: str, translation: str, gender: str | None) -> str:
+    """Перевод, в котором обращение стоит в роде собеседника.
+
+    Это не то же, что род говорящего, и путать их нельзя. «Ты грубиян» — реплика
+    ИГРОКА, обращённая к Элдавин, и род здесь принадлежит ей, а не ему. Пол игрока
+    при этом остаётся неизвестным: его реплики о себе трогать нечем, и Bethesda в
+    таких местах пишет мужской род независимо от того, кем играют.
+
+    Собеседник берётся из графа диалогов: у темы — тот, кто на неё отвечает.
+    """
+    if not gender or not translation or not _ADDRESSEE_HINT.search(translation):
+        return translation
+    try:
+        fixed, n = retell_addressee(translation, gender)
+    except Exception as exc:                                       # noqa: BLE001
+        log.debug("addressee gender enforcement failed: %s", exc)
         return translation
     return fixed if n else translation

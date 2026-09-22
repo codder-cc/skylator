@@ -266,6 +266,37 @@ class StringManager:
                 log.warning("gender: правило не отработало для %s/%s: %s",
                             mod_name, key, exc)
 
+        # ── Род СОБЕСЕДНИКА: реплики игрока обращены к персонажу ───────────────
+        # «Ты грубиян» — это реплика ИГРОКА, обращённая к Элдавин, и род здесь
+        # принадлежит ей. Пол говорящего к этому отношения не имеет, и правило выше
+        # такие строки не трогает вовсе: они не INFO/NAM1.
+        #
+        # Кто собеседник — видно из графа диалогов: у темы отвечает тот, чьи ответы
+        # лежат в её группе. Замер: адресат известен у 64,3% реплик игрока, и в 485
+        # из них род стоял неверно.
+        if translation and original and rec_type in ("DIAL", "INFO"):
+            try:
+                from translator.characters import dialogue as _dlg
+                from translator.characters import gender as _g
+                _fid = form_id
+                if _fid is None:
+                    _row = self._repo.db.execute(
+                        "SELECT form_id FROM strings WHERE mod_name=? AND esp_name=? "
+                        "AND key=?", (mod_name, esp_name, key)).fetchone()
+                    _fid = _row["form_id"] if _row else None
+                _to = _dlg.addressee_gender_for(esp_name, _fid, rec_type, field_type)
+                if _to:
+                    _fixed = _g.enforce_addressee(original, translation, _to)
+                    if _fixed != translation:
+                        log.info("addressee: %s/%s — %s род собеседника", mod_name, key,
+                                 "женский" if _to == "f" else "мужской")
+                        translation = _fixed
+                        computed_qs, _tok, _issues, computed_status = compute_string_status(
+                            original, translation, self._glossary(), rec_type, field_type)
+            except Exception as exc:                                   # noqa: BLE001
+                log.warning("addressee: правило не отработало для %s/%s: %s",
+                            mod_name, key, exc)
+
         # ── Merge against what is already stored (agent deliveries only) ────────
         if merge and translation:
             existing = self._repo.db.execute(

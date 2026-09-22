@@ -296,7 +296,7 @@ class ServerState:
         # Offline translate state
         self.offline_job: dict | None = None
         self.offline_job_runner = None   # OfflineTranslateRunner | None
-        self.offline_queue: list = []    # packages waiting while current offline job runs
+        self.drain_task = None           # задача, прорабатывающая открытые назначения
         self.offline_pending_results: list = []
         self.offline_pending_done: bool = False
         # Durable result store (fault-tolerance core) — opened in lifespan
@@ -1359,29 +1359,74 @@ async def _produce_assignment(state, loop, aid: str, meta: dict) -> None:
         log.info("Offline produce task finished for %s", aid[:8])
 
 
-async def _run_offline_job(
-    chunk: dict,
-    state: ServerState,
-    loop: asyncio.AbstractEventLoop,
-    base: str,
-    label: str,
-) -> None:
-    """Persist the assignment + manifest durably, then produce. Delivery is handled
-    by the always-on deliver loop, so this no longer pushes results itself."""
+def _persist_offline_chunk(state, chunk: dict) -> None:
+    """Положить пакет в долговечное хранилище. Идемпотентно."""
     import json as _json
-    aid   = chunk.get("offline_job_id", "")
-    meta  = {k: v for k, v in chunk.items() if k != "strings"}
-    items = chunk.get("strings") or []
-    if state.result_store is not None:
-        state.result_store.add_assignment(
-            aid,
-            job_id      = chunk.get("host_job_id", ""),
-            mod_name    = chunk.get("mod_name"),
-            context     = chunk.get("context"),
-            params_json = _json.dumps(meta),
-            items       = items,
-        )
-    await _produce_assignment(state, loop, aid, meta)
+    if state.result_store is None:
+        return
+    meta = {k: v for k, v in chunk.items() if k != "strings"}
+    state.result_store.add_assignment(
+        chunk.get("offline_job_id", ""),
+        job_id      = chunk.get("host_job_id", ""),
+        mod_name    = chunk.get("mod_name"),
+        context     = chunk.get("context"),
+        params_json = _json.dumps(meta),
+        items       = chunk.get("strings") or [],
+    )
+
+
+async def _drain_open_assignments(state, loop) -> None:
+    """Проработать ВСЕ открытые назначения подряд, а не одно.
+
+    Раньше второй пакет клался в список в памяти, который никто не читал: он
+    принимался, писался в лог и пропадал. Машина доделывала первый и вставала —
+    а выдать следующий может только мастер, которого на то время и выключают.
+
+    Очередь поэтому живёт не в памяти, а в том же хранилище, что и результаты:
+    пакет становится «открытым назначением» в момент получения. Это даёт и
+    порядок (по времени создания), и живучесть — перезапуск агента её не теряет,
+    потому что путь восстановления читает ровно этот список.
+    """
+    import json as _json
+    try:
+        while True:
+            nxt = None
+            for a in state.result_store.open_assignments():
+                aid = a["assignment_id"]
+                total, done = state.result_store.assignment_progress(aid)
+                if done < total:
+                    nxt = a
+                    break
+                state.result_store.set_assignment_state(aid, "complete")
+            if nxt is None:
+                return
+            aid = nxt["assignment_id"]
+            _, before = state.result_store.assignment_progress(aid)
+            try:
+                meta = _json.loads(nxt.get("params_json") or "{}")
+            except Exception:
+                meta = {}
+            await _produce_assignment(state, loop, aid, meta)
+            _, after = state.result_store.assignment_progress(aid)
+            if after <= before:
+                # Ни одной строки не прибавилось: модели нет, окно закрыто или
+                # прогон отменён. Назначение осталось открытым, и без паузы это
+                # горячий цикл на пустом месте.
+                await asyncio.sleep(30)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        log.error("Drain loop error: %s", exc)
+    finally:
+        state.drain_task = None
+
+
+def _start_drain(state, loop) -> None:
+    """Запустить вычерпыватель, если он ещё не идёт."""
+    t = getattr(state, "drain_task", None)
+    if t is not None and not t.done():
+        return
+    state.drain_task = asyncio.create_task(_drain_open_assignments(state, loop))
 
 
 # ── Working hours ─────────────────────────────────────────────────────────────
@@ -1993,20 +2038,18 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
             # ── Offline translate ─────────────────────────────────────────────
             if chunk_type == "offline_translate":
                 offline_job_id = chunk.get("offline_job_id", "")
-                if state.offline_job is not None:
-                    # Already busy — queue locally; start after current job finishes
-                    state.offline_queue.append(chunk)
-                    log.info("Pull worker: offline job %s queued (busy, queue depth=%d)",
-                             offline_job_id[:8], len(state.offline_queue))
-                    await _post_result(state.http_client, base, label, chunk_id,
-                                       json.dumps({"ok": True, "offline_job_id": offline_job_id,
-                                                   "queued": True}))
-                    continue
-                state.offline_job = chunk
-                log.info("Pull worker: accepted offline job %s (%d strings)",
-                         offline_job_id[:8], len(chunk.get("strings") or []))
+                busy = state.offline_job is not None
+                # Долговечно — и когда занят, и когда свободен. Разница только в том,
+                # запускать ли вычерпыватель: если он уже идёт, он сам дойдёт сюда.
+                _persist_offline_chunk(state, chunk)
+                log.info("Pull worker: %s offline job %s (%d strings)",
+                         "queued" if busy else "accepted", offline_job_id[:8],
+                         len(chunk.get("strings") or []))
                 await _post_result(state.http_client, base, label, chunk_id,
-                                   json.dumps({"ok": True, "offline_job_id": offline_job_id}))
+                                   json.dumps({"ok": True, "offline_job_id": offline_job_id,
+                                               "queued": busy}))
+                if busy:
+                    continue
                 # Reload an idle-unloaded model BEFORE the runner starts: the runner parks
                 # on `state.backend is None` between batches and would silently produce
                 # nothing at all.
@@ -2023,9 +2066,7 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                         "The package will not advance until a model is available.",
                         offline_job_id[:8], getattr(state, "idle_unloaded", None),
                         _schedule_permits_loading(state))
-                asyncio.create_task(
-                    _run_offline_job(chunk, state, loop, base, label)
-                )
+                _start_drain(state, loop)
                 continue
 
             if chunk_type == "cancel_offline_job":
@@ -2215,25 +2256,11 @@ def create_server_app(
             _label = f"{platform.system().lower()}-{socket.gethostname()}"
             bg_tasks.append(asyncio.create_task(_deliver_loop(_base, _label, state)))
 
-            # Auto-resume any unfinished assignment from a previous run / crash.
+            # Auto-resume: не одно назначение, а все открытые по порядку. Пока
+            # здесь стоял `break`, перезапуск воскрешал первый пакет и забывал
+            # остальные — ровно та же потеря, что и с очередью в памяти.
             if state.result_store is not None:
-                _loop = asyncio.get_running_loop()
-                for a in state.result_store.open_assignments():
-                    aid          = a["assignment_id"]
-                    total, done  = state.result_store.assignment_progress(aid)
-                    if done < total:
-                        try:
-                            meta = _json.loads(a.get("params_json") or "{}")
-                        except Exception:
-                            meta = {}
-                        log.info("Resuming offline assignment %s (%d/%d already done)",
-                                 aid[:8], done, total)
-                        bg_tasks.append(asyncio.create_task(
-                            _produce_assignment(state, _loop, aid, meta)
-                        ))
-                        break  # one offline job at a time
-                    else:
-                        state.result_store.set_assignment_state(aid, "complete")
+                _start_drain(state, asyncio.get_running_loop())
 
         yield
 

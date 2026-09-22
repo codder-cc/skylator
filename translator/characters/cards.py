@@ -105,6 +105,30 @@ class Card:
                             "them consistently: " + ", ".join(unknown))
         return "\n".join(bits)
 
+    def addressee_block(self) -> str:
+        """Та же карточка, но про того, К КОМУ обращаются.
+
+        Реплику игрока произносит игрок, чей пол неизвестен, а род в ней принадлежит
+        собеседнику: «Ты грубиянка» — про Элдавин. Поэтому здесь другое указание и
+        другое слово, но то же место в промпте и та же цена — за запрос, не за строку.
+        """
+        bits = []
+        who = self.name or ""
+        if self.sex:
+            who += (" (male)" if self.sex == "m" else " (female)")
+        if self.race:
+            who += f", {self.race}"
+        if who.strip(" ,()"):
+            bits.append(f"The player is speaking TO: {who.strip()}")
+        if self.sex:
+            bits.append("This line is addressed to that character, so second-person "
+                        "forms take their gender "
+                        f"({'masculine' if self.sex == 'm' else 'feminine'}) — "
+                        "verbs, short adjectives and nouns alike.")
+        bits.append("The player's own gender is unknown; keep first-person forms "
+                    "masculine, as the base game does.")
+        return "\n".join(bits)
+
 
 # Латиница → кириллица по звучанию. Нужна не для перевода, а для УЗНАВАНИЯ: имя
 # собственное из выдуманного языка всегда транслитерируют, поэтому «Jo'tun» и «Йотун»

@@ -1873,6 +1873,27 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         except Exception as exc:                                   # noqa: BLE001
             job.add_log(f"Speaker cards unavailable ({exc}) — dispatching without them")
 
+        # Граф диалога: кому обращена реплика игрока и что рядом с ней сказано.
+        # Без него промпт не нёс о разговоре ничего, и строка переводилась как
+        # отдельная фраза — отсюда «Ты грубиян» в обращении к женщине и кальки
+        # вроде «вино растрачивается на твой язык».
+        dlg_state: dict = {}
+        talk_text: dict = {}
+        try:
+            from translator.characters import dialogue as _dlg
+            dlg_state = _dlg.load(cfg.paths.mods_dir,
+                                  _game if (_game and _game.is_dir()) else None)
+            if dlg_state.get("topics"):
+                for _t in repo.db.execute(
+                        "SELECT esp_name, form_id, original FROM strings WHERE "
+                        "(rec_type='DIAL' AND field_type='FULL') OR "
+                        "(rec_type='INFO' AND field_type='NAM1')"):
+                    _k = (f"{(_t['esp_name'] or '').lower()}:"
+                          f"{(_t['form_id'] or '').upper()[-6:]}")
+                    talk_text.setdefault(_k, _t["original"] or "")
+        except Exception as exc:                                   # noqa: BLE001
+            job.add_log(f"Dialogue graph unavailable ({exc}) — dispatching without it")
+
         by_mod: dict[str, list] = {}
         skipped_no_violation = 0
         skipped_too_long = 0
@@ -1884,6 +1905,33 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                 block = _sp.block_for(r["esp_name"], r["form_id"], speakers_state)
                 if block:
                     item["speaker"] = block
+            if dlg_state:
+                # У реплики игрока карточка описывает СОБЕСЕДНИКА. Кладётся она в то же
+                # поле, по которому батч группируется: иначе в один запрос попали бы
+                # обращения к разным людям и карточка первого досталась бы всем.
+                _ref = _dlg.addressee_ref(r["esp_name"], r["form_id"],
+                                          r["rec_type"], r["field_type"], dlg_state)
+                if _ref and speakers_state:
+                    _plug, _fid = _ref.split(":", 1)
+                    _card = _sp.card_for(_plug, _fid, speakers_state)
+                    if _card:
+                        item["speaker"] = _card.addressee_block()
+                _talk = []
+                for _role, _rk in _dlg.neighbours(r["esp_name"], r["form_id"],
+                                                  r["rec_type"], r["field_type"],
+                                                  dlg_state):
+                    _txt = (talk_text.get(_rk) or "").strip()
+                    if not _txt:
+                        continue
+                    _lbl = {"answer": "the character answers:",
+                            "topic": "the player says:",
+                            "prev": "just before, they said:"}[_role]
+                    _talk.append(f'{_lbl} "{_txt[:180]}"')
+                if _talk:
+                    # Заголовок и номер строки приписывает агент: разговор у каждой
+                    # строки свой, а промпт на батч один, и без номера соседи получили
+                    # бы чужую беседу как свою.
+                    item["talk"] = "\n".join(_talk)
             if style_examples:
                 st = _oc.style_block(r["rec_type"] or "", style_examples)
                 if st:
@@ -1942,7 +1990,15 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         if not n:
             job.result = "nothing to review"
             return
-        mods = [(mod, strs, "") for mod, strs in by_mod.items()]
+        # Справка о моде по его же строкам. Раньше здесь стояла пустая строка, то
+        # есть проход по всему корпусу шёл вообще без понятия о моде: реплика из
+        # Legacy of the Dragonborn переводилась ровно как из мода на мечи.
+        try:
+            from translator.context import mod_summary as _ms
+            mods = [(mod, strs, _ms.build(repo, mod)) for mod, strs in by_mod.items()]
+        except Exception as exc:                                   # noqa: BLE001
+            job.add_log(f"Mod summaries unavailable ({exc}) — dispatching without them")
+            mods = [(mod, strs, "") for mod, strs in by_mod.items()]
         params = InferenceParams(max_tokens=int(max_tokens) if max_tokens else None,
                                  batch_size=int(batch_size) if batch_size else None)
         if max_tokens:

@@ -32,6 +32,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from translator.characters import dialogue as DLG  # noqa: E402
 from translator.characters import gender as G  # noqa: E402
 from translator.characters import speakers as SP  # noqa: E402
 from translator.validation.quality import compute_string_status  # noqa: E402
@@ -59,16 +60,34 @@ def main() -> None:
     con.execute("PRAGMA cache_size=-400000")
     now = time.time()
 
+    # Реплики НПС и реплики игрока лежат в разных записях, и род в них разный:
+    # у первых — говорящего, у вторых — того, к кому обращаются.
     rows = con.execute(
         "SELECT id, mod_name, esp_name, form_id, original, translation, rec_type, "
-        "field_type FROM strings WHERE rec_type='INFO' "
+        "field_type FROM strings WHERE rec_type IN ('INFO','DIAL') "
         "AND TRIM(COALESCE(translation,'')) <> ''").fetchall()
     print(f"  реплик в базе: {len(rows):,}\n", file=out, flush=True)
 
     stat: collections.Counter = collections.Counter()
     by_mod: collections.Counter = collections.Counter()
     plan = []
+    dstate = DLG.load()
     for r in rows:
+        to = DLG.addressee_gender_for(r["esp_name"], r["form_id"],
+                                      r["rec_type"], r["field_type"])
+        if to:
+            # Реплика игрока: род принадлежит собеседнику, а не говорящему.
+            fixed = G.enforce_addressee(r["original"] or "", r["translation"] or "", to)
+            if fixed == r["translation"]:
+                stat["обращение верно или не выражено"] += 1
+                continue
+            stat["род собеседника исправлен"] += 1
+            by_mod[r["mod_name"]] += 1
+            plan.append((r, fixed, to, "обращается к"))
+            continue
+        if r["rec_type"] != "INFO":
+            stat["не реплика — не трогаем"] += 1
+            continue
         sex = gmap.get(((r["esp_name"] or "").lower(),
                         (r["form_id"] or "").upper()[-6:]))
         if not sex:
@@ -80,7 +99,7 @@ def main() -> None:
             continue
         stat["род исправлен"] += 1
         by_mod[r["mod_name"]] += 1
-        plan.append((r, fixed, sex))
+        plan.append((r, fixed, sex, "говорит"))
 
     for k, v in stat.most_common():
         print(f"  {k:<34}{v:>8,}", file=out)
@@ -89,14 +108,15 @@ def main() -> None:
         print(f"   {n:>5}  {mod}", file=out)
 
     print("\nпримеры:", file=out)
-    for r, fixed, sex in plan[:args.examples]:
-        print(f"  говорит {'женщина' if sex == 'f' else 'мужчина'}", file=out)
+    for r, fixed, sex, kind in plan[:args.examples]:
+        who = "женщине" if (kind == "обращается к" and sex == "f") else               "мужчине" if kind == "обращается к" else               "женщина" if sex == "f" else "мужчина"
+        print(f"  {kind} {who}", file=out)
         print(f"      было  {(r['translation'] or '')[:88]}", file=out)
         print(f"      стало {fixed[:88]}", file=out)
 
     if args.write:
         wrote = 0
-        for r, fixed, _sex in plan:
+        for r, fixed, _sex, _kind in plan:
             qs, _t, _i, status = compute_string_status(
                 r["original"], fixed, terms, r["rec_type"], r["field_type"])
             con.execute(

@@ -121,7 +121,12 @@ def read_plugin(path: Path) -> dict:
                 continue
             for ft, fd in parse_subrecords(body):
                 if ft == b"PNAM" and len(fd) >= 4:
-                    prev[key] = _owner(u32(fd, 0), plugin, masters)
+                    # Нулевая ссылка значит «предыдущей реплики нет». Принятая за
+                    # адрес, она даёт соседа «skyrim.esm:000000» — запись, которой
+                    # не существует, и разговор начинается с пустоты.
+                    raw = u32(fd, 0)
+                    if raw:
+                        prev[key] = _owner(raw, plugin, masters)
                     break
 
     walk(data, 0, len(data), None)
@@ -187,10 +192,21 @@ def merge(cache: dict) -> dict:
         if not isinstance(entry, dict):
             continue
         for topic, infos in (entry.get("topics") or {}).items():
-            topics.setdefault(topic, []).extend(infos)
+            # Один плагин лежит в паке дважды — «Interesting NPCs 3DNPC» и его же
+            # «- Update» содержат 3DNPC.esp, — и ответы задваивались. Порядок важен
+            # (он же порядок проигрывания), поэтому не set, а проверка на месте.
+            have = topics.setdefault(topic, [])
+            seen = set(have)
+            have.extend(i for i in infos if not (i in seen or seen.add(i)))
         prev.update(entry.get("prev") or {})
         alias.update(entry.get("alias") or {})
-    return {"topics": topics, "prev": prev, "alias": alias}
+    # Обратная связь: у ответа — его тема. Нужна, чтобы реплика НПС знала, на что
+    # она отвечает; прямой связи для этого мало.
+    of_topic: dict[str, str] = {}
+    for topic, infos in topics.items():
+        for info in infos:
+            of_topic.setdefault(info, topic)
+    return {"topics": topics, "prev": prev, "alias": alias, "of_topic": of_topic}
 
 
 # -- доступ для промпта и ворот записи ---------------------------------------------
@@ -208,7 +224,10 @@ def load(mods_dir: Path | None = None, game_data: Path | None = None,
             return _STATE
         cache_path = _ROOT / "cache" / CACHE_NAME
         cache: dict = {}
-        if cache_path.exists() and not force:
+        # `force` значит «собери заново», а не «забудь всё»: без пути к модам пересобрать
+        # нечем, и пропуск кэша оставлял бы пустой граф, который молча выглядит как
+        # «у реплик нет соседей».
+        if cache_path.exists() and not (force and mods_dir is not None):
             try:
                 cache = json.loads(cache_path.read_text(encoding="utf-8"))
             except Exception as exc:                               # noqa: BLE001
@@ -266,3 +285,57 @@ def addressee_gender_for(esp_name: str, form_id: str, rec_type: str | None,
         from translator.characters import speakers as _sp
         return _sp.gender_for(esp_name, form_id)
     return None
+
+
+def neighbours(esp_name: str, form_id: str, rec_type: str | None,
+               field_type: str | None, state: dict | None = None) -> list[tuple[str, str]]:
+    """Соседние реплики разговора: [(кто, «plugin:FORMID»)].
+
+    Что считается соседом, зависит от того, чья это строка:
+
+        реплика игрока (DIAL/FULL)   ответы, которые на неё последуют
+        ответ НПС (INFO/NAM1)        тема, на которую он отвечает, и реплика перед ним
+
+    Больше двух соседей не отдаём. Разговор нужен модели как опора, а не как повод
+    потратить окно: замер служебной части промпта — 832 токена на запрос, и каждая
+    лишняя реплика отнимает место у самих строк.
+    """
+    st = state if state is not None else load()
+    key = _key(esp_name, form_id)
+    key = (st.get("alias") or {}).get(key, key)
+    out: list[tuple[str, str]] = []
+    if rec_type == "DIAL" and field_type == "FULL":
+        for ans in (st.get("topics") or {}).get(key, [])[:2]:
+            out.append(("answer", ans))
+        return out
+    if rec_type == "INFO":
+        topic = (st.get("of_topic") or {}).get(key)
+        if topic:
+            out.append(("topic", topic))
+        before = (st.get("prev") or {}).get(key)
+        if before and before != key:
+            out.append(("prev", before))
+    return out
+
+
+def addressee_ref(esp_name: str, form_id: str, rec_type: str | None,
+                  field_type: str | None, state: dict | None = None) -> str | None:
+    """«plugin:FORMID» того, к кому обращена реплика игрока, или None.
+
+    Нужен, чтобы взять карточку собеседника — имя, пол, расу, — а не только его пол.
+    Отвечающих может быть несколько; берём первого, но лишь когда все они один и тот
+    же персонаж, иначе карточка описывала бы одного из двоих.
+    """
+    if rec_type == "INFO" and field_type == "RNAM":
+        return f"{(esp_name or '').lower()}:{(form_id or '').upper()[-6:]}"
+    if not (rec_type == "DIAL" and field_type == "FULL"):
+        return None
+    from translator.characters import speakers as _sp
+    st = state if state is not None else load()
+    refs = answers_to(esp_name, form_id, st)
+    voices = set()
+    for ref in refs:
+        plug, fid = ref.split(":", 1)
+        card = _sp.card_for(plug, fid, _sp.load(None, None))
+        voices.add(card.voice_type if card else None)
+    return refs[0] if (refs and len(voices) == 1 and None not in voices) else None

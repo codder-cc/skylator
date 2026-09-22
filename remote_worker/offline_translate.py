@@ -364,6 +364,22 @@ class OfflineTranslateRunner:
                         break
                 if ent_lines:
                     batch_ctx = (batch_ctx + "\n" + "\n".join(ent_lines)).strip()
+                # Разговор вокруг строки. У каждой строки он свой, поэтому каждая
+                # реплика помечена номером той строки, к которой относится: промпт на
+                # батч один, и без номера соседи приняли бы чужую беседу за свою.
+                # Без этого модель переводила фразу как отдельную — отсюда и «Ты
+                # грубиян» в обращении к женщине, и кальки вроде «вино растрачивается
+                # на твой язык»: сказано-то было в перепалке.
+                talk_lines = []
+                for n, b in enumerate(batch, 1):
+                    for line in (b.get("talk") or "").splitlines():
+                        if line.strip():
+                            talk_lines.append(f"  ({n}) {line.strip()}")
+                    if len(talk_lines) >= 6:
+                        break
+                if talk_lines:
+                    batch_ctx = (batch_ctx + "\nConversation around these lines:\n"
+                                 + "\n".join(talk_lines)).strip()
                 full_context = (batch_ctx + "\n" + tm_block).strip() if tm_block else batch_ctx
 
                 prompt = build_prompt(

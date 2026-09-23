@@ -163,6 +163,18 @@ def _as_params(infer_params) -> dict:
     return {}
 
 
+def _params_with(infer_params, **changes):
+    """Копия параметров инференса с заменой полей — ОБЪЕКТОМ, а не словарём.
+
+    Бэкенд читает поля как атрибуты (`p.max_tokens`). Судья получал словарь, на каждом
+    вызове падал с AttributeError, и это перехватывалось как «не уверен»: первые 31
+    вердикт прогона — все «не уверен». Судья на агенте не судил ни разу, а замер на
+    M5 проходил, потому что шёл через /infer, где параметры собираются правильно.
+    """
+    from models.inference_params import InferenceParams
+    return InferenceParams.from_dict({**_as_params(infer_params), **changes})
+
+
 class OfflineTranslateRunner:
     """
     Store-driven autonomous translation.
@@ -213,9 +225,8 @@ class OfflineTranslateRunner:
         """
         from prompt.builder import build_judge_prompt
 
-        params = _as_params(infer_params)
-        params.update({"temperature": 0.0, "top_k": 1, "max_tokens": 8,
-                       "thinking": False})
+        params = _params_with(infer_params, temperature=0.0, top_k=1, max_tokens=8,
+                              thinking=False)
 
         async def once(a: str, b: str) -> str:
             raw = await loop.run_in_executor(
@@ -542,9 +553,9 @@ class OfflineTranslateRunner:
                 # иначе они повторят его слово в слово и выбирать будет не из чего.
                 if candidates > 1 and not reviewing:
                     pools: list[list[str]] = [list(translations)]
-                    hot = _as_params(infer_params)
-                    hot["temperature"] = max(cand_temp, float(hot.get("temperature") or 0))
-                    hot["top_k"] = 40
+                    _base = _as_params(infer_params)
+                    hot = _params_with(infer_params, top_k=40, temperature=max(
+                        cand_temp, float(_base.get("temperature") or 0)))
                     for _ in range(candidates - 1):
                         if self._stop:
                             break

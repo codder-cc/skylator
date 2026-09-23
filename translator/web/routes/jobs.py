@@ -193,7 +193,8 @@ def create_job():
                                            batch_size = options.get("batch_size"),
                                            judge      = bool(options.get("judge")),
                                            candidates = int(options.get("candidates") or 1),
-                                           types      = options.get("types"))
+                                           types      = options.get("types"),
+                                           skip_layered = bool(options.get("skip_layered")))
         except ValueError as exc:
             return jsonify({"error": str(exc), "ok": False}), 400
     elif job_type == "validate" and mod_names:
@@ -1706,7 +1707,8 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                              batch_size: int | None = None,
                              judge: bool = False,
                              candidates: int = 1,
-                             types: str | None = None):
+                             types: str | None = None,
+                             skip_layered: bool = False):
     """Send stored translations back to the fleet to be checked and corrected.
 
     A review is a translation job with the answer already filled in: the package carries
@@ -1828,6 +1830,16 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
             if _t:
                 _safe = ",".join("'" + re.sub(r"[^A-Z_]", "", x) + "'" for x in _t)
                 where.append(f"rec_type IN ({_safe})")
+        if skip_layered:
+            # Строки, ответ на которые уже лежит в слое кандидатов. Переводить их снова
+            # незачем: судить лежащий ответ можно и без генерации.
+            try:
+                from translator.db import candidates as _cand
+                _cand.ensure(repo.db)
+                where.append("id NOT IN (SELECT string_id FROM candidates "
+                             "WHERE string_id IS NOT NULL)")
+            except Exception as exc:                               # noqa: BLE001
+                log.warning("skip_layered unavailable: %s", exc)
         if min_chars:
             where.append(f"LENGTH(original) >= {int(min_chars)}")
         if max_len:

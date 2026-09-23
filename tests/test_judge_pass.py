@@ -64,6 +64,11 @@ class _Backend:
         self.asked = []
 
     def _infer(self, prompt, params=None, stop_check=None):
+        # Как настоящий MLX-бэкенд: поля читаются атрибутами. Прежняя заглушка
+        # параметров не смотрела, и словарь вместо объекта проходил тесты — а на
+        # агенте каждый вызов судьи падал и считался «не уверен».
+        if params is not None:
+            _ = (params.max_tokens, params.temperature, params.top_p)
         self.asked.append(prompt)
         return self.answers.pop(0) if self.answers else ""
 
@@ -206,7 +211,7 @@ def test_neither_the_judge_nor_the_candidates_call_dict_on_it():
     # Внутри самого помощника проверка на словарь законна — смотрим всё остальное.
     src = inspect.getsource(ot).replace(inspect.getsource(ot._as_params), "")
     assert "dict(infer_params" not in src, "объект InferenceParams словарём не станет"
-    assert src.count("_as_params(infer_params)") >= 2, "и судья, и кандидаты через него"
+    assert src.count("_params_with(infer_params") >= 2, "и судья, и кандидаты через него"
 
 
 # ── судья решает, но ответ не стирает ─────────────────────────────────────────
@@ -269,3 +274,16 @@ def test_a_verdict_against_the_fresh_answer_keeps_it_out_of_the_corpus():
     from translator.db import candidates as C
     assert C.judge_forbids("stored") and C.judge_forbids("unsure")
     assert not C.judge_forbids("fresh") and not C.judge_forbids(None)
+
+
+def test_the_judge_hands_the_backend_an_object_it_can_read():
+    """Первые 31 вердикт прогона — все «не уверен»: бэкенд получал словарь."""
+    from models.inference_params import InferenceParams
+    r = _runner()
+    r._stop = False
+    backend = _Backend(["B", "A"])
+    async def go():
+        return await r._judge(SimpleNamespace(backend=backend),
+                              asyncio.get_running_loop(), "source", "old", "new",
+                              InferenceParams.from_dict({"temperature": 0.7}))
+    assert asyncio.run(go()) == "fresh"

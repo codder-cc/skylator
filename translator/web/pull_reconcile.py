@@ -26,6 +26,16 @@ PULL_PAGE      = 500
 PULL_TIMEOUT   = 20
 
 
+def _model_of(label: str) -> str:
+    """Какая модель стоит на машине — чтобы слой знал, кто дал ответ, и при сверке."""
+    try:
+        from flask import current_app
+        w = current_app.config.get("WORKER_REGISTRY").get(label)
+        return (getattr(w, "model", "") or "") if w else ""
+    except Exception:                                              # noqa: BLE001
+        return ""
+
+
 def apply_pulled_results(string_mgr, astore, agent_label: str, results: list[dict]):
     """Apply a page of pulled results to the canonical DB. Pure w.r.t. transport, so it
     is unit-testable without HTTP. Returns (saved, rejected, max_seq, mods_touched)."""
@@ -59,10 +69,13 @@ def apply_pulled_results(string_mgr, astore, agent_label: str, results: list[dic
             _cid = _cand.record(_repo, string_id=r.get("string_id"), mod_name=mod,
                                 esp_name=esp, key=key, original=original,
                                 translation=translation, machine=agent_label,
-                                model="", job_id=r.get("assignment_id") or "",
-                                produced_at=r.get("produced_at"))
-            if _cand.layer_only(_repo):
-                _cand.set_gate(_repo, _cid, "layer_only")
+                                model=_model_of(agent_label),
+                                job_id=r.get("assignment_id") or "",
+                                produced_at=r.get("produced_at"),
+                                judge=r.get("judge"), rival=r.get("rival"))
+            if _cand.layer_only(_repo) or _cand.judge_forbids(r.get("judge")):
+                _cand.set_gate(_repo, _cid, "layer_only" if _cand.layer_only(_repo)
+                               else "judge_kept_stored")
                 if astore is not None and r.get("string_id") is not None:
                     try:
                         astore.mark_string_delivered(r.get("assignment_id"),

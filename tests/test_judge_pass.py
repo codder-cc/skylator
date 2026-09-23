@@ -207,3 +207,65 @@ def test_neither_the_judge_nor_the_candidates_call_dict_on_it():
     src = inspect.getsource(ot).replace(inspect.getsource(ot._as_params), "")
     assert "dict(infer_params" not in src, "объект InferenceParams словарём не станет"
     assert src.count("_as_params(infer_params)") >= 2, "и судья, и кандидаты через него"
+
+
+# ── судья решает, но ответ не стирает ─────────────────────────────────────────
+
+def test_the_fresh_answer_is_delivered_even_when_the_stored_one_wins():
+    """Раньше при победе хранимого агент подменял свой перевод хранимым текстом.
+
+    Новый ответ исчезал, и проверить, прав ли был судья, было уже нечем. Теперь
+    доставляется ответ модели, а вердикт едет рядом.
+    """
+    import inspect
+    src = inspect.getsource(OfflineTranslateRunner)
+    assert "translations[j] = rival" not in src, "ответ модели снова подменяется хранимым"
+    assert "judge         = verdicts.get(j)" in src
+
+
+def test_the_verdict_survives_the_durable_store_and_the_wire(tmp_path):
+    from remote_server import _row_to_result
+    from result_store import ResultStore
+    store = ResultStore(tmp_path / "r.db")
+    store.write_result("a1", 7, "You brute.", "Ты грубиянка.", 100, "translated",
+                       judge="stored", rival="Ты грубиян.")
+    row = store.undelivered()[0]
+    wire = _row_to_result(row)
+    assert wire["translation"] == "Ты грубиянка."
+    assert wire["judge"] == "stored" and wire["rival"] == "Ты грубиян."
+
+
+def test_an_agent_db_from_before_the_judge_migrates_in_place(tmp_path):
+    """OTA-обновлённый агент открывает базу четвёртой версии с недоставленным внутри."""
+    import sqlite3
+    from result_store import ResultStore
+    path = tmp_path / "old.db"
+    ResultStore(path)
+    con = sqlite3.connect(path)
+    # откатить базу к виду версии 4: без колонок судьи
+    con.executescript("""
+        ALTER TABLE agent_results RENAME TO t;
+        CREATE TABLE agent_results AS SELECT seq, assignment_id, string_id, string_hash,
+            original, translation, quality_score, status, mod_name, esp_name, str_key,
+            delivered, produced_at FROM t;
+        DROP TABLE t;
+        UPDATE agent_meta SET value='4' WHERE key='schema_version';""")
+    con.commit()
+    con.close()
+    store = ResultStore(path)
+    assert store.write_result("a1", 1, "Hi", "Привет", 100, "translated",
+                              judge="fresh", rival="Здравствуй") is not None
+
+
+def test_the_judge_sees_the_official_names_of_the_line():
+    from prompt.builder import build_judge_prompt
+    p = build_judge_prompt("Ah, Whiterun.", "А, Вайтран.", "А, Утёс.",
+                           "Names the game already has — use exactly these, declined "
+                           "as Russian grammar requires: Whiterun = Вайтран")
+    assert "Whiterun → Вайтран" in p
+
+
+def test_a_verdict_against_the_fresh_answer_keeps_it_out_of_the_corpus():
+    from translator.db import candidates as C
+    assert C.judge_forbids("stored") and C.judge_forbids("unsure")
+    assert not C.judge_forbids("fresh") and not C.judge_forbids(None)

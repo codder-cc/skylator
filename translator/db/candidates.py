@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS candidates (
     rules_status      TEXT,      -- translated / needs_review — вердикт правил
     issues            TEXT,      -- JSON: что правила нашли
     gate              TEXT,      -- что сделали ворота: layer_only / accepted / kept_stored
+    judge             TEXT,      -- вердикт судьи на агенте: fresh / stored / unsure / same
+    rival             TEXT,      -- с чем судья сравнивал (хранимое на момент раздачи)
     UNIQUE(string_id, machine, produced_at)
 );
 CREATE INDEX IF NOT EXISTS idx_cand_string ON candidates(string_id);
@@ -77,6 +79,11 @@ def ensure(db) -> None:
     for stmt in (x.strip() for x in _SCHEMA.split(";")):
         if stmt:
             db.execute(stmt)
+    # Таблица, созданная до появления судьи, получает его колонки на месте.
+    have = {r[1] for r in db.execute("PRAGMA table_info(candidates)").fetchall()}
+    for col in ("judge", "rival"):
+        if col not in have:
+            db.execute(f"ALTER TABLE candidates ADD COLUMN {col} TEXT")
     db.commit()
     try:
         db._candidates_ready = True
@@ -106,7 +113,8 @@ def _identity(key: str) -> tuple[str | None, str | None]:
 
 def record(repo, *, string_id, mod_name: str, esp_name: str, key: str,
            original: str, translation: str, machine: str, model: str,
-           job_id: str, produced_at, terms=None) -> int | None:
+           job_id: str, produced_at, terms=None, judge: str | None = None,
+           rival: str | None = None) -> int | None:
     """Записать один ответ до всякого решения. Возвращает id кандидата или None.
 
     Вердикт правил считается здесь же и для ЭТОГО текста — тем же
@@ -130,6 +138,14 @@ def record(repo, *, string_id, mod_name: str, esp_name: str, key: str,
         pass
     score = status = None
     issues: list = []
+    # Без глоссария правила слепы к именам: «Утёс» вместо Вайтрана и «Бринджольф»
+    # проходили как чистые, а именно на именах новый перевод чаще всего хуже старого.
+    if terms is None:
+        try:
+            from translator.validation.terminology import load_terms
+            terms = load_terms()
+        except Exception:                                          # noqa: BLE001
+            terms = None
     try:
         from translator.validation.quality import compute_string_status
         score, _tok, issues, status = compute_string_status(
@@ -141,17 +157,26 @@ def record(repo, *, string_id, mod_name: str, esp_name: str, key: str,
             "INSERT OR IGNORE INTO candidates (string_id, mod_name, esp_name, key, "
             "rec_type, field_type, original, translation, stored_at_arrival, "
             "same_as_stored, machine, model, job_id, produced_at, received_at, score, "
-            "rules_status, issues, gate) VALUES "
-            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "rules_status, issues, gate, judge, rival) VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (string_id, mod_name, esp_name, key, rec_type, field_type, original,
              translation, stored, int(translation.strip() == stored.strip()),
              machine, model, job_id, produced_at, time.time(), score, status,
-             json.dumps(issues or [], ensure_ascii=False), None))
+             json.dumps(issues or [], ensure_ascii=False), None, judge or None,
+             rival or None))
         db.commit()
         return cur.lastrowid or None
     except Exception as exc:                                       # noqa: BLE001
         log.warning("candidates: could not record %s/%s: %s", mod_name, key, exc)
         return None
+
+
+def judge_forbids(judge: str | None) -> bool:
+    """Судья видел оба текста и не выбрал новый — применять его нельзя.
+
+    Пустой вердикт (судьи не было) ничего не запрещает: тогда решают ворота, как раньше.
+    """
+    return (judge or "") in ("stored", "unsure")
 
 
 def set_gate(repo, cand_id: int | None, gate: str) -> None:

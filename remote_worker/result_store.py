@@ -30,7 +30,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # Wire-protocol version negotiated with the master at registration. Over a months-long
 # run an OTA update may change payloads on one side; both ends carry this so a mismatch
@@ -61,6 +61,11 @@ _AGENT_MIGRATIONS: list[tuple[int, list[str]]] = [
          "ALTER TABLE agent_manifest ADD COLUMN entities TEXT",
          "ALTER TABLE agent_manifest ADD COLUMN talk TEXT",
          "ALTER TABLE agent_manifest ADD COLUMN rival TEXT"]),
+    # Вердикт судьи рядом с ответом, а не вместо него. Раньше при победе хранимого
+    # агент ПОДМЕНЯЛ свой перевод хранимым текстом и доставлял его — новый ответ
+    # исчезал, и узнать, прав ли был судья, было уже нельзя.
+    (5, ["ALTER TABLE agent_results ADD COLUMN judge TEXT",
+         "ALTER TABLE agent_results ADD COLUMN rival TEXT"]),
 ]
 
 _SCHEMA = """
@@ -117,7 +122,9 @@ CREATE TABLE IF NOT EXISTS agent_results (
     esp_name      TEXT,
     str_key       TEXT,
     delivered     INTEGER NOT NULL DEFAULT 0,
-    produced_at   REAL
+    produced_at   REAL,
+    judge         TEXT,
+    rival         TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ares_assign  ON agent_results(assignment_id);
 CREATE INDEX IF NOT EXISTS idx_ares_undeliv ON agent_results(delivered, seq);
@@ -340,6 +347,8 @@ class ResultStore:
         mod_name: str | None = None,
         esp_name: str | None = None,
         str_key: str | None = None,
+        judge: str | None = None,
+        rival: str | None = None,
     ) -> int | None:
         """Durably record one produced translation and mark its manifest row done.
         Returns the new monotonic seq, or None if the disk is full (production pauses).
@@ -352,10 +361,12 @@ class ResultStore:
                 cur = self._conn.execute(
                     """INSERT INTO agent_results
                        (assignment_id, string_id, string_hash, original, translation,
-                        quality_score, status, mod_name, esp_name, str_key, delivered, produced_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,0,?)""",
+                        quality_score, status, mod_name, esp_name, str_key, delivered,
+                        produced_at, judge, rival)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,0,?,?,?)""",
                     (assignment_id, string_id, h, original, translation,
-                     quality_score, status, mod_name, esp_name, str_key, time.time()),
+                     quality_score, status, mod_name, esp_name, str_key, time.time(),
+                     judge, rival),
                 )
                 self._conn.execute(
                     "UPDATE agent_manifest SET done=1 WHERE assignment_id=? AND string_id=?",

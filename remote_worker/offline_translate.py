@@ -203,7 +203,7 @@ class OfflineTranslateRunner:
         self._stop = True
 
     async def _judge(self, state, loop, source: str, stored: str, fresh: str,
-                     infer_params) -> str:
+                     infer_params, names: str = "") -> str:
         """Какой из двух переводов живее: 'fresh' | 'stored' | 'unsure'.
 
         Спрашивается ДВАЖДЫ, с перестановкой вариантов. Модель, выбирающая по месту,
@@ -220,7 +220,7 @@ class OfflineTranslateRunner:
         async def once(a: str, b: str) -> str:
             raw = await loop.run_in_executor(
                 None,
-                lambda: state.backend._infer(build_judge_prompt(source, a, b),
+                lambda: state.backend._infer(build_judge_prompt(source, a, b, names),
                                              params=params,
                                              stop_check=lambda: self._stop))
             for ch in (raw or "").upper():
@@ -583,24 +583,29 @@ class OfflineTranslateRunner:
                 # «не сломано ли», и это её работа; на «живее ли» она ответить не может
                 # и молча оставляла хранимый текст. Здесь спрашивается то, чего она не
                 # умеет, — и только там, где ответы РАЗНЫЕ: совпавшие спорить не о чем.
+                verdicts: dict = {}
                 if judging:
                     for j, b in enumerate(batch):
                         fresh = (translations[j] if j < len(translations) else "") or ""
                         rival = (b.get("rival") or "").strip()
-                        if not fresh.strip() or not rival or fresh.strip() == rival:
+                        if not fresh.strip() or not rival:
+                            continue
+                        if fresh.strip() == rival:
+                            verdicts[j] = "same"
                             continue
                         try:
                             verdict = await self._judge(
                                 state, loop, b.get("original") or "", rival,
-                                fresh.strip(), infer_params)
+                                fresh.strip(), infer_params,
+                                names=b.get("entities") or "")
                         except Exception as exc:                       # noqa: BLE001
-                            log.warning("judge failed (%s) — keeping stored", exc)
+                            log.warning("judge failed (%s) — verdict unsure", exc)
                             verdict = "unsure"
-                        if verdict != "fresh":
-                            # Хранимый победил или уверенности нет. Доставляем ЕГО, а не
-                            # пустоту: иначе строка остаётся несделанной в манифесте и
-                            # будет переспрошена следующим проходом без конца.
-                            translations[j] = rival
+                        # Новый ответ доставляется ВСЕГДА, вердикт — рядом. Раньше при
+                        # победе хранимого агент подменял свой перевод хранимым, и
+                        # ответ модели пропадал без следа: ни применить позже, ни
+                        # проверить, прав ли был судья.
+                        verdicts[j] = verdict
 
                 for j, b in enumerate(batch):
                     original    = b.get("original") or ""
@@ -631,6 +636,8 @@ class OfflineTranslateRunner:
                         mod_name      = b.get("mod_name"),
                         esp_name      = b.get("esp_name"),
                         str_key       = b.get("str_key"),
+                        judge         = verdicts.get(j) if judging else None,
+                        rival         = (b.get("rival") or None) if judging else None,
                     )
                     if seq is None:
                         # disk full — back off; this string stays pending for retry

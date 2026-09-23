@@ -2558,7 +2558,19 @@ def workers_offline_results(label: str):
         _cid = _cand.record(repo, string_id=r.get("string_id"), mod_name=mod_name,
                             esp_name=esp_name, key=key, original=original,
                             translation=translation, machine=label, model=_model,
-                            job_id=host_job_id, produced_at=produced_at)
+                            job_id=host_job_id, produced_at=produced_at,
+                            judge=r.get("judge"), rival=r.get("rival"))
+        # Судья на агенте видел оба текста и оставил хранимый: новый ответ лежит в слое,
+        # а в корпус не идёт. Раньше агент сам подменял ответ хранимым — и терял его.
+        if not _layer_only and _cand.judge_forbids(r.get("judge")):
+            _cand.set_gate(repo, _cid, "judge_kept_stored")
+            if astore is not None and r.get("string_id") is not None:
+                try:
+                    astore.mark_string_delivered(offline_job_id, r.get("string_id"))
+                except Exception:
+                    pass
+            saved_count += 1
+            continue
         if _layer_only:
             _cand.set_gate(repo, _cid, "layer_only")
             if astore is not None and r.get("string_id") is not None:

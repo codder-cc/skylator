@@ -29,6 +29,7 @@ def _fresh():
 def _table(monkeypatch, pairs):
     monkeypatch.setattr(OC, "_table", lambda: pairs)
     OC._entities.cache_clear()
+    OC._single_names.cache_clear()
 
 
 class _Repo:
@@ -122,3 +123,34 @@ def test_a_short_string_is_not_scanned(monkeypatch):
 def test_nothing_to_say_costs_no_tokens(monkeypatch):
     _table(monkeypatch, {"Soul Cairn": "Каирн Душ"})
     assert OC.entity_block("Just a plain sentence about nothing much.") == ""
+
+
+_PHRASES = {
+    # фразы игры, по которым видно, что слово — имя: заглавная посреди предложения
+    "I heard the Jarl of Whiterun is looking for help.": "Слышал, ярл Вайтрана ищет помощи.",
+    "They say the Falmer were once snow elves, long ago.": "Говорят, фалмеры когда-то были снежными эльфами.",
+    # и фраза, где обычное слово стоит строчным
+    "There was no light in the cave, only the cold.": "В пещере не было света, только холод.",
+    "I saw a small light far down in the valley there.": "Я видел маленький огонёк далеко в долине.",
+}
+
+
+def test_a_one_word_name_inside_a_line_is_given(monkeypatch):
+    # Слой кандидатов: «Утёс» вместо Вайтрана и «фалмери» — именно на однословных
+    # именах новый перевод проигрывал старому чаще всего.
+    _table(monkeypatch, {**_PHRASES, "Whiterun": "Вайтран", "Falmer": "Фалмер"})
+    got = dict(OC.entities_in("Ah, Whiterun. And Falmer huts in the ruin!"))
+    assert got == {"Whiterun": "Вайтран", "Falmer": "Фалмер"}
+
+
+def test_a_common_word_with_a_capital_is_not_a_name(monkeypatch):
+    # «Light → Легкие» лежит в таблице как название навыка; во фразах игры это слово
+    # строчное, и именем оно не становится.
+    _table(monkeypatch, {**_PHRASES, "Light": "Легкие"})
+    assert OC.entities_in("I saw a Light over there, beyond the hill.") == []
+
+
+def test_a_name_at_the_start_of_a_sentence_is_not_guessed(monkeypatch):
+    # В начале предложения заглавная ничего не говорит.
+    _table(monkeypatch, {**_PHRASES, "Whiterun": "Вайтран"})
+    assert OC.entities_in("Whiterun is far from here, friend.") == []

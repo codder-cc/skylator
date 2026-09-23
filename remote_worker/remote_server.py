@@ -1213,6 +1213,10 @@ def _row_to_result(r: dict) -> dict:
         # made while the master was switched off, and without this the master can only
         # stamp all of it with the moment it heard about it.
         "produced_at":   r["produced_at"],
+        # Вердикт судьи и текст, с которым он сравнивал. Перевод выше — всегда НОВЫЙ
+        # ответ модели; решать, применять ли его, хосту.
+        "judge":         r.get("judge") or "",
+        "rival":         r.get("rival") or "",
     }
 
 

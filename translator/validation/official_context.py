@@ -147,6 +147,61 @@ def _entities() -> dict:
     return {k: next(iter(v)) for k, v in buckets.items() if len(v) == 1}
 
 
+@lru_cache(maxsize=1)
+def _single_names() -> dict:
+    """Однословные имена собственные: Whiterun → Вайтран, Falmer → Фалмер.
+
+    Многословная таблица их не берёт намеренно — одно слово слишком часто оказывается
+    обычным словом. Но без них пропадали самые частые имена игры: слой кандидатов
+    показал «Утёс» вместо Вайтрана, «фалмери», «Бесстрашные фолквирны» вместо Изгоев —
+    и именно на именах новый перевод проигрывал старому чаще всего.
+
+    Поэтому здесь только то, что выглядит именем с обеих сторон: английское слово с
+    заглавной, не из списка частых слов, и русское однозначное написание с заглавной.
+    """
+    # Имя со строчной буквы игра не пишет никогда, обычное слово — постоянно. В таблице
+    # есть и «Light → Легкие», и «Right → Вправо» — кнопки и предметы; слово, которое
+    # встречается в тексте игры строчным заметно часто, именем не считается. «Хоть раз»
+    # оказалось слишком строго: «falmer» строчным где-то в игре есть, и Фалмер выпадал.
+    # Считается только во фразах: названия предметов пишутся Каждое Слово С Заглавной, и
+    # по ним «Light» и «Fire» выглядели бы именами.
+    lower: collections.Counter = collections.Counter()
+    upper: collections.Counter = collections.Counter()
+    for en in _table():
+        if len(en.split()) < 6:
+            continue
+        for w in _mid_sentence_words(en):
+            (lower if w[:1].islower() else upper)[w.lower()] += 1
+    buckets: dict = collections.defaultdict(set)
+    for en, ru in _table().items():
+        en, ru = en.strip(), ru.strip()
+        if not re.fullmatch(r"[A-Z][a-z'\-]{3,}", en) or en.lower() in _COMMON_EN:
+            continue
+        lo, up = lower[en.lower()], upper[en.lower()]
+        # и хоть раз должно стоять с заглавной посреди фразы — иначе заглавная у него
+        # только от названия предмета
+        if up == 0 or (lo >= 2 and lo * 5 >= lo + up):
+            continue
+        if not re.fullmatch(r"[А-ЯЁ][а-яё\-]+(?: [А-ЯЁа-яё][а-яё\-]+)?", ru):
+            continue
+        buckets[en].add(ru)
+    return {k: next(iter(v)) for k, v in buckets.items() if len(v) == 1}
+
+
+def _mid_sentence_words(text: str):
+    """Слова НЕ в начале предложения — там регистр буквы что-то значит."""
+    for m in _EN_WORD.finditer(text):
+        before = text[:m.start()].rstrip(" \t\"'«(")
+        if not before or before[-1] in ".!?…:\n":
+            continue
+        yield m.group(0)
+
+
+def _mid_sentence_caps(text: str):
+    """Слова с заглавной не в начале предложения — там заглавная значит имя."""
+    return (w for w in _mid_sentence_words(text) if w[:1].isupper())
+
+
 def entities_in(original: str) -> list:
     """Ванильные имена, названные этой строкой, с их официальным написанием.
 
@@ -157,8 +212,6 @@ def entities_in(original: str) -> list:
     if len(text) < 8:
         return []
     table = _entities()
-    if not table:
-        return []
     low = [w.lower() for w in _EN_WORD.findall(text)]
     out, seen = [], set()
     for n in range(_ENTITY_MAX_WORDS, 1, -1):
@@ -172,6 +225,15 @@ def entities_in(original: str) -> list:
             out.append((key, table[key]))
             if len(out) >= MAX_ENTITIES:
                 return out
+    singles = _single_names()
+    covered = " ".join(k for k, _ in out)
+    for w in _mid_sentence_caps(text):
+        if w.lower() in seen or w.lower() in covered.split() or w not in singles:
+            continue
+        seen.add(w.lower())
+        out.append((w, singles[w]))
+        if len(out) >= MAX_ENTITIES:
+            break
     return out
 
 

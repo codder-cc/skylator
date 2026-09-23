@@ -240,16 +240,28 @@ def build_prompt(
     )
 
 
+# Этот текст прошёл замер на 100 реальных парах из слоя кандидатов (27B на M5, пары
+# в обоих порядках, с официальными именами строки): из 20 пар, где новый перевод хуже,
+# ни одна не прошла; из 22, где он лучше, прошли 12. Прежний текст пропустил порчу
+# («Драугр» → «Дварги»), потому что об именах не говорил ничего.
 _JUDGE_SYSTEM = (
-    "You are a Russian editor for a Skyrim mod translation. You are given an English "
-    "source line and two Russian renderings of it. Choose the one a Russian player "
-    "would find natural. Judge the Russian, not its closeness to the English word "
-    "order: a literal calque that no one would say is the wrong answer. "
+    "You are a Russian editor for the Russian localization of Skyrim. You are given an "
+    "English source line and two Russian renderings of it. Choose the better one. "
+    "Wrong meaning, wrong grammar, broken quotes, or a name/term that differs from the "
+    "official Russian Skyrim localization are serious faults. A literal calque that no "
+    "Russian would say is also a fault. If both are equally good, prefer A. "
     "Reply with exactly one character: A or B. Nothing else."
 )
 
 
-def build_judge_prompt(source: str, a: str, b: str) -> str:
+def _judge_names(names: str) -> str:
+    """Подсказку имён из пакета («Names the game already has — …: X = Y; …») — в список."""
+    body = (names or "").split(":", 1)[-1].strip()
+    pairs = [p.strip() for p in body.split(";") if "=" in p]
+    return "\n".join("  " + p.replace(" = ", " → ", 1) for p in pairs)
+
+
+def build_judge_prompt(source: str, a: str, b: str, names: str = "") -> str:
     """Промпт-судья: какой из двух переводов живее.
 
     Нужен потому, что численная оценка на этот вопрос не отвечает и ответить не может.
@@ -268,9 +280,11 @@ def build_judge_prompt(source: str, a: str, b: str) -> str:
     Ответ в один символ намеренно: любое рассуждение здесь стоит токенов и не
     проверяемо, а буква сверяется с перестановкой.
     """
-    user = (f"English source:\n{source}\n\n"
-            f"A:\n{a}\n\nB:\n{b}\n\n"
-            f"Which reading is better Russian? Answer A or B.")
+    user = f"English source:\n{source}\n\n"
+    listed = _judge_names(names)
+    if listed:
+        user += f"Official Russian names in this line:\n{listed}\n\n"
+    user += f"A:\n{a}\n\nB:\n{b}\n\nWhich is better? Answer A or B."
     return build_raw_chatml(_JUDGE_SYSTEM, user)
 
 

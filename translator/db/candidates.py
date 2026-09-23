@@ -165,7 +165,13 @@ def record(repo, *, string_id, mod_name: str, esp_name: str, key: str,
              json.dumps(issues or [], ensure_ascii=False), None, judge or None,
              rival or None))
         db.commit()
-        return cur.lastrowid or None
+        if cur.rowcount:
+            return cur.lastrowid
+        # Этот ответ уже записан (повторная доставка): вернуть его id. None остаётся
+        # только за настоящим сбоем — и по нему хост НЕ подтверждает приём.
+        got = db.execute("SELECT id FROM candidates WHERE string_id IS ? AND machine=? "
+                         "AND produced_at IS ?", (string_id, machine, produced_at)).fetchone()
+        return (got[0] if got else None)
     except Exception as exc:                                       # noqa: BLE001
         log.warning("candidates: could not record %s/%s: %s", mod_name, key, exc)
         return None

@@ -123,3 +123,26 @@ def test_both_delivery_paths_record_before_the_gate():
         assert "layer_only" in src, f"{name} не уважает режим «только записывать»"
         assert src.index("_cand.record(") < src.index("save_string("), \
             f"{name}: запись должна идти ДО ворот"
+
+
+def test_a_repeated_delivery_returns_the_same_candidate_not_a_failure():
+    """None значит «не записано», и по нему хост не подтверждает приём.
+
+    Повторная доставка того же ответа — не сбой: она обязана вернуть id, иначе агент
+    слал бы один и тот же результат вечно.
+    """
+    repo = _repo_with_row()
+    a = _record(repo, "Сила вампира", produced_at=5.0)
+    b = _record(repo, "Сила вампира", produced_at=5.0)
+    assert a and a == b
+
+
+def test_a_layer_write_that_failed_is_not_acknowledged():
+    """Ответ, не попавший в слой, агент должен прислать снова, а не стереть."""
+    import inspect
+
+    from translator.web.routes import api
+    src = inspect.getsource(api.workers_offline_results)
+    guard = src.index("if _cid is None:")
+    assert "failed_seqs.append" in src[guard:guard + 300]
+    assert guard < src.index("if _layer_only:")

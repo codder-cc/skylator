@@ -73,6 +73,10 @@ def apply_pulled_results(string_mgr, astore, agent_label: str, results: list[dic
                                 job_id=r.get("assignment_id") or "",
                                 produced_at=r.get("produced_at"),
                                 judge=r.get("judge"), rival=r.get("rival"))
+            if _cid is None:
+                # Слой не записан — строку не трогаем и доставленной не помечаем.
+                rejected += 1
+                continue
             if _cand.layer_only(_repo) or _cand.judge_forbids(r.get("judge")):
                 _cand.set_gate(_repo, _cid, "layer_only" if _cand.layer_only(_repo)
                                else "judge_kept_stored")

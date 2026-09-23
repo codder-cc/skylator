@@ -2560,6 +2560,15 @@ def workers_offline_results(label: str):
                             translation=translation, machine=label, model=_model,
                             job_id=host_job_id, produced_at=produced_at,
                             judge=r.get("judge"), rival=r.get("rival"))
+        # Не записали в слой — не подтверждаем приём. Иначе агент сотрёт ответ у себя,
+        # а у нас его нет нигде: ровно так за ночь пропали 14 тысяч ответов.
+        if _cid is None:
+            had_error = True
+            if r.get("seq"):
+                failed_seqs.append(int(r["seq"]))
+            log.warning("offline-results: candidate layer write failed for %s/%s — "
+                        "not acknowledged, agent will resend", mod_name, key)
+            continue
         # Судья на агенте видел оба текста и оставил хранимый: новый ответ лежит в слое,
         # а в корпус не идёт. Раньше агент сам подменял ответ хранимым — и терял его.
         if not _layer_only and _cand.judge_forbids(r.get("judge")):

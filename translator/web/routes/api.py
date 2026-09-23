@@ -2514,6 +2514,12 @@ def workers_offline_results(label: str):
     _reviewing = job_is_review(repo, host_job_id)
     _judged    = job_is_judged(repo, host_job_id)
     _candidate = job_is_candidate_only(repo, host_job_id)
+    # Слой кандидатов: каждый ответ записывается до всякого решения. Флаг
+    # candidate_layer_only выключает применение совсем — ответы копятся, корпус стоит.
+    from translator.db import candidates as _cand
+    _layer_only = _cand.layer_only(repo)
+    _w = registry.get(label) if registry else None
+    _model = (getattr(_w, "model", "") or "") if _w else ""
 
     if repo is not None and cfg is not None:
         mods_dir   = cfg.paths.mods_dir if cfg else Path(".")
@@ -2544,6 +2550,23 @@ def workers_offline_results(label: str):
             rejected += 1
             log.warning("offline-results: hash mismatch from %s for %s/%s — rejected",
                         label, mod_name, key)
+            continue
+
+        # Записать ответ ДО решения ворот. Раньше получение и решение были склеены, и
+        # ошибка в решении уничтожала данные: за ночь 14 тысяч ответов плотной модели
+        # ворота отвергли по ничьей, а агент стёр их, получив подтверждение приёма.
+        _cid = _cand.record(repo, string_id=r.get("string_id"), mod_name=mod_name,
+                            esp_name=esp_name, key=key, original=original,
+                            translation=translation, machine=label, model=_model,
+                            job_id=host_job_id, produced_at=produced_at)
+        if _layer_only:
+            _cand.set_gate(repo, _cid, "layer_only")
+            if astore is not None and r.get("string_id") is not None:
+                try:
+                    astore.mark_string_delivered(offline_job_id, r.get("string_id"))
+                except Exception:
+                    pass
+            saved_count += 1
             continue
 
         # What this string said before the delivery. Read here rather than taken from
@@ -2608,6 +2631,13 @@ def workers_offline_results(label: str):
                     rec_type=r.get("rec_type") or None,
                     field_type=r.get("field_type") or None,
                 )
+                try:
+                    _landed = (getattr(_saved, "translation", "") or "").strip()
+                    _cand.set_gate(repo, _cid,
+                                   "accepted" if _landed == translation.strip()
+                                   else "kept_stored")
+                except Exception:
+                    pass
                 mods_touched.add(mod_name)
                 saved_count += 1
                 # Судить текст, а не верить агенту. Два разноса по двойникам ниже писали

@@ -49,6 +49,30 @@ def apply_pulled_results(string_mgr, astore, agent_label: str, results: list[dic
             rejected += 1
             log.warning("pull: hash mismatch from %s for %s/%s — rejected", agent_label, mod, key)
             continue
+        # Второй путь доставки обязан вести себя как первый. Иначе режим «только
+        # записывать» дырявый: результат, пришедший сверкой, а не отправкой агента,
+        # прошёл бы мимо слоя кандидатов прямо в корпус.
+        _repo = getattr(string_mgr, "_repo", None)
+        _cid = None
+        try:
+            from translator.db import candidates as _cand
+            _cid = _cand.record(_repo, string_id=r.get("string_id"), mod_name=mod,
+                                esp_name=esp, key=key, original=original,
+                                translation=translation, machine=agent_label,
+                                model="", job_id=r.get("assignment_id") or "",
+                                produced_at=r.get("produced_at"))
+            if _cand.layer_only(_repo):
+                _cand.set_gate(_repo, _cid, "layer_only")
+                if astore is not None and r.get("string_id") is not None:
+                    try:
+                        astore.mark_string_delivered(r.get("assignment_id"),
+                                                     r.get("string_id"))
+                    except Exception:
+                        pass
+                mods.add(mod)
+                continue
+        except Exception as exc:                                   # noqa: BLE001
+            log.warning("pull: candidate layer unavailable (%s)", exc)
         saved_res = string_mgr.save_string(
             mod_name=mod, esp_name=esp, key=key, translation=translation,
             original=original, source="remote_agent", machine_label=agent_label,

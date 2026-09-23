@@ -194,7 +194,7 @@ def create_job():
                                            judge      = bool(options.get("judge")),
                                            candidates = int(options.get("candidates") or 1),
                                            types      = options.get("types"),
-                                           skip_layered = bool(options.get("skip_layered")))
+                                           skip_layered = options.get("skip_layered"))
         except ValueError as exc:
             return jsonify({"error": str(exc), "ok": False}), 400
     elif job_type == "validate" and mod_names:
@@ -1708,7 +1708,7 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                              judge: bool = False,
                              candidates: int = 1,
                              types: str | None = None,
-                             skip_layered: bool = False):
+                             skip_layered=False):
     """Send stored translations back to the fleet to be checked and corrected.
 
     A review is a translation job with the answer already filled in: the package carries
@@ -1836,8 +1836,16 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
             try:
                 from translator.db import candidates as _cand
                 _cand.ensure(repo.db)
+                # Число — момент среза: слой на эту минуту. Без него раздача нескольких
+                # пакетов по смещению плывёт — пока раздаются следующие, машина уже
+                # сдаёт ответы по первому, строки выпадают из выборки, и смещения
+                # следующих пакетов перескакивают через невыданное.
+                _cut = (float(skip_layered)
+                        if isinstance(skip_layered, (int, float))
+                        and not isinstance(skip_layered, bool) else None)
                 where.append("id NOT IN (SELECT string_id FROM candidates "
-                             "WHERE string_id IS NOT NULL)")
+                             "WHERE string_id IS NOT NULL"
+                             + (f" AND received_at < {_cut!r}" if _cut else "") + ")")
             except Exception as exc:                               # noqa: BLE001
                 log.warning("skip_layered unavailable: %s", exc)
         if min_chars:

@@ -90,3 +90,12 @@ def test_a_rhetorical_negation_is_not_a_broken_stored_text():
            "stored_at_arrival": "Ну что ж, как жаль.", "rec_type": "INFO",
            "field_type": "NAM1"}
     assert P.stored_is_broken(row) is False
+
+
+def test_a_name_fix_is_taken_only_when_it_stays_narrow():
+    ok_row = _row("They say Alduin is back.", "Говорят, Альдуин вернулся.",
+                  "Говорят, Алдуин вернулся.", judge="termfix")
+    assert P.decide(ok_row)[0] is True
+    wide = _row("They say Alduin is back.", "Говорят, Альдуин вернулся.",
+                "Ходят слухи, что Алдуин снова здесь.", judge="termfix")
+    assert P.decide(wide) == (False, "termfix:too_wide")

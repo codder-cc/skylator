@@ -195,7 +195,8 @@ def create_job():
                                            candidates = int(options.get("candidates") or 1),
                                            types      = options.get("types"),
                                            skip_layered = options.get("skip_layered"),
-                                           from_assignments = options.get("from_assignments"))
+                                           from_assignments = options.get("from_assignments"),
+                                           req_terms_map = options.get("req_terms_map"))
         except ValueError as exc:
             return jsonify({"error": str(exc), "ok": False}), 400
     elif job_type == "validate" and mod_names:
@@ -1710,7 +1711,8 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                              candidates: int = 1,
                              types: str | None = None,
                              skip_layered=False,
-                             from_assignments=None):
+                             from_assignments=None,
+                             req_terms_map=None):
     """Send stored translations back to the fleet to be checked and corrected.
 
     A review is a translation job with the answer already filled in: the package carries
@@ -1812,7 +1814,13 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                  # от того, чей текст лучше. Замер, определивший отношение: на классе с
                  # известным ответом донор бьёт нас 258 раз против 90.
                  "COALESCE(source,'') <> 'nexus-translation'"]
-        if not sweep:
+        # Свои требования к строкам: {id: «English = Русское»}. Их находит не глоссарий
+        # на воротах, а проход согласованности (inline_names) — по моду целиком, — и
+        # строка при этом может быть «translated»: по отдельности она безупречна.
+        _req_map = {int(k): v for k, v in (req_terms_map or {}).items() if v}
+        if _req_map:
+            where.append("id IN (" + ",".join(str(i) for i in _req_map) + ")")
+        elif not sweep:
             where.append("status='needs_review'" if (blind or fixing_terms)
                          else "status='translated'")
         if scope == "unchecked":
@@ -1989,7 +1997,13 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                 ent = _oc.entity_block(r["original"] or "")
                 if ent:
                     item["entities"] = ent
-            if fixing_terms:
+            if fixing_terms and _req_map:
+                req = _req_map.get(r["id"])
+                if not req:
+                    continue
+                item["current"]   = _clean_current(r["original"], r["translation"])
+                item["req_terms"] = req
+            elif fixing_terms:
                 from translator.validation.terminology import glossary_violations
                 # Тип поля обязателен: имя из реестра требуется только там, где оно и
                 # есть имя. Без него этот проход не увидел бы ни одного из 14 164

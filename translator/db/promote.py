@@ -146,11 +146,28 @@ def lost_names(original: str, stored: str, fresh: str) -> list:
     return lost
 
 
+def _changed_share(a: str, b: str) -> float:
+    """Доля слов, которые правка тронула."""
+    import difflib
+    wa, wb = a.split(), b.split()
+    same = sum(bl.size for bl in difflib.SequenceMatcher(a=wa, b=wb).get_matching_blocks())
+    return 1 - same / max(len(wa), 1)
+
+
 # ── решение ─────────────────────────────────────────────────────────────────
 
 def decide(row, speaker_gender: str | None = None, speaker_pidgin: bool = False):
-    """(True, 'promote') или (False, причина). row — строка таблицы candidates."""
-    if (row["judge"] or "") != "fresh":
+    """(True, 'promote') или (False, причина). row — строка таблицы candidates.
+
+    judge='termfix' — точечная правка имени по заданию прохода согласованности.
+    Судьи у неё нет, поэтому вместо его вердикта проверяется, что правка точечная:
+    правщик, переписавший строку целиком, хуже никакого.
+    """
+    if (row["judge"] or "") == "termfix":
+        if _changed_share(row["rival"] or row["stored_at_arrival"] or "",
+                          row["translation"] or "") > 0.34:
+            return False, "termfix:too_wide"
+    elif (row["judge"] or "") != "fresh":
         return False, f"judge:{row['judge'] or 'none'}"
     if (row["rules_status"] or "") != "translated":
         return False, "rules"

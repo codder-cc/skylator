@@ -202,7 +202,10 @@ def create_job():
                                            skip_layered = options.get("skip_layered"),
                                            from_assignments = options.get("from_assignments"),
                                            req_terms_map = options.get("req_terms_map"),
-                                           base_params = data.get("params"))
+                                           base_params = data.get("params"),
+                                           string_ids = options.get("string_ids"),
+                                           context_parts = options.get("context_parts"),
+                                           trace_full = bool(options.get("trace_full")))
         except ValueError as exc:
             return jsonify({"error": str(exc), "ok": False}), 400
     elif job_type == "validate" and mod_names:
@@ -1719,7 +1722,10 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                              skip_layered=False,
                              from_assignments=None,
                              req_terms_map=None,
-                             base_params=None):
+                             base_params=None,
+                             string_ids=None,
+                             context_parts=None,
+                             trace_full=False):
     """Send stored translations back to the fleet to be checked and corrected.
 
     A review is a translation job with the answer already filled in: the package carries
@@ -1825,8 +1831,14 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         # на воротах, а проход согласованности (inline_names) — по моду целиком, — и
         # строка при этом может быть «translated»: по отдельности она безупречна.
         _req_map = {int(k): v for k, v in (req_terms_map or {}).items() if v}
+        # Эксперимент: ровно эти строки, в любом статусе. Без этого стенд не мог
+        # прогнать через боевой путь заданную выборку — только «по пользе», и две ветки
+        # опыта получали бы разные строки.
+        _ids = [int(i) for i in (string_ids or [])]
         if _req_map:
             where.append("id IN (" + ",".join(str(i) for i in _req_map) + ")")
+        elif _ids:
+            where.append("id IN (" + ",".join(str(i) for i in _ids) + ")")
         elif not sweep:
             where.append("status='needs_review'" if (blind or fixing_terms)
                          else "status='translated'")
@@ -2004,6 +2016,12 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                 ent = _oc.entity_block(r["original"] or "")
                 if ent:
                     item["entities"] = ent
+            # Абляция контекста: оставить только названные части. Всё остальное —
+            # как в бою, поэтому ветки опыта различаются ровно одной частью.
+            if context_parts is not None:
+                for _f in ("speaker", "talk", "style", "entities"):
+                    if _f not in context_parts:
+                        item.pop(_f, None)
             if fixing_terms and _req_map:
                 req = _req_map.get(r["id"])
                 if not req:
@@ -2075,7 +2093,9 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         # Legacy of the Dragonborn переводилась ровно как из мода на мечи.
         try:
             from translator.context import mod_summary as _ms
-            mods = [(mod, strs, _ms.build(repo, mod)) for mod, strs in by_mod.items()]
+            _with_summary = context_parts is None or "summary" in context_parts
+            mods = [(mod, strs, _ms.build(repo, mod) if _with_summary else "")
+                    for mod, strs in by_mod.items()]
         except Exception as exc:                                   # noqa: BLE001
             job.add_log(f"Mod summaries unavailable ({exc}) — dispatching without them")
             mods = [(mod, strs, "") for mod, strs in by_mod.items()]
@@ -2104,6 +2124,17 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         _extra = {}
         if judging:
             _extra["judge"] = True
+        if trace_full:
+            # Полный промпт каждого вызова — в трассу. Только для опытов: в бою хватает
+            # отпечатка, а полный текст на 160 тысячах строк — гигабайты.
+            _extra["trace_full"] = True
+        if context_parts is not None:
+            # Глоссарий и память переводов собираются в dispatch_multi; ключи extra
+            # кладутся в пакет после них и заменяют их.
+            if "terms" not in context_parts:
+                _extra["terminology"] = ""
+            if "tm" not in context_parts:
+                _extra["tm_pairs"] = {}
         if candidates > 1:
             _extra["candidates"] = int(candidates)
             job.add_log(f"Best of {int(candidates)}: each line is asked that many times "

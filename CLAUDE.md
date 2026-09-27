@@ -46,7 +46,8 @@ cd frontend && npm run build     # outputs to frontend/dist/
 ```
 translator/
   config.py               Pydantic config loader (config.yaml)
-  pipeline.py             translate_batch() / get_mod_context() public API
+  pipeline/__init__.py    translate_batch() / get_mod_context() public API
+                          (a pipeline.py beside the package was shadowed by it — never re-add one)
   cli.py                  nolvus-translate CLI entry point
 
   db/                     ← SQLite translation store (NEW)

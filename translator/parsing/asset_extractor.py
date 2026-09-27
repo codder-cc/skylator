@@ -2,7 +2,8 @@
 translator.parsing.asset_extractor — DB → file export for MCM, BSA-MCM, and SWF.
 
 Reads translated strings from SQLite and writes them to the on-disk files that
-cmd_translate_mcm / BSArch / FFDec will subsequently pack.
+ApplyPipeline.run_bsa then packs (BsaStringCache.apply_to_bsa / SwfStringCache.apply_to_swf).
+cmd_translate_mcm is NOT part of apply: it re-translates and would overwrite this export.
 
 Public API:
   apply_mcm_from_db(repo, mod_name, mod_dir, job=None) → int

@@ -218,44 +218,62 @@ class ApplyPipeline:
 
         ROOT = Path(__file__).parent.parent.parent
         sys.path.insert(0, str(ROOT))
-        from scripts.translate_mcm import cmd_translate_mcm
 
         bsa_files  = list(mod_dir.glob("*.bsa"))
         loose_mcm  = list(mod_dir.rglob("interface/translations/*_english.txt"))
+        # SWF входит в условие наравне с BSA и MCM. Раньше мод, у которого есть только
+        # loose .swf (типичный UI-мод), выходил отсюда с «Nothing to translate», не дойдя
+        # ни до экспорта из БД, ни до FFDec, — его swf:-строки не попадали в игру никогда.
+        swf_loose  = [p for p in mod_dir.rglob("*.swf") if p.is_file()]
 
-        if not bsa_files and not loose_mcm:
-            job.add_log(f"No BSA archives or MCM translation files found in {mod_name}")
+        if not bsa_files and not loose_mcm and not swf_loose:
+            job.add_log(f"No BSA archives, MCM translation files or SWF files found in {mod_name}")
             jm.update_progress(job, 1, 1, "Nothing to translate")
             return
 
-        job.add_log(f"Found {len(bsa_files)} BSA archive(s), {len(loose_mcm)} loose MCM file(s)")
+        job.add_log(f"Found {len(bsa_files)} BSA archive(s), {len(loose_mcm)} loose MCM file(s), "
+                    f"{len(swf_loose)} SWF file(s)")
         jm.update_progress(job, 0, 1, "Applying MCM / BSA translations from DB...")
+
+        from translator.web.asset_cache import BsaStringCache, SwfStringCache
+        _cache_root = cfg.paths.temp_dir if cfg.paths.temp_dir else ROOT / "temp"
+        bsarch = getattr(cfg.paths, "bsarch_exe", None)
+        ffdec = getattr(cfg.paths, "ffdec_jar", None)
+        bsa_cache = BsaStringCache(cache_root=_cache_root,
+                                   bsarch_exe=str(bsarch) if bsarch else None)
+        swf_cache = SwfStringCache(cache_root=_cache_root,
+                                   ffdec_jar=str(ffdec) if ffdec else None)
 
         # Export translations from SQLite → *_russian.txt / _ru.txt
         if repo and not dry_run:
             try:
-                from translator.web.asset_cache import BsaStringCache, SwfStringCache
-                _cache_root = cfg.paths.temp_dir if cfg.paths.temp_dir else ROOT / "temp"
-                bsa_cache = BsaStringCache(
-                    cache_root=_cache_root,
-                    bsarch_exe=str(cfg.paths.bsarch_exe) if cfg.paths.bsarch_exe else None,
-                )
-                swf_cache = SwfStringCache(
-                    cache_root=_cache_root,
-                    ffdec_jar=str(cfg.paths.ffdec_jar) if cfg.paths.ffdec_jar else None,
-                )
                 apply_all_assets(repo, mod_name, mod_dir, bsa_cache, swf_cache, job)
             except Exception as exc:
                 job.add_log(f"DB export warning: {exc}")
                 log.exception("DB export failed for %s", mod_name)
 
-        try:
-            cmd_translate_mcm(mod_dir, dry_run=dry_run)
-            job.add_log("MCM/BSA translation complete")
-        except Exception as exc:
-            job.add_log(f"MCM/BSA translation error: {exc}")
-            log.exception("translate_bsa failed for %s", mod_name)
-            raise
+        # Здесь раньше стоял вызов scripts.translate_mcm.cmd_translate_mcm. Это не
+        # экспорт, а генерация: он заново читал *_english.txt, гнал его через модель и
+        # переписывал *_russian.txt, только что выгруженный из БД строкой выше. Перевод
+        # из базы (ручная правка, донор, судья) терялся, а применение молча запускало
+        # инференс. Пока translator.pipeline был затенён пакетом, translate_batch падал
+        # с ImportError и обёртка возвращала оригиналы — то есть в *_russian.txt уходил
+        # английский. Применение генерацию не вызывает: переводить — задача
+        # translate_mod, сюда доходит только то, что уже лежит в БД.
+        #
+        # cmd_translate_mcm заодно перепаковывал BSA. Эту часть теперь делает
+        # BsaStringCache.apply_to_bsa: накладывает на архив *_russian.txt, которые
+        # apply_bsa_mcm_from_db записал в кэш, и больше ничего.
+        if not dry_run:
+            for bsa in bsa_files:
+                try:
+                    if bsa_cache.available() and bsa_cache.apply_to_bsa(
+                            bsa, mod_name, cfg.paths.mods_dir,
+                            getattr(cfg.paths, "backup_dir", None) or _cache_root / "backup"):
+                        job.add_log(f"BSA {bsa.name}: MCM translations repacked from DB")
+                except Exception as exc:
+                    job.add_log(f"BSA {bsa.name}: repack error — {exc}")
+                    log.exception("apply_to_bsa failed for %s", bsa)
 
         # B — translate BSA-packed localized .STRINGS files (best-effort, BSArch-gated).
         if repo and not dry_run:
@@ -264,27 +282,30 @@ class ApplyPipeline:
             except Exception as exc:
                 job.add_log(f"BSA localized-strings warning: {exc}")
 
-        # SWF translation (if FFDec configured)
-        ffdec = getattr(getattr(cfg, "tools", None), "ffdec_jar", None)
+        # SWF (if FFDec configured).
+        # Путь к FFDec берётся из cfg.paths.ffdec_jar — там его хранит PathsConfig и
+        # там же его читают кэши и seed_assets. Этот блок читал cfg.tools.ffdec_jar:
+        # такой секции в конфигурации нет, getattr тихо давал None, и ветка SWF не
+        # исполнялась ни разу при правильно настроенном FFDec.
+        #
+        # Раньше сюда же добавлялись .swf из temp_dir/<bsa.stem> — каталога, который
+        # распаковывал cmd_translate_mcm и сам же удалял в конце; при этом переведённый
+        # там SWF ни во что не перепаковывался. Эта ветка убрана вместе с вызовом.
         if ffdec and Path(ffdec).exists():
-            swf_files = []
-            for bsa in bsa_files:
-                extract_dir = cfg.paths.temp_dir / bsa.stem
-                swf_files += list(extract_dir.rglob("*.swf"))
-            swf_files += list(mod_dir.rglob("*.swf"))
-            if swf_files:
-                job.add_log(f"Found {len(swf_files)} SWF file(s) — reimporting with FFDec...")
-                for swf in swf_files:
+            if swf_loose:
+                job.add_log(f"Found {len(swf_loose)} SWF file(s) — reimporting with FFDec...")
+                for swf in swf_loose:
                     try:
+                        if self._import_swf_from_db(swf_cache, swf, mod_name, mod_dir, dry_run):
+                            job.add_log(f"  SWF {swf.name}: translations imported from DB")
+                            continue
                         _translate_swf_texts(job, swf, ffdec, cfg, dry_run=dry_run)
                     except Exception as exc:
                         job.add_log(f"  SWF {swf.name} error: {exc}")
-        else:
-            swf_loose = list(mod_dir.rglob("*.swf"))
-            if swf_loose:
-                job.add_log(
-                    f"Found {len(swf_loose)} SWF file(s) — configure tools.ffdec_jar in config.yaml"
-                )
+        elif swf_loose:
+            job.add_log(
+                f"Found {len(swf_loose)} SWF file(s) — configure paths.ffdec_jar in config.yaml"
+            )
 
         jm.update_progress(job, 1, 1, "BSA/SWF translation done")
         job.result = f"BSA/SWF translated: {mod_name}"
@@ -297,6 +318,33 @@ class ApplyPipeline:
                 log.warning("stats recompute failed for %s: %s", mod_name, exc)
 
     # ── Helpers ──────────────────────────────────────────────────────────────
+
+    def _import_swf_from_db(self, swf_cache, swf: Path, mod_name: str, mod_dir: Path,
+                            dry_run: bool) -> bool:
+        """Вернуть в SWF строки, которые apply_swf_from_db выгрузил из БД в кэш.
+
+        apply_swf_from_db пишет {chid}_ru.txt в кэш SwfStringCache, но до сих пор
+        ничто не импортировало их обратно в .swf — экспорт уходил в пустоту, а FFDec
+        запускался только из _translate_swf_texts, то есть через модель. Если для
+        этого SWF в кэше есть переводы из базы, импортируем ровно их и модель не
+        трогаем. False — переводов в кэше нет (или импорт не удался), и решение
+        остаётся за вызывающим.
+
+        swf_rel строится так же, как в ModScanner при заведении swf:-ключей, иначе
+        каталог кэша не совпадёт.
+        """
+        if dry_run:
+            return False
+        try:
+            swf_rel = str(swf.relative_to(mod_dir)).replace("\\", "/")
+        except ValueError:
+            swf_rel = swf.name
+        cd = swf_cache._cache_dir(mod_name, swf_rel)
+        if not cd.is_dir() or not any(cd.glob("*_ru.txt")):
+            return False
+        backup_dir = getattr(self._cfg.paths, "backup_dir", None) or cd.parent / "backup"
+        return swf_cache.apply_to_swf(swf, mod_name, swf_rel, self._cfg.paths.mods_dir,
+                                      backup_dir)
 
     def _should_apply(self, mod_name: str, deploy_mode: DeployMode, job) -> bool:
         if deploy_mode == DeployMode.ALL:
@@ -402,10 +450,19 @@ def _translate_swf_texts(job, swf_path: Path, ffdec_jar: str, cfg, dry_run: bool
         out_swf = swf_path.parent / f"_translated_{swf_path.name}"
         try:
             import_texts(ffdec_jar, swf_path, texts_dir, out_swf)
-            if out_swf.exists():
-                swf_path.replace(out_swf)
+            if out_swf.exists() and out_swf.stat().st_size > 0:
+                # Направление важно: переведённый файл встаёт на место оригинала.
+                # Было swf_path.replace(out_swf) — это переносит ОРИГИНАЛ поверх
+                # переведённого: путь мода исчезал, рядом оставался английский
+                # _translated_*.swf, и игра теряла SWF целиком. Та же ошибка раньше
+                # была исправлена в SwfStringCache.apply_to_swf, а здесь осталась.
+                out_swf.replace(swf_path)
                 job.add_log(f"  SWF {swf_path.name}: reimported OK")
         except Exception as exc:
             job.add_log(f"  SWF {swf_path.name}: reimport failed — {exc}")
+        finally:
+            # Недописанный FFDec-ом файл не оставляем рядом с оригиналом.
+            if out_swf.exists():
+                out_swf.unlink()
 
     shutil.rmtree(texts_dir, ignore_errors=True)

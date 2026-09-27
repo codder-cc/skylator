@@ -169,14 +169,24 @@ class BsaStringCache:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(ru_cached, dst)
 
-            # Repack
+            # Repack во временный файл и атомарная подмена. Раньше BSArch писал прямо в
+            # живой архив: таймаут или отмена посреди упаковки оставляли в моде
+            # обрубок .bsa. Пока этот метод никто не вызывал, это было неважно; теперь
+            # им перепаковывает ApplyPipeline.run_bsa (вместо cmd_translate_mcm, у
+            # которого подмена уже была атомарной).
+            tmp_out = bsa_path.with_name(bsa_path.name + ".tmp")
+            if tmp_out.exists():
+                tmp_out.unlink()
             r = subprocess.run(
-                [self.bsarch_exe, "pack", str(work_dir), str(bsa_path), "-sse", "-mt"],
+                [self.bsarch_exe, "pack", str(work_dir), str(tmp_out), "-sse", "-mt"],
                 capture_output=True, timeout=300,
             )
-            if r.returncode != 0:
+            if r.returncode != 0 or not tmp_out.exists() or tmp_out.stat().st_size == 0:
                 log.warning("BSA apply repack failed for %s", bsa_path.name)
+                if tmp_out.exists():
+                    tmp_out.unlink()
                 return False
+            tmp_out.replace(bsa_path)
 
             log.info("BsaStringCache: applied %d russian files to %s",
                      len(ru_files), bsa_path.name)

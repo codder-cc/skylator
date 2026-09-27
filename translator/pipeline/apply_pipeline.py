@@ -299,7 +299,12 @@ class ApplyPipeline:
                         if self._import_swf_from_db(swf_cache, swf, mod_name, mod_dir, dry_run):
                             job.add_log(f"  SWF {swf.name}: translations imported from DB")
                             continue
-                        _translate_swf_texts(job, swf, ffdec, cfg, dry_run=dry_run)
+                        # Применение не генерирует никогда: оно переносит в игру то,
+                        # что лежит в базе. Раньше SWF без строк в базе переводился здесь
+                        # моделью — а в корпусе SWF-строк нет вовсе, то есть применение
+                        # запускало бы перевод каждого SWF мимо слоя кандидатов и ворот.
+                        job.add_log(f"  SWF {swf.name}: no translations in DB — skipped "
+                                    f"(run seed_assets and translate it first)")
                     except Exception as exc:
                         job.add_log(f"  SWF {swf.name} error: {exc}")
         elif swf_loose:

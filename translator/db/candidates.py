@@ -245,7 +245,9 @@ def judge_forbids(judge: str | None) -> bool:
 
     Пустой вердикт (судьи не было) ничего не запрещает: тогда решают ворота, как раньше.
     """
-    return (judge or "") in ("stored", "unsure")
+    # «invalid» — ответ судьи не читается как A или B. Это не «судьи не было», а
+    # «судья не решил»: пропускать новый текст по нему нельзя.
+    return (judge or "") in ("stored", "unsure", "invalid")
 
 
 def set_gate(repo, cand_id: int | None, gate: str) -> None:

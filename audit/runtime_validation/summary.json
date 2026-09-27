@@ -1,0 +1,47 @@
+{
+  "existing": {
+    "total": 1607,
+    "passed": 1606,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 1
+  },
+  "runtime": {
+    "total": 38,
+    "passed": 9,
+    "failed": 29,
+    "errors": 0,
+    "skipped": 0,
+    "failed_contracts": [
+      "test_mlx_honors_sampling_overrides[top_k-7]",
+      "test_mlx_honors_sampling_overrides[repetition_penalty-1.17]",
+      "test_contexts_are_not_deduplicated_away",
+      "test_field_type_survives_manifest",
+      "test_each_record_type_gets_its_own_style",
+      "test_context_number_is_rebound_on_single_retry",
+      "test_judge_rejects_malformed_output[Both translations are equally good.]",
+      "test_failed_assignment_stays_resumable",
+      "test_generation_limit_survives_agent_to_candidate",
+      "test_pull_does_not_advance_past_failed_candidate",
+      "test_pull_exception_does_not_bypass_candidate_layer",
+      "test_push_and_pull_use_same_job_identity",
+      "test_original_mismatch_cannot_be_promoted",
+      "test_official_authority_applies_to_promoted_source",
+      "test_termfix_rejects_unrelated_insertions",
+      "test_layer_setting_read_failure_does_not_enable_apply",
+      "test_duplicate_write_has_history",
+      "test_checkpoint_restores_provenance",
+      "test_blind_translation_does_not_receive_its_rival_through_memory",
+      "test_rejected_translation_is_not_used_as_translation_memory",
+      "test_entities_for_every_line_reach_generation",
+      "test_each_single_retry_retains_its_own_finish_reason",
+      "test_mcm_apply_preserves_database_translation",
+      "test_loose_swf_only_mod_reaches_export",
+      "test_legacy_public_pipeline_api_is_importable",
+      "test_swf_import_replaces_original_with_translated_file",
+      "test_swf_uses_configured_paths_ffdec",
+      "test_delayed_result_records_producer_model_not_current_worker_model",
+      "test_review_http_params_reach_dispatch"
+    ]
+  }
+}

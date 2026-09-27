@@ -235,8 +235,12 @@ def test_loose_swf_only_mod_imports_db_translations_via_paths_ffdec(tmp_path, re
     legacy.assert_not_called()
 
 
-def test_swf_without_db_rows_falls_back_with_configured_ffdec(tmp_path, repo, monkeypatch):
-    """Без swf:-строк в базе остаётся старый FFDec-путь — и он видит paths.ffdec_jar."""
+def test_swf_without_db_rows_is_skipped_not_generated(tmp_path, repo, monkeypatch):
+    """Без swf:-строк в базе применение SWF пропускает, а не переводит моделью.
+
+    Применение переносит в игру то, что лежит в базе. В корпусе SWF-строк нет вовсе,
+    и прежний запасной путь запускал бы перевод каждого SWF мимо слоя и ворот.
+    """
     from translator.pipeline import apply_pipeline
 
     mod = tmp_path / "mods" / MOD
@@ -247,10 +251,10 @@ def test_swf_without_db_rows_falls_back_with_configured_ffdec(tmp_path, repo, mo
     legacy = MagicMock()
     monkeypatch.setattr(apply_pipeline, "_translate_swf_texts", legacy)
 
-    _run(_cfg(tmp_path, ffdec_jar=jar), repo)
+    job = _run(_cfg(tmp_path, ffdec_jar=jar), repo)
 
-    legacy.assert_called_once()
-    assert legacy.call_args.args[2] == jar
+    legacy.assert_not_called()
+    assert (mod / "audit.swf").read_bytes() == b"x", "SWF не тронут"
 
 
 def test_legacy_swf_helper_puts_translated_file_on_original_path(tmp_path, monkeypatch):

@@ -320,7 +320,8 @@ def plan(con, since: float = 0.0) -> list:
         # Судья не уверен, но хранимый текст сломан по правилам, а новый чист: «строго
         # лучше» здесь решают правила, а не вкус. Если судья прямо выбрал хранимый —
         # не спорим. Все фильтры (род, ломаная речь, имена) действуют и здесь.
-        if why in ("judge:unsure", "label:convention") and r["rules_status"] == "translated"                 and stored_is_broken(r, terms):
+        if (why in ("judge:unsure", "judge:invalid", "label:convention")
+                and r["rules_status"] == "translated" and stored_is_broken(r, terms)):
             patched = dict(r)
             patched["judge"] = "fresh"
             patched["_stored_broken"] = True

@@ -385,7 +385,7 @@ def test_v6_agent_db_migrates_in_place_keeping_pending_work(tmp_path, monkeypatc
 
     s = ResultStore(path)
     try:
-        assert s.get_meta("schema_version") == str(SCHEMA_VERSION) == "7"
+        assert s.get_meta("schema_version") == str(SCHEMA_VERSION) == "8"
         assert [p["string_id"] for p in s.pending_items(AID)] == [2]
         old = payload(s.undelivered())
         assert len(old) == 1 and "trace" not in old[0] and old[0]["model"] == "old-model"

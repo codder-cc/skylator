@@ -32,7 +32,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # Wire-protocol version negotiated with the master at registration. Over a months-long
 # run an OTA update may change payloads on one side; both ends carry this so a mismatch
@@ -97,6 +97,12 @@ _AGENT_MIGRATIONS: list[tuple[int, list[str]]] = [
             seconds REAL, model TEXT, code_rev TEXT, created_at REAL)""",
          "ALTER TABLE agent_results ADD COLUMN trace_id INTEGER",
          "ALTER TABLE agent_results ADD COLUMN judge_trace_ids TEXT"]),
+    # Сцена: строка знает, какому разговору она принадлежит и какое в нём её место.
+    # Режим сцены собирает батч из ОДНОГО разговора по порядку проигрывания, а батч
+    # берётся из манифеста — поле, не доехавшее сюда, превратило бы сцену обратно в
+    # набор отдельных реплик, и сказать об этом было бы некому.
+    (8, ["ALTER TABLE agent_manifest ADD COLUMN scene TEXT",
+         "ALTER TABLE agent_manifest ADD COLUMN scene_pos INTEGER"]),
 ]
 
 _SCHEMA = """
@@ -136,6 +142,8 @@ CREATE TABLE IF NOT EXISTS agent_manifest (
     entities      TEXT,                          -- имена, которые игра уже назвала
     talk          TEXT,                          -- соседние реплики разговора
     rival         TEXT,                          -- хранимый перевод для судьи
+    scene         TEXT,                          -- тема разговора «plugin:FORMID», режим сцены
+    scene_pos     INTEGER,                       -- место в разговоре: тема 0, ответы 1..n
     done          INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (assignment_id, string_id)
 );
@@ -325,6 +333,7 @@ class ResultStore:
                 it.get("rec_type"), it.get("field_type"),
                 it.get("speaker"), it.get("style"), it.get("entities"),
                 it.get("talk"), it.get("rival"),
+                it.get("scene"), it.get("scene_pos"),
             ))
 
         def _do():
@@ -332,8 +341,8 @@ class ResultStore:
                 """INSERT OR IGNORE INTO agent_manifest
                    (assignment_id, string_id, string_hash, original, mod_name, esp_name,
                     str_key, current, req_terms, rec_type, field_type, speaker, style,
-                    entities, talk, rival)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    entities, talk, rival, scene, scene_pos)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 rows,
             )
 
@@ -351,7 +360,7 @@ class ResultStore:
             cur = self._conn.execute(
                 """SELECT string_id, string_hash, original, mod_name, esp_name, str_key,
                           current, req_terms, rec_type, field_type, speaker, style,
-                          entities, talk, rival
+                          entities, talk, rival, scene, scene_pos
                    FROM agent_manifest WHERE assignment_id=? AND done=0
                    ORDER BY string_id""",
                 (assignment_id,),

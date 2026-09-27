@@ -189,14 +189,125 @@ def group_pending(pending: list, split_mods: bool) -> list:
     return [b for g in groups.values() for b in g]
 
 
-def fit_context(batch: list) -> list:
-    """Укоротить батч так, чтобы контекст КАЖДОЙ его строки поместился в промпт."""
+# Режим сцены. Обычный батч собирается по говорящему, и разговор доходит до модели
+# только подсказкой «вот что сказано рядом». Сцена — это тема DIAL целиком: реплика
+# игрока и ответы НПС в порядке проигрывания, одним нумерованным батчем. Опыт, ради
+# которого режим заведён, — узнать, держит ли модель имена, обращение и тон на
+# протяжении разговора лучше, когда видит его весь, а не кусками по говорящему.
+#
+# Десять строк — потолок одного окна: разговор длиннее режется на идущие подряд окна,
+# а не выбрасывается. Больше десяти — это уже не сцена, а несколько веток одной темы,
+# и промпт с карточкой на каждую строку перестаёт помещаться в окно модели.
+_SCENE_MAX_LINES = 10
+
+_SCENE_NOTE = ("These lines are one conversation in order, as they are heard in the game.{who} "
+               "Keep names, forms of address and tone consistent across the whole "
+               "conversation; translate each line on its own number.")
+# Только когда первая строка окна — действительно реплика игрока. Второе окно длинной
+# сцены или разговор, чья тема не попала в корпус, начинаются с ответа, и сказать
+# «строка 1 — это игрок» значило бы соврать модели ровно о том, чей там род.
+_SCENE_WHO = " Line 1 is what the player says; the lines after it are the answers."
+
+
+def _scene_note(batch: list) -> str:
+    first = batch[0] if batch else {}
+    opens = (_scene_pos(first) == 0 and (first.get("rec_type") or "").strip() == "DIAL")
+    return _SCENE_NOTE.format(who=_SCENE_WHO if opens else "")
+
+
+def scene_of(b: dict) -> str:
+    """Тема разговора строки или пустая строка — если строка ни к какой сцене не отнесена."""
+    return (b.get("scene") or "").strip()
+
+
+def _scene_pos(b: dict) -> int:
+    try:
+        return int(b.get("scene_pos") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def live_scenes(pending: list) -> set:
+    """Сцены, у которых в работе хотя бы две строки.
+
+    Разговор из одной реплики — не разговор: заметка «эти строки — одна беседа по
+    порядку» над единственной строкой была бы неправдой, а её собственный разговор-
+    подсказка пропал бы. Такая строка идёт обычным путём. Так бывает, когда запрос
+    назвал одну реплику без scene_expand, и на втором проходе, когда остальные строки
+    сцены уже сделаны.
+    """
+    counts: dict = {}
+    for b in pending:
+        sc = scene_of(b)
+        if sc:
+            counts[sc] = counts.get(sc, 0) + 1
+    return {sc for sc, n in counts.items() if n >= 2}
+
+
+def group_scenes(pending: list, split_mods: bool) -> list:
+    """Порядок работы в режиме сцены: каждая сцена подряд и по порядку проигрывания.
+
+    Манифест читается ORDER BY string_id, а это порядок хоста, не игры: ответ может
+    лежать в корпусе раньше темы. Поэтому внутри сцены порядок задаёт scene_pos,
+    а сами сцены идут по первому появлению. Строки без живой сцены (не диалог, диалог,
+    которого нет в графе, или единственная строка своей сцены) идут следом и
+    группируются как всегда — режим сцены их не касается.
+    """
+    live = live_scenes(pending)
+    scenes: dict = {}
+    rest: list = []
+    for b in pending:
+        sc = scene_of(b)
+        if sc in live:
+            scenes.setdefault(sc, []).append(b)
+        else:
+            rest.append(b)
+    ordered = [b for g in scenes.values()
+               for b in sorted(g, key=lambda x: (_scene_pos(x), x.get("string_id") or 0))]
+    return ordered + group_pending(rest, split_mods)
+
+
+def _card_lines(batch: list) -> list[str]:
+    """Карточки говорящего/собеседника по номеру строки — для батча, где они разные.
+
+    В сцене у строк разные люди: реплику игрока произносит игрок, обращаясь к НПС,
+    а ответы — сам НПС. Одна карточка на батч описала бы одного из них всем, поэтому
+    каждая карточка стоит под номером своей строки, так же как разговор. Одинаковые
+    карточки не повторяются — номера собираются в одну пометку «(2, 3)», модели это
+    говорит то же самое и стоит вдвое меньше.
+    """
+    order: list[str] = []
+    nums: dict = {}
+    for n, b in enumerate(batch, 1):
+        card = (b.get("speaker") or "").strip()
+        if not card:
+            continue
+        if card not in nums:
+            order.append(card)
+            nums[card] = []
+        nums[card].append(n)
+    out: list[str] = []
+    for card in order:
+        mark = "(" + ", ".join(str(n) for n in nums[card]) + ")"
+        first, *more = card.splitlines()
+        out.append(f"  {mark} {first}")
+        pad = " " * (len(mark) + 3)
+        out.extend(pad + ln for ln in more)
+    return out
+
+
+def fit_context(batch: list, *, with_talk: bool = True) -> list:
+    """Укоротить батч так, чтобы контекст КАЖДОЙ его строки поместился в промпт.
+
+    `with_talk=False` — для сцены: разговор внутри неё не прикладывается (сцена сама и
+    есть разговор), и считать его строки в предел значило бы дробить сцену зря.
+    """
     ents: set = set()
     talk = 0
     for n, b in enumerate(batch):
         e = b.get("entities") or ""
         new_ents = ents | ({e} if e else set())
-        new_talk = talk + len(_talk_lines(b))
+        new_talk = talk + (len(_talk_lines(b)) if with_talk else 0)
         if n and (len(new_ents) > _ENTITY_BLOCKS_PER_BATCH
                   or new_talk > _TALK_LINES_PER_BATCH):
             return batch[:n]
@@ -231,13 +342,23 @@ def _tm_block(batch: list, tm_pairs: dict) -> str:
 
 
 def build_batch_context(batch: list, *, context: str = "", mods_context: dict | None = None,
-                        tm_pairs: dict | None = None) -> str:
+                        tm_pairs: dict | None = None, scene: bool = False) -> str:
     """Весь контекст промпта для ЭТИХ строк, пронумерованный по их месту в батче.
 
     Одна функция на батч и на одиночный повтор. Раньше повтор брал готовый контекст
     всего батча: строка становилась номером 1, а её разговор оставался под номером 2,
     и рядом стоял разговор первой строки — модель переводила реплику по чужой беседе.
+
+    `scene=True` — батч есть один разговор по порядку (режим сцены). Тогда карточки
+    идут по номерам строк, а не одной на батч, примеры стиля — все различные, а не
+    первой строки, и подсказка «Conversation around these lines» не прикладывается:
+    разговор перед моделью целиком, и пересказ его соседей по кускам только
+    перечислил бы те же реплики второй раз. Без флага всё собирается как раньше,
+    байт в байт.
     """
+    if scene:
+        return _scene_context(batch, context=context, mods_context=mods_context or {},
+                              tm_pairs=tm_pairs or {})
     mods_context = mods_context or {}
     originals = [b.get("original") or "" for b in batch]
     # Per-mod context for multi-mod packages. Skipped when every string in the
@@ -292,6 +413,45 @@ def build_batch_context(batch: list, *, context: str = "", mods_context: dict | 
                      + "\n".join(talk_lines)).strip()
     tm_block = _tm_block(batch, tm_pairs or {})
     return (batch_ctx + "\n" + tm_block).strip() if tm_block else batch_ctx
+
+
+def _scene_context(batch: list, *, context: str, mods_context: dict, tm_pairs: dict) -> str:
+    """Контекст батча-сцены: заметка о разговоре, карточки по номерам, общие блоки.
+
+    Порядок тот же, что у обычного батча — сперва кто говорит, потом о моде, потом
+    стиль, имена и память, — чтобы опыт отличался от обычного режима составом
+    батча, а не перестановкой частей промпта.
+
+    Подсказки о типе записи нет: в сцене тема (DIAL) и ответы (INFO) — разные типы,
+    и общая подсказка по первой строке была бы неверна для остальных. Её роль берёт
+    заметка о сцене, которая как раз говорит, что это за строки.
+    """
+    parts: list[str] = [_scene_note(batch)]
+    cards = _card_lines(batch)
+    if cards:
+        parts.append("Who speaks each line:\n" + "\n".join(cards))
+    originals = [b.get("original") or "" for b in batch]
+    all_short = all(len(o) <= _SHORT_STRING_CHARS for o in originals)
+    # Описание мода — по правилу обычного батча. Сцена может перейти границу мода
+    # (мод дописывает ответы к чужой теме); описание берётся по первой строке, как и
+    # раньше, — это описание мода, чья тема открывает разговор.
+    if not all_short:
+        mod_ctx = (mods_context.get((batch[0].get("mod_name") or "")) or context
+                   if mods_context else context)
+        if mod_ctx:
+            parts.append(mod_ctx)
+    # Примеры стиля — по типу записи, а в сцене их два. Каждый различный — один раз.
+    seen: set = set()
+    for field in ("style", "entities"):
+        for b in batch:
+            line = b.get(field) or ""
+            if line and line not in seen:
+                seen.add(line)
+                parts.append(line)
+    tm_block = _tm_block(batch, tm_pairs)
+    if tm_block:
+        parts.append(tm_block)
+    return "\n".join(p.strip() for p in parts if p.strip()).strip()
 
 
 # Ответ судьи — одна буква. Всё прочее — не ответ. Раньше бралась первая A или B где
@@ -586,6 +746,9 @@ class OfflineTranslateRunner:
         out: list = []
         reasons: list = []
         traces: list = []
+        # Строка сцены, оставшись одна, переводится как обычная: у неё своя карточка
+        # и свой разговор под номером (1). Сцены из одной строки не бывает, а заметка
+        # «это разговор по порядку» над единственной строкой была бы неправдой.
         for b in batch:
             if self._stop:
                 out.extend([""] * (len(batch) - len(out)))
@@ -650,6 +813,9 @@ class OfflineTranslateRunner:
         # the text at hand. Was a hard 4 for everything, short names included.
         batch_size_cap  = int(raw_params.get("batch_size") or _BATCH_MAX_ITEMS)
         infer_params    = InferenceParams.from_dict(raw_params)
+        # Режим сцены включается пакетом, как судья. Без флага поля scene у строк
+        # ничего не значат, и сборка батча — прежняя.
+        scene_mode      = bool(meta.get("scene"))
 
         passes = 0
         while not self._stop:
@@ -657,7 +823,10 @@ class OfflineTranslateRunner:
             if not pending:
                 break
             # Строки с одним batch_key — подряд, чтобы каждый батч был однороден.
-            pending = group_pending(pending, bool(mods_context))
+            # В режиме сцены — сначала сцены, каждая по порядку проигрывания.
+            pending = (group_scenes(pending, bool(mods_context)) if scene_mode
+                       else group_pending(pending, bool(mods_context)))
+            live = live_scenes(pending) if scene_mode else set()
             passes += 1
             if passes > MAX_PASSES:
                 log.warning("OfflineTranslateRunner[%s]: giving up on %d strings after %d passes",
@@ -694,21 +863,44 @@ class OfflineTranslateRunner:
                     log.info("OfflineTranslateRunner[%s]: back inside working hours, resuming",
                              self._aid[:8])
 
-                batch     = pending[i: i + plan_batch(pending, i, batch_size_cap)]
-                # Батч — ведущий отрезок строк с одним batch_key: один мод (from 2c9c1e4,
-                # когда в пакете несколько модов), один говорящий, один стиль, один тип
-                # записи и поля. Карточка персонажа описывает ОДНОГО, примеры стиля — ОДИН
-                # род записей, и батч, смешавший два, получил бы их от первой строки.
-                # group_pending выше поставил такие строки подряд, так что обрезание ничего
-                # не дробит без нужды.
-                if batch:
-                    lead_key = batch_key(batch[0], bool(mods_context))
-                    end = 1
-                    while end < len(batch) and batch_key(batch[end], bool(mods_context)) == lead_key:
+                lead_scene = scene_of(pending[i]) if live else ""
+                if lead_scene not in live:
+                    lead_scene = ""
+                if lead_scene:
+                    # Батч-сцена: подряд идущие строки ОДНОГО разговора, не больше окна.
+                    # Говорящий, стиль и тип записи в нём разные намеренно — карточки
+                    # идут по номерам строк. Бюджет символов plan_batch здесь не режет:
+                    # разговор, разрезанный посреди реплики, — уже не сцена; потолок
+                    # задаёт окно и, если он меньше, настроенный размер батча.
+                    window = max(1, min(_SCENE_MAX_LINES, batch_size_cap))
+                    end = i
+                    while (end < len(pending) and end - i < window
+                           and scene_of(pending[end]) == lead_scene):
                         end += 1
-                    batch = batch[:end]
-                # И так, чтобы контекст каждой строки поместился целиком (fit_context).
-                batch = fit_context(batch)
+                    batch = fit_context(pending[i:end], with_talk=False)
+                    # Хвост длинной сцены, отрезанный окном до одной строки, — уже не
+                    # разговор: он идёт с обычным контекстом, со своей подсказкой-беседой.
+                    if len(batch) < 2:
+                        lead_scene = ""
+                else:
+                    batch = pending[i: i + plan_batch(pending, i, batch_size_cap)]
+                    # Батч — ведущий отрезок строк с одним batch_key: один мод (from 2c9c1e4,
+                    # когда в пакете несколько модов), один говорящий, один стиль, один тип
+                    # записи и поля. Карточка персонажа описывает ОДНОГО, примеры стиля — ОДИН
+                    # род записей, и батч, смешавший два, получил бы их от первой строки.
+                    # group_pending выше поставил такие строки подряд, так что обрезание ничего
+                    # не дробит без нужды. В режиме сцены обычный батч к тому же кончается
+                    # перед первой строкой сцены: её место — в своём разговоре.
+                    if batch:
+                        lead_key = batch_key(batch[0], bool(mods_context))
+                        end = 1
+                        while (end < len(batch)
+                               and batch_key(batch[end], bool(mods_context)) == lead_key
+                               and scene_of(batch[end]) not in live):
+                            end += 1
+                        batch = batch[:end]
+                    # И так, чтобы контекст каждой строки поместился целиком (fit_context).
+                    batch = fit_context(batch)
                 originals = [b.get("original") or "" for b in batch]
                 # A review package carries the translation already stored. Present it and
                 # the model corrects rather than translates; absent, nothing changes.
@@ -721,7 +913,8 @@ class OfflineTranslateRunner:
 
                 full_context = build_batch_context(batch, context=context,
                                                    mods_context=mods_context,
-                                                   tm_pairs=tm_pairs)
+                                                   tm_pairs=tm_pairs,
+                                                   scene=bool(lead_scene))
 
                 prompt = build_prompt(
                     texts           = originals,

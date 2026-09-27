@@ -120,25 +120,46 @@ def smart_partition(strings: list[dict], agents: list[dict]) -> dict:
     total_cost = sum(_cost(s) for s in strings)
     rem = {a["label"]: total_cost * max(a.get("weight") or 0, 0.1) / total_w for a in agents}
 
-    long_s  = sorted((s for s in strings if _is_long(s)),
-                     key=lambda s: len(s.get("original") or ""), reverse=True)
-    short_s = [s for s in strings if not _is_long(s)]
+    # Единица раздачи — строка, а в режиме сцены — сцена целиком. Сцена, разложенная
+    # по двум машинам, переводилась бы двумя половинами, и ни одна не видела бы
+    # разговора целиком — ровно того, что режим измеряет. Без полей scene каждая
+    # единица — одна строка, и раскладка прежняя до порядка.
+    units: list[list[dict]] = []
+    by_scene: dict[str, list[dict]] = {}
+    for s in strings:
+        sc = (s.get("scene") or "").strip()
+        if not sc:
+            units.append([s])
+        elif sc in by_scene:
+            by_scene[sc].append(s)
+        else:
+            by_scene[sc] = [s]
+            units.append(by_scene[sc])
+
+    def u_long(u):
+        return any(_is_long(s) for s in u)
+
+    def u_len(u):
+        return max(len(s.get("original") or "") for s in u)
+
+    long_s  = sorted((u for u in units if u_long(u)), key=u_len, reverse=True)
+    short_s = [u for u in units if not u_long(u)]
 
     by_cap    = sorted(agents, key=lambda a: (a.get("capability") or 0, a.get("weight") or 0), reverse=True)
     by_weight = sorted(agents, key=lambda a: (a.get("weight") or 0), reverse=True)
 
-    def place(s, order):
-        c = _cost(s)
+    def place(u, order):
+        c = sum(_cost(s) for s in u)
         chosen = next((a for a in order if rem[a["label"]] >= c), None)
         if chosen is None:                       # all at/over target → least-loaded
             chosen = max(order, key=lambda a: rem[a["label"]])
-        buckets[chosen["label"]].append(s)
+        buckets[chosen["label"]].extend(u)
         rem[chosen["label"]] -= c
 
-    for s in long_s:                             # strongest agents first → big-model routing
-        place(s, by_cap)
-    for s in short_s:                            # fastest agents first → throughput
-        place(s, by_weight)
+    for u in long_s:                             # strongest agents first → big-model routing
+        place(u, by_cap)
+    for u in short_s:                            # fastest agents first → throughput
+        place(u, by_weight)
     return buckets
 
 
@@ -175,6 +196,10 @@ def dedupe_by_text(strings: list[dict]) -> tuple[list[dict], int]:
         # вместе со своим родом; то же со стилем, именами, разговором и соперником.
         key = key + tuple(s.get(f) or "" for f in
                           ("speaker", "style", "entities", "talk", "rival"))
+        # Строка сцены — часть своего разговора. «Yes.» в двух разных темах — два места
+        # в двух сценах, и схлопнутое в одно оставило бы одну из сцен с дырой.
+        if s.get("scene"):
+            key = key + (s["scene"], s.get("scene_pos"))
         if key in seen:
             continue
         seen.add(key)
@@ -231,6 +256,10 @@ def _make_remote_strings(bucket: list[dict], default_mod: str):
             # Хранимый перевод как СОПЕРНИК, а не как подсказка: промпт его не видит,
             # перевод остаётся слепым, а судья потом сравнивает два готовых ответа.
             **({"rival": s["rival"]} if s.get("rival") else {}),
+            # Режим сцены: тема разговора и место строки в нём (тема 0, ответы 1..n).
+            # Агент по ним собирает один батч на разговор в порядке проигрывания.
+            **({"scene": s["scene"], "scene_pos": int(s.get("scene_pos") or 0)}
+               if s.get("scene") else {}),
         })
         if sid is not None:
             items.append((sid, h))

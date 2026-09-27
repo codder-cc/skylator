@@ -339,3 +339,41 @@ def addressee_ref(esp_name: str, form_id: str, rec_type: str | None,
         card = _sp.card_for(plug, fid, _sp.load(None, None))
         voices.add(card.voice_type if card else None)
     return refs[0] if (refs and len(voices) == 1 and None not in voices) else None
+
+
+def scene_of(esp_name: str, form_id: str, rec_type: str | None, field_type: str | None,
+             state: dict | None = None) -> tuple[str, int] | None:
+    """(тема, место) строки в её разговоре, или None — если строка не часть сцены.
+
+    Сцена — тема DIAL целиком: реплика игрока (DIAL/FULL) на месте 0 и ответы НПС
+    (INFO/NAM1) на местах 1..n в порядке проигрывания, то есть в порядке, в каком они
+    лежат в группе «дети темы». Подпись варианта (INFO/RNAM) в сцену не входит: это
+    не реплика разговора, а надпись в меню выбора.
+
+    Тема ищется через alias так же, как в neighbours: мод, дописывающий ответы к
+    ванильной теме, держит её под своим старшим байтом, а граф — под владельцем.
+    """
+    st = state if state is not None else load()
+    topics = st.get("topics") or {}
+    alias = st.get("alias") or {}
+    key = _key(esp_name, form_id)
+    key = alias.get(key, key)
+    if rec_type == "DIAL" and field_type == "FULL":
+        return (key, 0) if key in topics else None
+    if rec_type == "INFO" and field_type == "NAM1":
+        topic = (st.get("of_topic") or {}).get(key)
+        if not topic:
+            return None
+        # Место ответа в теме. Искать его .index() на каждой строке — квадрат на темах
+        # приветствий, где ответов сотни; карта строится один раз на граф и живёт в нём
+        # же. Гонка двух потоков здесь безвредна: оба построят одно и то же.
+        pos = st.get("_scene_pos")
+        if pos is None:
+            pos = {}
+            for t, infos in topics.items():
+                for n, info in enumerate(infos, 1):
+                    pos.setdefault((t, info), n)
+            st["_scene_pos"] = pos
+        n = pos.get((topic, key))
+        return (topic, n) if n else None
+    return None

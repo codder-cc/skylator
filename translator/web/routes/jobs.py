@@ -205,7 +205,9 @@ def create_job():
                                            base_params = data.get("params"),
                                            string_ids = options.get("string_ids"),
                                            context_parts = options.get("context_parts"),
-                                           trace_full = bool(options.get("trace_full")))
+                                           trace_full = bool(options.get("trace_full")),
+                                           scene = bool(options.get("scene")),
+                                           scene_expand = bool(options.get("scene_expand")))
         except ValueError as exc:
             return jsonify({"error": str(exc), "ok": False}), 400
     elif job_type == "validate" and mod_names:
@@ -1725,7 +1727,9 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                              base_params=None,
                              string_ids=None,
                              context_parts=None,
-                             trace_full=False):
+                             trace_full=False,
+                             scene=False,
+                             scene_expand=False):
     """Send stored translations back to the fleet to be checked and corrected.
 
     A review is a translation job with the answer already filled in: the package carries
@@ -1976,7 +1980,15 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         by_mod: dict[str, list] = {}
         skipped_no_violation = 0
         skipped_too_long = 0
-        for r in repo.db.execute(sql).fetchall():
+
+        def build_item(r):
+            """Строка корпуса → элемент пакета со всем, что хост о ней знает; None — пропуск.
+
+            Одна функция и для выбранных строк, и для строк, добавленных режимом сцены:
+            добавленная реплика — такая же строка корпуса, и карточка, стиль, имена и
+            соперник для судьи прикладываются к ней по тем же правилам.
+            """
+            nonlocal skipped_no_violation, skipped_too_long
             item = {"id": r["id"], "mod_name": r["mod_name"], "esp": r["esp_name"],
                     "key": r["key"], "original": r["original"],
                     "rec_type": r["rec_type"] or "", "field_type": r["field_type"] or ""}
@@ -2030,7 +2042,7 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
             if fixing_terms and _req_map:
                 req = _req_map.get(r["id"])
                 if not req:
-                    continue
+                    return None
                 item["current"]   = _clean_current(r["original"], r["translation"])
                 item["req_terms"] = req
             elif fixing_terms:
@@ -2042,10 +2054,10 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                                           r["rec_type"], r["field_type"])
                 if not bad:
                     skipped_no_violation += 1
-                    continue        # flagged for something else; a term fix cannot help it
+                    return None     # flagged for something else; a term fix cannot help it
                 if len(r["original"] or "") > max_chars:
                     skipped_too_long += 1
-                    continue
+                    return None
                 item["current"]   = _clean_current(r["original"], r["translation"])
                 item["req_terms"] = "; ".join(f"{en} = {ru}" for en, ru in bad[:3])
             elif not blind:
@@ -2056,7 +2068,76 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                 # слепым (recall 94% против 11–17% у просмотра), и только потом судья
                 # сравнивает два готовых ответа.
                 item["rival"] = _clean_current(r["original"], r["translation"])
+            return item
+
+        # Режим сцены — опыт: перевести разговор (тему DIAL и ответы на неё в порядке
+        # проигрывания) одним нумерованным батчем, где у каждой строки свой ответ.
+        # Хост только помечает строки темой и местом; собирает батч агент. Без
+        # графа диалога сцены не из чего строить, и пакет уходит как обычный.
+        # scene_expand без scene включает и его: дописывать разговор, чтобы потом
+        # переводить его по строке, незачем.
+        scene_on = bool(scene or scene_expand) and bool(dlg_state.get("topics"))
+        if (scene or scene_expand) and not scene_on:
+            job.add_log("Scene mode requested but the dialogue graph is unavailable — "
+                        "dispatching line by line as usual")
+
+        def mark_scene(item, r):
+            got = _dlg.scene_of(r["esp_name"], r["form_id"], r["rec_type"],
+                                r["field_type"], dlg_state)
+            if got:
+                item["scene"], item["scene_pos"] = got[0], int(got[1])
+
+        selected_ids: set = set()
+        for r in repo.db.execute(sql).fetchall():
+            item = build_item(r)
+            if item is None:
+                continue
+            if scene_on:
+                mark_scene(item, r)
+            selected_ids.add(r["id"])
             by_mod.setdefault(r["mod_name"], []).append(item)
+        if scene_on:
+            wanted = {x["scene"] for v in by_mod.values() for x in v if x.get("scene")}
+            added = protected = 0
+            if scene_expand and wanted:
+                # Остальные реплики тех же разговоров. Запрос мог назвать одну строку, а
+                # сцена переводится целиком: без её соседей «разговор» из одной реплики
+                # ничем не отличался бы от обычного перевода. Это настоящие строки корпуса
+                # — их ответы доставляются и ложатся в кандидаты так же, как у выбранных.
+                #
+                # Один проход по диалоговым строкам, а не запрос на каждую тему: индекса
+                # по form_id нет, и тысяча тем была бы тысячей полных просмотров таблицы.
+                for r in repo.db.execute(
+                        "SELECT id, mod_name, esp_name, key, form_id, original, translation, "
+                        "rec_type, field_type, source FROM strings WHERE "
+                        "((rec_type='DIAL' AND field_type='FULL') OR "
+                        "(rec_type='INFO' AND field_type='NAM1')) AND TRIM(original) <> '' "
+                        "ORDER BY id"):
+                    if r["id"] in selected_ids:
+                        continue
+                    got = _dlg.scene_of(r["esp_name"], r["form_id"], r["rec_type"],
+                                        r["field_type"], dlg_state)
+                    if not got or got[0] not in wanted:
+                        continue
+                    # Донорский перевод и непереводимое машине не отдаются и здесь: эти
+                    # запреты — не фильтр выборки, а защита чужой и заведомо не нашей
+                    # работы, и сцена её не отменяет. Разговор уйдёт без этой строки.
+                    if (r["source"] or "") in ("nexus-translation", "untranslatable"):
+                        protected += 1
+                        continue
+                    item = build_item(r)
+                    if item is None:
+                        continue
+                    mark_scene(item, r)
+                    selected_ids.add(r["id"])
+                    by_mod.setdefault(r["mod_name"], []).append(item)
+                    added += 1
+            in_scene = sum(1 for v in by_mod.values() for x in v if x.get("scene"))
+            job.add_log(f"Scene mode: {in_scene:,} line(s) in {len(wanted):,} conversation(s) "
+                        f"go as one numbered batch per conversation"
+                        + (f"; {added:,} line(s) added to complete them" if scene_expand else "")
+                        + (f"; {protected:,} donor/untranslatable line(s) left out"
+                           if protected else ""))
         # Один говорящий — подряд. Агент обрезает батч по смене говорящего, поэтому
         # вперемешку карточка досталась бы одной строке из каждой пары, а порядок внутри
         # мода ни на что другое не влияет.
@@ -2140,6 +2221,10 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                 _extra["terminology"] = ""
             if "tm" not in context_parts:
                 _extra["tm_pairs"] = {}
+        if scene_on:
+            # Агент собирает батч по сцене только по этому флагу: поля scene у строк
+            # без него ничего не меняют.
+            _extra["scene"] = True
         if candidates > 1:
             _extra["candidates"] = int(candidates)
             job.add_log(f"Best of {int(candidates)}: each line is asked that many times "
@@ -2157,7 +2242,9 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         params   = {"review": scope != "flagged", "scope": scope,
                     "min_chars": min_chars, "max_len": max_len,
                     "max_tokens": max_tokens, "judge": bool(judge),
-                    "candidates": int(candidates), "types": types},
+                    "candidates": int(candidates), "types": types,
+                    **({"scene": True, "scene_expand": bool(scene_expand)}
+                       if (scene or scene_expand) else {})},
         fn       = run,
     )
 

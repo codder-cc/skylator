@@ -217,6 +217,11 @@ def run(args) -> None:
         opts["context_parts"] = [x for x in args.context_parts.split(",") if x]
     if args.batch_size:
         opts["batch_size"] = args.batch_size
+    if args.scene:
+        # вся тема строки уходит одним батчем; добавленные строки темы оцениваются
+        # отдельно не будут — мера считается только по строкам набора
+        opts["scene"] = True
+        opts["scene_expand"] = True
     if args.max_tokens:
         opts["max_tokens"] = args.max_tokens
     params = json.loads(args.params) if args.params else {}
@@ -256,6 +261,7 @@ def main() -> None:
     r.add_argument("--batch-size", type=int)
     r.add_argument("--max-tokens", type=int)
     r.add_argument("--judge", action="store_true")
+    r.add_argument("--scene", action="store_true")
     r.add_argument("--timeout", type=int, default=6 * 3600)
     r.add_argument("--no-wait", action="store_true")
     s = sub.add_parser("score")

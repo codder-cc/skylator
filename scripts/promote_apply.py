@@ -35,9 +35,14 @@ def main() -> None:
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--since", type=float, default=1790150400.0)
     ap.add_argument("--limit", type=int, default=0, help="применить не больше N строк")
+    ap.add_argument("--twins-only", action="store_true",
+                    help="только разнести уже применённое по копиям")
     args = ap.parse_args()
 
     db_path = ROOT / "cache" / "translations.db"
+    if args.twins_only:
+        spread_to_twins(db_path)
+        return
     con = sqlite3.connect(str(db_path), timeout=120)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA busy_timeout=120000")
@@ -92,7 +97,14 @@ def main() -> None:
             mod_name=r["mod_name"], esp_name=r["esp_name"], key=r["key"],
             translation=text, original=r["original"],
             source="ai-judged", machine_label=r["machine"] or "",
-            produced_at=r["produced_at"], merge=True, prefer_incoming=True,
+            # Без повторного слияния. На равном балле ворота слияния оставляют
+            # хранимое — у них нет доводов, а «бери новое на ничьей» однажды заменило
+            # «Да» на «Нет» на 254 кнопках. У политики доводы есть: судья в обоих
+            # порядках, правила, род, ломаная речь, имена. Первый прогон со слиянием
+            # записал 1 483 строки из 7 514 — остальные были ничьей 100:100.
+            # Официальная таблица и род говорящего действуют и так: они стоят в
+            # save_string до слияния.
+            produced_at=r["produced_at"], merge=False,
             rec_type=r["rec_type"], field_type=r["field_type"])
         if (getattr(res, "translation", "") or "").strip() == text.strip():
             landed += 1
@@ -101,6 +113,54 @@ def main() -> None:
             refused += 1
             set_gate(repo, r["id"], "promote_refused")
     print(f"записано: {landed:,}; ворота записи отказали: {refused:,}", file=out)
+    spread_to_twins(db_path)
+
+
+def spread_to_twins(db_path) -> None:
+    """Разнести применённое по копиям — тем же путём, что и доставка ревью.
+
+    Раздача схлопывает одинаковые тексты, и ответ получает одна строка из группы. При
+    доставке мастер разносит его по копиям сам; применение из слоя идёт мимо доставки,
+    и без этого шага копии остались бы со старым текстом. Трогаются только копии,
+    которые писала машина и в которых лежит ровно прежний текст
+    (`apply_correction_to_duplicates`) — перевод донора и ручная правка не задеваются.
+    Всё, что будет изменено, сперва сохраняется в свой checkpoint.
+    """
+    from translator.db.database import TranslationDB
+    from translator.db.repo import StringRepo
+    from translator.validation.authority import MACHINE_SOURCES
+    repo = StringRepo(TranslationDB(db_path))
+    rows = repo.db.execute(
+        "SELECT c.string_id, COALESCE(c.rival, c.stored_at_arrival) AS old, "
+        "s.translation AS new, s.status, s.quality_score, s.string_hash "
+        "FROM candidates c JOIN strings s ON s.id = c.string_id "
+        "WHERE c.gate = 'promoted' AND s.string_hash IS NOT NULL").fetchall()
+    holes = ",".join("?" * len(MACHINE_SOURCES))
+    cp = str(uuid.uuid4())
+    snap, n = [], 0
+    for r in rows:
+        old, new = (r["old"] or "").strip(), (r["new"] or "").strip()
+        if not old or not new or old == new:
+            continue
+        twins = repo.db.execute(
+            f"SELECT mod_name, esp_name, key, translation, status, quality_score FROM strings "
+            f"WHERE string_hash=? AND TRIM(translation)=TRIM(?) AND id<>? "
+            f"AND COALESCE(source,'') IN ({holes})",
+            (r["string_hash"], old, r["string_id"], *MACHINE_SOURCES)).fetchall()
+        if not twins:
+            continue
+        snap.extend((cp, t["mod_name"], t["esp_name"], t["key"], t["translation"] or "",
+                     t["status"] or "pending", t["quality_score"]) for t in twins)
+        repo.db.executemany(
+            "INSERT INTO string_checkpoints (checkpoint_id, mod_name, esp_name, key, "
+            "original_translation, original_status, original_quality_score) "
+            "VALUES (?,?,?,?,?,?,?)", snap[-len(twins):])
+        n += repo.apply_correction_to_duplicates(
+            r["string_hash"], old, new, r["status"] or "translated", r["quality_score"],
+            exclude_id=r["string_id"])
+    repo.db.commit()
+    print(f"копии: обновлено {n:,}" + (f"; checkpoint {cp} — откат: "
+          f"POST /api/checkpoints/{cp}/restore" if n else ""), file=out)
 
 
 if __name__ == "__main__":

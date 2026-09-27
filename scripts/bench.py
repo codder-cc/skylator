@@ -181,7 +181,13 @@ def compare(a: str, b: str) -> None:
     set_a = json.loads((EXP_DIR / f"{a}.json").read_text(encoding="utf-8"))["set"]
     pa, pb = ra["per"], rb["per"]
     ids = [i for i in pa if i in pb and pa[i]["answered"] and pb[i]["answered"]]
-    print(f"{a} против {b}: парных строк {len(ids)}", file=out)
+    ja = json.loads((EXP_DIR / f"{a}.json").read_text(encoding="utf-8"))["job_id"]
+    jb = json.loads((EXP_DIR / f"{b}.json").read_text(encoding="utf-8"))["job_id"]
+    ta, tb = _answers(ja), _answers(jb)
+    same = sum(1 for i in ids if (ta[i]["translation"] or "").strip()
+               == (tb[i]["translation"] or "").strip())
+    print(f"{a} против {b}: парных строк {len(ids)}, дословно одинаковых "
+          f"{same} ({100 * same / max(len(ids), 1):.0f}%)", file=out)
     if set_a == "H":
         only_a = sum(1 for i in ids if pa[i]["clean"] and not pb[i]["clean"])
         only_b = sum(1 for i in ids if pb[i]["clean"] and not pa[i]["clean"])

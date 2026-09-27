@@ -2520,6 +2520,8 @@ def workers_offline_results(label: str):
     _layer_only = _cand.layer_only(repo)
     _w = registry.get(label) if registry else None
     _model = (getattr(_w, "model", "") or "") if _w else ""
+    # Сверка знает только назначение; здесь известно и задание — связать их.
+    _cand.remember_job(repo, offline_job_id, host_job_id)
 
     if repo is not None and cfg is not None:
         mods_dir   = cfg.paths.mods_dir if cfg else Path(".")
@@ -2555,11 +2557,15 @@ def workers_offline_results(label: str):
         # Записать ответ ДО решения ворот. Раньше получение и решение были склеены, и
         # ошибка в решении уничтожала данные: за ночь 14 тысяч ответов плотной модели
         # ворота отвергли по ничьей, а агент стёр их, получив подтверждение приёма.
+        # Модель — та, что дала ответ, а не та, что стоит на машине сейчас: ответ
+        # мог пролежать на агенте сутки, пока модель успели сменить.
         _cid = _cand.record(repo, string_id=r.get("string_id"), mod_name=mod_name,
                             esp_name=esp_name, key=key, original=original,
-                            translation=translation, machine=label, model=_model,
+                            translation=translation, machine=label,
+                            model=r.get("model") or _model,
                             job_id=host_job_id, produced_at=produced_at,
-                            judge=r.get("judge"), rival=r.get("rival"))
+                            judge=r.get("judge"), rival=r.get("rival"),
+                            finish_reason=r.get("finish_reason"))
         # Не записали в слой — не подтверждаем приём. Иначе агент сотрёт ответ у себя,
         # а у нас его нет нигде: ровно так за ночь пропали 14 тысяч ответов.
         if _cid is None:

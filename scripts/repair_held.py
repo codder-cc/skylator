@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT / "remote_worker"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from context_holdout import infer                                  # noqa: E402
-from names_repair_test import changed_share                        # noqa: E402
+from translator.db.promote import _changed_share as changed_share  # noqa: E402
 from prompt.builder import build_prompt                            # noqa: E402
 from prompt.parser import parse_numbered_output                    # noqa: E402
 from translator.db import candidates as C                          # noqa: E402

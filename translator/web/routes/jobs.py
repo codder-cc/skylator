@@ -180,6 +180,11 @@ def create_job():
         # bare 500 with "the server encountered an internal error", so "review requires
         # at least one registered machine" was only visible to whoever thought to go and
         # read the log. Twice in one sitting that cost a round trip to find out.
+        _known = set(InferenceParams().as_dict()) if hasattr(InferenceParams(), "as_dict") else set()
+        _extra = set((data.get("params") or {})) - _known if _known else set()
+        if _extra:
+            return jsonify({"ok": False,
+                            "error": f"unsupported params: {', '.join(sorted(_extra))}"}), 400
         try:
             job = _create_review_fleet_job(jm, cfg,
                                            machines = options.get("machines"),
@@ -196,7 +201,8 @@ def create_job():
                                            types      = options.get("types"),
                                            skip_layered = options.get("skip_layered"),
                                            from_assignments = options.get("from_assignments"),
-                                           req_terms_map = options.get("req_terms_map"))
+                                           req_terms_map = options.get("req_terms_map"),
+                                           base_params = data.get("params"))
         except ValueError as exc:
             return jsonify({"error": str(exc), "ok": False}), 400
     elif job_type == "validate" and mod_names:
@@ -1712,7 +1718,8 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                              types: str | None = None,
                              skip_layered=False,
                              from_assignments=None,
-                             req_terms_map=None):
+                             req_terms_map=None,
+                             base_params=None):
     """Send stored translations back to the fleet to be checked and corrected.
 
     A review is a translation job with the answer already filled in: the package carries
@@ -1958,7 +1965,7 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         for r in repo.db.execute(sql).fetchall():
             item = {"id": r["id"], "mod_name": r["mod_name"], "esp": r["esp_name"],
                     "key": r["key"], "original": r["original"],
-                    "rec_type": r["rec_type"] or ""}
+                    "rec_type": r["rec_type"] or "", "field_type": r["field_type"] or ""}
             if speakers_state:
                 block = _sp.block_for(r["esp_name"], r["form_id"], speakers_state)
                 if block:
@@ -2072,8 +2079,15 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         except Exception as exc:                                   # noqa: BLE001
             job.add_log(f"Mod summaries unavailable ({exc}) — dispatching without them")
             mods = [(mod, strs, "") for mod, strs in by_mod.items()]
-        params = InferenceParams(max_tokens=int(max_tokens) if max_tokens else None,
-                                 batch_size=int(batch_size) if batch_size else None)
+        # Параметры из запроса — основа, опции задания только уточняют их. Раньше объект
+        # собирался заново из двух опций, и системный промпт, температура и лимит из
+        # «params» терялись молча, при ответе 200: эксперимент с промптом шёл на
+        # стандартном промпте.
+        params = InferenceParams.from_dict(base_params or {})
+        if max_tokens:
+            params.max_tokens = int(max_tokens)
+        if batch_size:
+            params.batch_size = int(batch_size)
         if max_tokens:
             job.add_log(f"Output ceiling raised to {int(max_tokens)} tokens for this "
                         f"dispatch — at the default 2 048 a book comes back cut off")

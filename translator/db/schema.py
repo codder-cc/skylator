@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS string_checkpoints (
     original_translation  TEXT    NOT NULL DEFAULT '',
     original_status       TEXT    NOT NULL DEFAULT 'pending',
     original_quality_score INTEGER,
+    original_source       TEXT,
     created_at            REAL    DEFAULT (unixepoch('now', 'subsec'))
 );
 

@@ -303,6 +303,16 @@ MIGRATION_STEPS: list[tuple[int, str, list[str]]] = [
             "ON strings(translated_at)",
         ],
     ),
+    (
+        19,
+        "Checkpoints remember the source of a row, not only its text",
+        [
+            # Откат возвращал текст, статус и балл, но не источник: строка, откатанная
+            # к переводу донора, оставалась помеченной как машинная, и следующий разнос
+            # по копиям считал её своей и переписывал.
+            "ALTER TABLE string_checkpoints ADD COLUMN original_source TEXT",
+        ],
+    ),
 ]
 
 

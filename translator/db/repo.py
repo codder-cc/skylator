@@ -538,20 +538,30 @@ class StringRepo:
             return 0
         from translator.validation.authority import MACHINE_SOURCES
         holes = ",".join("?" * len(MACHINE_SOURCES))
-        sql = f"""UPDATE strings
-                    SET translation=?, status=?, quality_score=?, updated_at=?,
-                        source='duplicate'
-                  WHERE string_hash=? AND TRIM(translation)=TRIM(?)
-                    AND LOWER(COALESCE(source,'')) IN ({holes})"""
-        params = [new_translation, status, quality_score, time.time(),
-                  string_hash, old_translation, *sorted(MACHINE_SOURCES)]
+        where = (f"string_hash=? AND TRIM(translation)=TRIM(?) "
+                 f"AND LOWER(COALESCE(source,'')) IN ({holes})")
+        params = [string_hash, old_translation, *sorted(MACHINE_SOURCES)]
         if exclude_id is not None:
-            sql += " AND id != ?"
+            where += " AND id != ?"
             params.append(exclude_id)
+        # История пишется и здесь: разнос прямым UPDATE не оставлял следа, и у копии
+        # нельзя было узнать, откуда у неё текст и что стояло до него.
         with _write_lock:
-            cur = self.db.execute(sql, tuple(params))
+            ids = [r[0] for r in self.db.execute(
+                f"SELECT id FROM strings WHERE {where}", tuple(params)).fetchall()]
+            if not ids:
+                return 0
+            now = time.time()
+            self.db.executemany(
+                "UPDATE strings SET translation=?, status=?, quality_score=?, updated_at=?, "
+                "source='duplicate' WHERE id=?",
+                [(new_translation, status, quality_score, now, i) for i in ids])
+            self.db.executemany(
+                "INSERT INTO string_history (string_id, translation, status, quality_score, "
+                "source, machine_label, job_id) VALUES (?,?,?,?, 'duplicate', NULL, NULL)",
+                [(i, new_translation, status, quality_score) for i in ids])
             self.db.commit()
-        return cur.rowcount
+        return len(ids)
 
     # ── Checkpoints (diff-based recovery) ───────────────────────────────────
 
@@ -568,13 +578,15 @@ class StringRepo:
             params.append(esp_name)
 
         rows = self.db.execute(
-            f"SELECT mod_name, esp_name, key, translation, status, quality_score FROM strings WHERE {where}",
+            f"SELECT mod_name, esp_name, key, translation, status, quality_score, source "
+            f"FROM strings WHERE {where}",
             params,
         ).fetchall()
 
         cp_rows = [
             (checkpoint_id, r["mod_name"], r["esp_name"], r["key"],
-             r["translation"] or "", r["status"] or "pending", r["quality_score"])
+             r["translation"] or "", r["status"] or "pending", r["quality_score"],
+             r["source"])
             for r in rows
         ]
 
@@ -582,8 +594,9 @@ class StringRepo:
             self.db.executemany("""
                 INSERT INTO string_checkpoints
                     (checkpoint_id, mod_name, esp_name, key,
-                     original_translation, original_status, original_quality_score)
-                VALUES (?,?,?,?,?,?,?)
+                     original_translation, original_status, original_quality_score,
+                     original_source)
+                VALUES (?,?,?,?,?,?,?,?)
             """, cp_rows)
             self.db.commit()
 
@@ -598,7 +611,7 @@ class StringRepo:
         """
         cp_rows = self.db.execute("""
             SELECT mod_name, esp_name, key, original_translation,
-                   original_status, original_quality_score
+                   original_status, original_quality_score, original_source
             FROM string_checkpoints WHERE checkpoint_id=?
         """, (checkpoint_id,)).fetchall()
 
@@ -611,11 +624,15 @@ class StringRepo:
                     translation   = ?,
                     status        = ?,
                     quality_score = ?,
+                    source        = COALESCE(?, source),
                     updated_at    = unixepoch('now', 'subsec')
                 WHERE mod_name=? AND esp_name=? AND key=?
             """, [
+                # Источник — вместе с текстом. Старые checkpoint-ы его не хранят (NULL),
+                # и для них источник остаётся как есть.
                 (r["original_translation"], r["original_status"],
-                 r["original_quality_score"], r["mod_name"], r["esp_name"], r["key"])
+                 r["original_quality_score"], r["original_source"],
+                 r["mod_name"], r["esp_name"], r["key"])
                 for r in cp_rows
             ])
             self.db.commit()

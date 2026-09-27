@@ -43,6 +43,10 @@ _COSMETIC_RE = re.compile(r"[\s\.:;,!?«»\"'()\[\]\-\u2013\u2014]+")
 MACHINE_SOURCES = frozenset((
     "ai", "duplicate", "cache", "pending", "dict", "remote_agent",
     "untranslatable", "review", "repair", "dispatch_shared", "vanilla:subline", "",
+    # Применённое из слоя кандидатов — тоже машинный текст. Без этого правило
+    # официальной таблицы на нём молчало: 122 применённые строки разошлись с игрой
+    # («Arcane Enchanter» → «Арканский настраиватель» вместо «Пентаграмма душ»).
+    "ai-judged",
 ))
 
 

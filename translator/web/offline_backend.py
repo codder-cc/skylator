@@ -27,6 +27,10 @@ def _build_tm_pairs(repo: "StringRepo", mod_name: str) -> dict:
     try:
         rows = repo.get_all_strings(mod_name)
         for r in rows:
+            # Отвергнутое правилами образцом не бывает: needs_review попадал сюда
+            # наравне с принятым, и модель получала брак как «память переводов».
+            if (r.get("status") or "") != "translated":
+                continue
             orig  = (r.get("original") or "").strip()
             trans = (r.get("translation") or "").strip()
             if (orig and trans and orig != trans
@@ -165,7 +169,12 @@ def dedupe_by_text(strings: list[dict]) -> tuple[list[dict], int]:
         if s.get("current"):
             key = (text, s["current"], s.get("req_terms") or "")
         else:
-            key = text
+            key = (text,)
+        # Всё, что меняет промпт, входит в ключ. Иначе одинаковый английский у мужчины
+        # и у женщины схлопывался в одно задание, и одна карточка говорящего пропадала
+        # вместе со своим родом; то же со стилем, именами, разговором и соперником.
+        key = key + tuple(s.get(f) or "" for f in
+                          ("speaker", "style", "entities", "talk", "rival"))
         if key in seen:
             continue
         seen.add(key)
@@ -197,6 +206,9 @@ def _make_remote_strings(bucket: list[dict], default_mod: str):
             # name, INFO a spoken line, MGEF a spell description. Register and grammar
             # differ per record type, and the agent had no way to know which it had.
             "rec_type":    s.get("rec_type") or "",
+            # Тип поля: «FULL» у записи — имя, «DESC» — описание. Одного rec_type мало,
+            # чтобы понять назначение строки, а ключ с полем до агента не доезжал.
+            "field_type":  s.get("field_type") or "",
             "string_hash": h,          # agent stores this → master/agent hashes always match
             # Present only in a review package: the translation already stored, so the
             # agent corrects it instead of translating the source again. Absent for a

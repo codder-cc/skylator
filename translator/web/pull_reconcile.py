@@ -43,7 +43,15 @@ def apply_pulled_results(string_mgr, astore, agent_label: str, results: list[dic
 
     saved = rejected = dup_filled = 0
     max_seq = 0
+    # Курсор сверки можно продвигать только по НЕПРЕРЫВНО обработанной
+    # последовательности. Раньше он вставал на максимум страницы, и строка, которую не
+    # удалось записать в слой, оставалась позади курсора навсегда: следующая сверка
+    # начинала после неё. Здесь запоминается первая такая строка, и курсор не заходит
+    # за неё.
+    first_failed = None
     mods: set[str] = set()
+    from translator.db import candidates as _cand
+    _repo = getattr(string_mgr, "_repo", None)
     for r in results:
         seq = int(r.get("seq") or 0)
         if seq > max_seq:
@@ -56,40 +64,46 @@ def apply_pulled_results(string_mgr, astore, agent_label: str, results: list[dic
         if not translation or not key or not mod:
             continue
         if not verify_result_hash(original, r.get("string_hash")):
+            # Брак безнадёжный: повторная доставка того же ответа его не исправит,
+            # поэтому строка считается обработанной.
             rejected += 1
             log.warning("pull: hash mismatch from %s for %s/%s — rejected", agent_label, mod, key)
             continue
         # Второй путь доставки обязан вести себя как первый. Иначе режим «только
         # записывать» дырявый: результат, пришедший сверкой, а не отправкой агента,
         # прошёл бы мимо слоя кандидатов прямо в корпус.
-        _repo = getattr(string_mgr, "_repo", None)
-        _cid = None
+        #
+        # Ошибка слоя — это остановка, а не обходной путь. Раньше исключение здесь
+        # писалось в журнал, и управление шло дальше к save_string — даже в режиме
+        # «только в слой», то есть сломанная схема кандидатов включала применение.
         try:
-            from translator.db import candidates as _cand
             _cid = _cand.record(_repo, string_id=r.get("string_id"), mod_name=mod,
                                 esp_name=esp, key=key, original=original,
                                 translation=translation, machine=agent_label,
-                                model=_model_of(agent_label),
-                                job_id=r.get("assignment_id") or "",
+                                model=r.get("model") or _model_of(agent_label),
+                                job_id=_cand.job_for(_repo, r.get("assignment_id")),
                                 produced_at=r.get("produced_at"),
-                                judge=r.get("judge"), rival=r.get("rival"))
-            if _cid is None:
-                # Слой не записан — строку не трогаем и доставленной не помечаем.
-                rejected += 1
-                continue
-            if _cand.layer_only(_repo) or _cand.judge_forbids(r.get("judge")):
-                _cand.set_gate(_repo, _cid, "layer_only" if _cand.layer_only(_repo)
-                               else "judge_kept_stored")
-                if astore is not None and r.get("string_id") is not None:
-                    try:
-                        astore.mark_string_delivered(r.get("assignment_id"),
-                                                     r.get("string_id"))
-                    except Exception:
-                        pass
-                mods.add(mod)
-                continue
+                                judge=r.get("judge"), rival=r.get("rival"),
+                                finish_reason=r.get("finish_reason"))
         except Exception as exc:                                   # noqa: BLE001
-            log.warning("pull: candidate layer unavailable (%s)", exc)
+            log.warning("pull: candidate layer failed for %s/%s (%s) — not applied, "
+                        "will be pulled again", mod, key, exc)
+            _cid = None
+        if _cid is None:
+            if seq and (first_failed is None or seq < first_failed):
+                first_failed = seq
+            continue
+        if _cand.layer_only(_repo) or _cand.judge_forbids(r.get("judge")):
+            _cand.set_gate(_repo, _cid, "layer_only" if _cand.layer_only(_repo)
+                           else "judge_kept_stored")
+            if astore is not None and r.get("string_id") is not None:
+                try:
+                    astore.mark_string_delivered(r.get("assignment_id"),
+                                                 r.get("string_id"))
+                except Exception:
+                    pass
+            mods.add(mod)
+            continue
         saved_res = string_mgr.save_string(
             mod_name=mod, esp_name=esp, key=key, translation=translation,
             original=original, source="remote_agent", machine_label=agent_label,
@@ -131,6 +145,8 @@ def apply_pulled_results(string_mgr, astore, agent_label: str, results: list[dic
     if dup_filled:
         log.info("pull: %d duplicate string(s) filled from %d delivered result(s)",
                  dup_filled, saved)
+    if first_failed is not None:
+        max_seq = min(max_seq, first_failed - 1)
     return saved, rejected, max_seq, mods
 
 

@@ -158,15 +158,21 @@ _LABEL_FIELDS = {"FULL", "ITXT", "NNAM", "RNAM"}
 
 def is_label(row) -> bool:
     rt, ft = (row["rec_type"] or ""), (row["field_type"] or "")
-    return ft in _LABEL_FIELDS or (rt, ft) == ("MGEF", "DNAM")         or len((row["original"] or "").strip()) <= 25
+    return (ft in _LABEL_FIELDS or (rt, ft) == ("MGEF", "DNAM")
+            or len((row["original"] or "").strip()) <= 25)
 
 
 def _changed_share(a: str, b: str) -> float:
-    """Доля слов, которые правка тронула."""
+    """Доля слов, которые правка тронула — и заменённых, и дописанных.
+
+    Раньше делитель был длиной старого текста, и дописанная фраза не считалась вовсе:
+    «one two three» → «one two three four five six» давало 0%. Правщик, приписавший
+    к строке что угодно, выглядел точечным.
+    """
     import difflib
     wa, wb = a.split(), b.split()
     same = sum(bl.size for bl in difflib.SequenceMatcher(a=wa, b=wb).get_matching_blocks())
-    return 1 - same / max(len(wa), 1)
+    return 1 - same / max(len(wa), len(wb), 1)
 
 
 # ── решение ─────────────────────────────────────────────────────────────────

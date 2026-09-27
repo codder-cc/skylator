@@ -51,7 +51,7 @@ def main() -> None:
     for r, ok, why, text in decided:
         if not ok:
             continue
-        cur = con.execute("SELECT translation, status, quality_score FROM strings "
+        cur = con.execute("SELECT translation, status, quality_score, source FROM strings "
                           "WHERE id=?", (r["string_id"],)).fetchone()
         stored = (r["rival"] or r["stored_at_arrival"] or "").strip()
         if cur is None:
@@ -83,10 +83,11 @@ def main() -> None:
     cp = str(uuid.uuid4())
     repo.db.executemany(
         "INSERT INTO string_checkpoints (checkpoint_id, mod_name, esp_name, key, "
-        "original_translation, original_status, original_quality_score) "
-        "VALUES (?,?,?,?,?,?,?)",
+        "original_translation, original_status, original_quality_score, original_source) "
+        "VALUES (?,?,?,?,?,?,?,?)",
         [(cp, r["mod_name"], r["esp_name"], r["key"], cur["translation"] or "",
-          cur["status"] or "pending", cur["quality_score"]) for r, cur, *_ in chosen])
+          cur["status"] or "pending", cur["quality_score"], cur["source"])
+         for r, cur, *_ in chosen])
     repo.db.commit()
     print(f"checkpoint {cp} — {len(chosen):,} строк; откат: "
           f"POST /api/checkpoints/{cp}/restore", file=out, flush=True)
@@ -143,18 +144,18 @@ def spread_to_twins(db_path) -> None:
         if not old or not new or old == new:
             continue
         twins = repo.db.execute(
-            f"SELECT mod_name, esp_name, key, translation, status, quality_score FROM strings "
+            f"SELECT mod_name, esp_name, key, translation, status, quality_score, source FROM strings "
             f"WHERE string_hash=? AND TRIM(translation)=TRIM(?) AND id<>? "
             f"AND COALESCE(source,'') IN ({holes})",
             (r["string_hash"], old, r["string_id"], *MACHINE_SOURCES)).fetchall()
         if not twins:
             continue
         snap.extend((cp, t["mod_name"], t["esp_name"], t["key"], t["translation"] or "",
-                     t["status"] or "pending", t["quality_score"]) for t in twins)
+                     t["status"] or "pending", t["quality_score"], t["source"]) for t in twins)
         repo.db.executemany(
             "INSERT INTO string_checkpoints (checkpoint_id, mod_name, esp_name, key, "
-            "original_translation, original_status, original_quality_score) "
-            "VALUES (?,?,?,?,?,?,?)", snap[-len(twins):])
+            "original_translation, original_status, original_quality_score, original_source) "
+            "VALUES (?,?,?,?,?,?,?,?)", snap[-len(twins):])
         n += repo.apply_correction_to_duplicates(
             r["string_hash"], old, new, r["status"] or "translated", r["quality_score"],
             exclude_id=r["string_id"])

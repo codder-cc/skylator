@@ -57,11 +57,16 @@ CREATE TABLE IF NOT EXISTS candidates (
     gate              TEXT,      -- что сделали ворота: layer_only / accepted / kept_stored
     judge             TEXT,      -- вердикт судьи на агенте: fresh / stored / unsure / same
     rival             TEXT,      -- с чем судья сравнивал (хранимое на момент раздачи)
+    finish_reason     TEXT,      -- почему модель остановилась: stop / length
     UNIQUE(string_id, machine, produced_at)
 );
 CREATE INDEX IF NOT EXISTS idx_cand_string ON candidates(string_id);
 CREATE INDEX IF NOT EXISTS idx_cand_job    ON candidates(job_id);
 CREATE INDEX IF NOT EXISTS idx_cand_model  ON candidates(model, rec_type);
+CREATE TABLE IF NOT EXISTS candidate_jobs (
+    assignment_id TEXT PRIMARY KEY,
+    job_id        TEXT
+);
 """
 
 def ensure(db) -> None:
@@ -81,7 +86,7 @@ def ensure(db) -> None:
             db.execute(stmt)
     # Таблица, созданная до появления судьи, получает его колонки на месте.
     have = {r[1] for r in db.execute("PRAGMA table_info(candidates)").fetchall()}
-    for col in ("judge", "rival"):
+    for col in ("judge", "rival", "finish_reason"):
         if col not in have:
             db.execute(f"ALTER TABLE candidates ADD COLUMN {col} TEXT")
     db.commit()
@@ -92,13 +97,56 @@ def ensure(db) -> None:
 
 
 def layer_only(repo) -> bool:
-    """Включён ли режим «только записывать, ничего не применять»."""
+    """Включён ли режим «только записывать, ничего не применять».
+
+    Не прочиталась настройка — значит «да». Раньше ошибка чтения давала «нет», то
+    есть сбой базы включал применение в корпус: ровно наоборот тому, ради чего режим
+    заведён.
+    """
     if repo is None:
         return False
     try:
         return bool(repo.db.get_setting(SETTING_LAYER_ONLY, False))
+    except Exception as exc:                                       # noqa: BLE001
+        log.warning("candidates: layer_only unreadable (%s) — staying in layer-only", exc)
+        return True
+
+
+def remember_job(repo, assignment_id: str | None, job_id: str | None) -> None:
+    """Запомнить, какому заданию принадлежит назначение агента.
+
+    Отправка агента знает оба номера, сверка — только назначение. Раньше отправка
+    писала в job_id номер задания, а сверка — номер назначения, и разметка правок
+    имён по заданию теряла всё, что пришло сверкой.
+    """
+    if repo is None or not assignment_id or not job_id:
+        return
+    try:
+        ensure(repo.db)
+        repo.db.execute("INSERT OR REPLACE INTO candidate_jobs (assignment_id, job_id) "
+                        "VALUES (?,?)", (assignment_id, job_id))
+        repo.db.commit()
+    except Exception as exc:                                       # noqa: BLE001
+        log.debug("candidates: job link not stored: %s", exc)
+
+
+def job_for(repo, assignment_id: str | None) -> str:
+    """Номер задания для назначения; если связь неизвестна — само назначение."""
+    if repo is None or not assignment_id:
+        return assignment_id or ""
+    try:
+        ensure(repo.db)
+        row = repo.db.execute("SELECT job_id FROM candidate_jobs WHERE assignment_id=?",
+                              (assignment_id,)).fetchone()
+        if row and row[0]:
+            return row[0]
+        row = repo.db.execute("SELECT job_id FROM assignments WHERE assignment_id=?",
+                              (assignment_id,)).fetchone()
+        if row and row[0]:
+            return row[0]
     except Exception:                                              # noqa: BLE001
-        return False
+        pass
+    return assignment_id
 
 
 def set_layer_only(repo, on: bool) -> None:
@@ -114,7 +162,7 @@ def _identity(key: str) -> tuple[str | None, str | None]:
 def record(repo, *, string_id, mod_name: str, esp_name: str, key: str,
            original: str, translation: str, machine: str, model: str,
            job_id: str, produced_at, terms=None, judge: str | None = None,
-           rival: str | None = None) -> int | None:
+           rival: str | None = None, finish_reason: str | None = None) -> int | None:
     """Записать один ответ до всякого решения. Возвращает id кандидата или None.
 
     Вердикт правил считается здесь же и для ЭТОГО текста — тем же
@@ -127,11 +175,13 @@ def record(repo, *, string_id, mod_name: str, esp_name: str, key: str,
     ensure(db)
     rec_type, field_type = _identity(key)
     stored = ""
+    stored_original = None
     try:
-        row = db.execute("SELECT id, translation FROM strings WHERE mod_name=? AND "
-                         "esp_name=? AND key=?", (mod_name, esp_name, key)).fetchone()
+        row = db.execute("SELECT id, translation, original FROM strings WHERE mod_name=? "
+                         "AND esp_name=? AND key=?", (mod_name, esp_name, key)).fetchone()
         if row:
             stored = row["translation"] or ""
+            stored_original = row["original"]
             if string_id is None:
                 string_id = row["id"]
     except Exception:                                              # noqa: BLE001
@@ -152,18 +202,31 @@ def record(repo, *, string_id, mod_name: str, esp_name: str, key: str,
             original, translation, terms, rec_type, field_type)
     except Exception as exc:                                       # noqa: BLE001
         log.debug("candidates: rules failed for %s: %s", key, exc)
+    # Два факта, которые правила по тексту не видят и не должны пересчитывать заново.
+    # Модель упёрлась в лимит — ответ оборван, как бы чисто ни выглядел остаток; раньше
+    # агент ставил needs_review у себя, а здесь текст пересчитывался и становился
+    # translated. Исходник ответа не совпадает с тем, что сейчас лежит в строке, —
+    # ответ на другой текст (строку правили или ключ сдвинулся), применять его нельзя.
+    if (finish_reason or "") == "length":
+        status = "needs_review"
+        issues = list(issues or []) + [{"type": "generation_limit",
+                                        "message": "generation limit reached: answer cut off"}]
+    if stored_original is not None and (stored_original or "").strip() != (original or "").strip():
+        status = "needs_review"
+        issues = list(issues or []) + [{"type": "source_mismatch",
+                                        "message": "source text differs from the corpus row"}]
     try:
         cur = db.execute(
             "INSERT OR IGNORE INTO candidates (string_id, mod_name, esp_name, key, "
             "rec_type, field_type, original, translation, stored_at_arrival, "
             "same_as_stored, machine, model, job_id, produced_at, received_at, score, "
-            "rules_status, issues, gate, judge, rival) VALUES "
-            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "rules_status, issues, gate, judge, rival, finish_reason) VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (string_id, mod_name, esp_name, key, rec_type, field_type, original,
              translation, stored, int(translation.strip() == stored.strip()),
              machine, model, job_id, produced_at, time.time(), score, status,
              json.dumps(issues or [], ensure_ascii=False), None, judge or None,
-             rival or None))
+             rival or None, finish_reason or None))
         db.commit()
         if cur.rowcount:
             return cur.lastrowid

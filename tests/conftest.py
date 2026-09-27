@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS string_checkpoints (
     original_translation  TEXT    NOT NULL DEFAULT '',
     original_status       TEXT    NOT NULL DEFAULT 'pending',
     original_quality_score INTEGER,
+    original_source       TEXT,
     created_at            REAL    DEFAULT (unixepoch('now', 'subsec'))
 );
 
@@ -203,6 +204,27 @@ class _FakeDB:
 
     def execute(self, sql, params=()):
         return self._connect().execute(sql, params)
+
+    # Как у TranslationDB. Без них слой кандидатов не мог прочесть режим «только в
+    # слой» — и теперь, когда ошибка чтения значит «да», тесты приёма перестали бы
+    # писать в корпус вовсе, а не проверяли бы то, что задумано.
+    def get_setting(self, key, default=None):
+        import json as _json
+        self.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+        row = self.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        if not row:
+            return default
+        try:
+            return _json.loads(row[0])
+        except Exception:
+            return row[0]
+
+    def set_setting(self, key, value):
+        import json as _json
+        self.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+        self.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)",
+                     (key, _json.dumps(value)))
+        self._connect().commit()
 
     def executemany(self, sql, params_seq):
         return self._connect().executemany(sql, params_seq)

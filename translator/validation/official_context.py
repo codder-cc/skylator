@@ -165,22 +165,33 @@ def _single_names() -> dict:
     # оказалось слишком строго: «falmer» строчным где-то в игре есть, и Фалмер выпадал.
     # Считается только во фразах: названия предметов пишутся Каждое Слово С Заглавной, и
     # по ним «Light» и «Fire» выглядели бы именами.
+    return single_names_from(_table())
+
+
+def single_names_from(table: dict) -> dict:
+    """То же по любой таблице — политике применения нужна полная, с отложенной частью."""
     lower: collections.Counter = collections.Counter()
     upper: collections.Counter = collections.Counter()
-    for en in _table():
+    for en in table:
         if len(en.split()) < 6:
             continue
         for w in _mid_sentence_words(en):
             (lower if w[:1].islower() else upper)[w.lower()] += 1
     buckets: dict = collections.defaultdict(set)
-    for en, ru in _table().items():
+    for en, ru in table.items():
         en, ru = en.strip(), ru.strip()
+        # «The Reach → Предел»: внутри реплики имя стоит без артикля. Артикль в самой
+        # записи таблицы уже говорит, что это имя, — «reach» строчным как глагол его
+        # не отменяет.
+        titled = en.startswith("The ") and " " not in en[4:]
+        if titled:
+            en = en[4:]
         if not re.fullmatch(r"[A-Z][a-z'\-]{3,}", en) or en.lower() in _COMMON_EN:
             continue
         lo, up = lower[en.lower()], upper[en.lower()]
         # и хоть раз должно стоять с заглавной посреди фразы — иначе заглавная у него
         # только от названия предмета
-        if up == 0 or (lo >= 2 and lo * 5 >= lo + up):
+        if not titled and (up == 0 or (lo >= 2 and lo * 5 >= lo + up)):
             continue
         if not re.fullmatch(r"[А-ЯЁ][а-яё\-]+(?: [А-ЯЁа-яё][а-яё\-]+)?", ru):
             continue

@@ -65,3 +65,14 @@ def test_the_full_official_table_supplies_the_held_out_names():
     names = P._names()
     assert names.get("Reach") == "Предел"
     assert names.get("Brynjolf") == "Бриньольф"
+
+
+def test_a_gender_repair_is_taken_only_when_the_whole_line_agrees():
+    """«я бы дал больше» правка исправит, «я слишком щедра» — нет. Смешанное не берём."""
+    good = _row("I'd bet ten gold on it.", "Я бы поставила десять золотых.",
+                "Я бы поставил десять золотых.")
+    assert P.repair_gender(good, "f") == "Я бы поставила десять золотых."
+    mixed = _row("Some say I'm too generous. I would give more.",
+                 "Говорят, я слишком щедра. Я бы дала больше.",
+                 "Говорят, я слишком щедра. Я бы дала больше.")
+    assert P.repair_gender(mixed, "m") is None

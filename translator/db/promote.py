@@ -71,11 +71,14 @@ def first_person_gender(text: str) -> set:
 # среди которых не нашлось ни одной ломаной: «aren't», «I'm», «don't» регулярка
 # вспомогательными не считала, а «it makes me want to cry» — обычный английский.
 _PIDGIN_MARKS = re.compile(
-    # местоимение-дополнение в роли подлежащего, в начале фразы: «Him use metal club».
-    # Her сюда не входит: «Her eyes were blue» — притяжательное, а не ломаная речь.
-    r"(?:^|[.!?]\s+)(?:Him|Me|Us|Them) (?!and\b|or\b|too\b)[a-z]+\b"
+    # местоимение-дополнение в роли подлежащего, в начале фразы, и за ним голый
+    # глагол: «Him use metal club», «Me has no idea». «Us being accomplices» и
+    # «Me of course!» — разговорная речь, не ломаная: -ing и служебные слова не в счёт.
+    r"(?:^|[.!?]\s+)(?:Him|Me|Them) "
+    r"(?!and\b|or\b|too\b|of\b|neither\b|either\b|both\b|first\b|again\b|alone\b)"
+    r"[a-z]+(?<!ing)\b"
     # глагол с 'd вместо прошедшего времени: «he be'd ill», «become'd wife»
-    r"|\b(?:be|become|come|go|know|see|make|take|give|get|do|say|run|fight)'d\b"
+    r"|\b(?:be|become|come|go|know|see|make|take|give|get|do|say|run|fight|lose|forget)'d\b"
     # «no move», «no want» — отрицание без вспомогательного
     r"|(?<!, )(?<!\bhave )\bno (?:move|want|like|know|go|understand|fight|die|see)\b")
 
@@ -124,7 +127,16 @@ def lost_names(original: str, stored: str, fresh: str) -> list:
     s_low = (stored or "").lower().replace("ё", "е")
     f_low = (fresh or "").lower().replace("ё", "е")
     lost = []
-    for w in set(re.findall(r"\b[A-Z][a-z'\-]{3,}\b", original or "")):
+    # Только имя внутри фразы: там заглавная значит имя. Короткую подпись («Moth»,
+    # «Reanimate», «Diamond») целиком судит правило официальной таблицы, а в таблице
+    # имён такие слова — шум: «Moth → Мот» это имя персонажа, и правка по нему
+    # превратила «Моль» в «Мот».
+    if len((original or "").split()) < 4:
+        return lost
+    from translator.validation.official_context import _mid_sentence_caps
+    for w in set(_mid_sentence_caps(original or "")):
+        if len(w) < 4:
+            continue
         ru = names.get(w)
         if not ru:
             continue
@@ -161,6 +173,25 @@ def decide(row, speaker_gender: str | None = None, speaker_pidgin: bool = False)
     return True, "promote"
 
 
+def repair_gender(row, speaker_gender: str | None) -> str | None:
+    """Привести «я» к полу говорящего без ИИ — и проверить, что вышло.
+
+    Правка (`gender.enforce`) знает глаголы прошедшего времени, но не все краткие
+    прилагательные: «я бы дал больше» она исправит, а «я слишком щедра» оставит, и
+    строка станет смешанной. Поэтому результат принимается, только если после правки
+    род «я» ровно тот, что у говорящего.
+    """
+    if not speaker_gender:
+        return None
+    from translator.characters.gender import enforce
+    fixed = enforce(row["original"] or "", row["translation"] or "", speaker_gender)
+    if fixed == (row["translation"] or ""):
+        return None
+    if first_person_gender(fixed) != {speaker_gender}:
+        return None
+    return fixed
+
+
 # ── план по всему слою ──────────────────────────────────────────────────────
 
 def _speakers():
@@ -176,7 +207,10 @@ def _speakers():
 
 
 def plan(con, since: float = 0.0) -> list:
-    """[(row, ok, причина)] по каждому рассуженному ответу слоя.
+    """[(row, ok, причина, текст)] по каждому рассуженному ответу слоя.
+
+    Текст — то, что пойдёт в корпус: обычно ответ модели как есть, а для строки, где
+    род говорящего чинится без ИИ, — исправленный.
 
     Если на строку пришло несколько ответов, в корпус может уйти только самый
     поздний из одобренных: дальше он всё равно заменил бы предыдущий.
@@ -194,15 +228,24 @@ def plan(con, since: float = 0.0) -> list:
         if g is None and card is not None:
             g = {"male": "m", "female": "f", "m": "m", "f": "f"}.get(
                 (getattr(card, "sex", "") or "").lower())
-        ok, why = decide(r, speaker_gender=g,
-                         speaker_pidgin=bool(card and getattr(card, "pidgin", False)))
-        out.append((r, ok, why))
+        pidgin = bool(card and getattr(card, "pidgin", False))
+        ok, why = decide(r, speaker_gender=g, speaker_pidgin=pidgin)
+        text = r["translation"]
+        if why == "gender:contradicts_speaker":
+            fixed = repair_gender(r, g)
+            if fixed:
+                patched = dict(r)
+                patched["translation"] = fixed
+                ok2, why2 = decide(patched, speaker_gender=g, speaker_pidgin=pidgin)
+                if ok2:
+                    ok, why, text = True, "promote:gender_repaired", fixed
+        out.append((r, ok, why, text))
     latest: dict = {}
-    for i, (r, ok, _why) in enumerate(out):
+    for i, (r, ok, _why, _t) in enumerate(out):
         if ok:
             prev = latest.get(r["string_id"])
             if prev is not None:
-                pr = out[prev][0]
-                out[prev] = (pr, False, "superseded")
+                pr, _o, _w, pt = out[prev]
+                out[prev] = (pr, False, "superseded", pt)
             latest[r["string_id"]] = i
     return out

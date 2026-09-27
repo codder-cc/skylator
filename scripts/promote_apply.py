@@ -43,7 +43,7 @@ def main() -> None:
     con.execute("PRAGMA busy_timeout=120000")
     decided = P.plan(con, since=args.since)
     chosen, skipped = [], collections.Counter()
-    for r, ok, why in decided:
+    for r, ok, why, text in decided:
         if not ok:
             continue
         cur = con.execute("SELECT translation, status, quality_score FROM strings "
@@ -55,12 +55,13 @@ def main() -> None:
         if (cur["translation"] or "").strip() != stored:
             skipped["строка менялась после раздачи"] += 1
             continue
-        chosen.append((r, cur))
+        chosen.append((r, cur, text, why))
     if args.limit:
         chosen = chosen[:args.limit]
-    print(f"одобрено политикой: {sum(ok for _, ok, _ in decided):,}; "
+    print(f"одобрено политикой: {sum(ok for _, ok, _, _ in decided):,}; "
           f"к записи: {len(chosen):,}; пропущено: {dict(skipped)}", file=out)
-    by_type = collections.Counter(r["rec_type"] for r, _ in chosen)
+    by_type = collections.Counter(r["rec_type"] for r, *_ in chosen)
+    print("исправлено без ИИ:", sum(1 for *_, w in chosen if w != "promote"), file=out)
     print("по типам:", dict(by_type.most_common()), file=out)
     if not args.apply:
         print("сухой прогон — корпус не тронут. Для записи: --apply", file=out)
@@ -80,20 +81,20 @@ def main() -> None:
         "original_translation, original_status, original_quality_score) "
         "VALUES (?,?,?,?,?,?,?)",
         [(cp, r["mod_name"], r["esp_name"], r["key"], cur["translation"] or "",
-          cur["status"] or "pending", cur["quality_score"]) for r, cur in chosen])
+          cur["status"] or "pending", cur["quality_score"]) for r, cur, *_ in chosen])
     repo.db.commit()
     print(f"checkpoint {cp} — {len(chosen):,} строк; откат: "
           f"POST /api/checkpoints/{cp}/restore", file=out, flush=True)
 
     landed = refused = 0
-    for r, _cur in chosen:
+    for r, _cur, text, _why in chosen:
         res = mgr.save_string(
             mod_name=r["mod_name"], esp_name=r["esp_name"], key=r["key"],
-            translation=r["translation"], original=r["original"],
+            translation=text, original=r["original"],
             source="ai-judged", machine_label=r["machine"] or "",
             produced_at=r["produced_at"], merge=True, prefer_incoming=True,
             rec_type=r["rec_type"], field_type=r["field_type"])
-        if (getattr(res, "translation", "") or "").strip() == r["translation"].strip():
+        if (getattr(res, "translation", "") or "").strip() == text.strip():
             landed += 1
             set_gate(repo, r["id"], "promoted")
         else:

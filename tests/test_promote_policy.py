@@ -76,3 +76,17 @@ def test_a_gender_repair_is_taken_only_when_the_whole_line_agrees():
                  "Говорят, я слишком щедра. Я бы дала больше.",
                  "Говорят, я слишком щедра. Я бы дала больше.")
     assert P.repair_gender(mixed, "m") is None
+
+
+def test_a_broken_stored_text_loses_to_a_clean_one_without_the_judge():
+    row = {"original": "I miss my son.", "rival": "⟨H0⟩Я скучаю по сыну.⟨H0⟩",
+           "stored_at_arrival": "⟨H0⟩Я скучаю по сыну.⟨H0⟩", "rec_type": "INFO",
+           "field_type": "NAM1"}
+    assert P.stored_is_broken(row) is True
+
+
+def test_a_rhetorical_negation_is_not_a_broken_stored_text():
+    row = {"original": "Well, isn't that a pity.", "rival": "Ну что ж, как жаль.",
+           "stored_at_arrival": "Ну что ж, как жаль.", "rec_type": "INFO",
+           "field_type": "NAM1"}
+    assert P.stored_is_broken(row) is False

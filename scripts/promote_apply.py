@@ -61,7 +61,7 @@ def main() -> None:
     print(f"одобрено политикой: {sum(ok for _, ok, _, _ in decided):,}; "
           f"к записи: {len(chosen):,}; пропущено: {dict(skipped)}", file=out)
     by_type = collections.Counter(r["rec_type"] for r, *_ in chosen)
-    print("исправлено без ИИ:", sum(1 for *_, w in chosen if w != "promote"), file=out)
+    print("по причинам:", dict(collections.Counter(w for *_, w in chosen)), file=out)
     print("по типам:", dict(by_type.most_common()), file=out)
     if not args.apply:
         print("сухой прогон — корпус не тронут. Для записи: --apply", file=out)

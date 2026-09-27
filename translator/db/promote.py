@@ -192,6 +192,35 @@ def repair_gender(row, speaker_gender: str | None) -> str | None:
     return fixed
 
 
+# Дефекты хранимого текста, при которых он проигрывает чистому новому без судьи.
+# «Потеряно отрицание» сюда не входит: правило шумит на риторических вопросах —
+# «Isn't that a pity» → «Ну что ж, как жаль» оно считает потерей, и замена на
+# «неужели это не жаль» делала строку хуже.
+_HARD_STORED = ("glossary", "angle brackets", "untranslated", "mixed alphabets",
+                "foreign script", "markup lost", "model commentary", "missing ",
+                "prompt echoed")
+
+
+def stored_is_broken(row, terms=None) -> bool:
+    """Правила бракуют хранимый текст по признаку, который не бывает вкусовщиной."""
+    from translator.validation.quality import compute_string_status
+    stored = row["rival"] or row["stored_at_arrival"] or ""
+    if not stored:
+        return False
+    try:
+        _s, _t, issues, status = compute_string_status(
+            row["original"] or "", stored, terms, row["rec_type"], row["field_type"])
+    except Exception:                                              # noqa: BLE001
+        return False
+    if status != "needs_review":
+        return False
+    for i in issues or []:
+        msg = (i.get("message") if isinstance(i, dict) else str(i)) or ""
+        if msg.startswith(_HARD_STORED):
+            return True
+    return False
+
+
 # ── план по всему слою ──────────────────────────────────────────────────────
 
 def _speakers():
@@ -217,6 +246,11 @@ def plan(con, since: float = 0.0) -> list:
     """
     from translator.data_manager.string_manager import _identity_from_key
     sp, state = _speakers()
+    try:
+        from translator.validation.terminology import load_terms
+        terms = load_terms()
+    except Exception:                                              # noqa: BLE001
+        terms = None
     rows = con.execute("SELECT * FROM candidates WHERE produced_at > ? AND judge IS NOT NULL "
                        "AND judge <> 'broken_judge' ORDER BY produced_at", (since,)).fetchall()
     out = []
@@ -239,6 +273,17 @@ def plan(con, since: float = 0.0) -> list:
                 ok2, why2 = decide(patched, speaker_gender=g, speaker_pidgin=pidgin)
                 if ok2:
                     ok, why, text = True, "promote:gender_repaired", fixed
+        # Судья не уверен, но хранимый текст сломан по правилам, а новый чист: «строго
+        # лучше» здесь решают правила, а не вкус. Если судья прямо выбрал хранимый —
+        # не спорим. Все фильтры (род, ломаная речь, имена) действуют и здесь.
+        if why == "judge:unsure" and r["rules_status"] == "translated"                 and stored_is_broken(r, terms):
+            patched = dict(r)
+            patched["judge"] = "fresh"
+            ok2, why2 = decide(patched, speaker_gender=g, speaker_pidgin=pidgin)
+            if ok2:
+                ok, why, text = True, "promote:stored_broken", r["translation"]
+            else:
+                why = why2
         out.append((r, ok, why, text))
     latest: dict = {}
     for i, (r, ok, _why, _t) in enumerate(out):

@@ -15,18 +15,22 @@ from translator.db import promote as P  # noqa: E402
 
 def _row(original, stored, fresh, judge="fresh", rules="translated"):
     return {"judge": judge, "rules_status": rules, "rival": stored,
-            "stored_at_arrival": stored, "translation": fresh, "original": original}
+            "stored_at_arrival": stored, "translation": fresh, "original": original,
+            "rec_type": "INFO", "field_type": "NAM1"}
 
 
 def test_only_a_fresh_verdict_with_clean_rules_can_pass():
-    assert P.decide(_row("Hi.", "Привет.", "Здравствуй.", judge="unsure"))[0] is False
-    assert P.decide(_row("Hi.", "Привет.", "Здравствуй.", rules="needs_review"))[0] is False
-    assert P.decide(_row("Hi.", "Привет.", "Здравствуй."))[0] is True
+    en = "Hello there, traveller, and welcome."
+    assert P.decide(_row(en, "Привет, путник, добро пожаловать.", "Здравствуй, путник.",
+                         judge="unsure"))[0] is False
+    assert P.decide(_row(en, "Привет, путник, добро пожаловать.", "Здравствуй, путник.",
+                         rules="needs_review"))[0] is False
+    assert P.decide(_row(en, "Привет, путник, добро пожаловать.", "Здравствуй, путник."))[0]
 
 
 def test_the_speakers_gender_is_not_changed_by_the_judge():
     """«Когда я была юной» → «когда я был маленьким»: судья этого не видит."""
-    row = _row("When I was very young.", "Когда я была очень юной.",
+    row = _row("When I was very young, my mother told me.", "Когда я была очень юной.",
                "Когда я был очень маленьким.")
     assert P.decide(row) == (False, "gender:changed_speaker_unknown")
     # известный пол говорящего решает спор
@@ -99,3 +103,15 @@ def test_a_name_fix_is_taken_only_when_it_stays_narrow():
     wide = _row("They say Alduin is back.", "Говорят, Альдуин вернулся.",
                 "Ходят слухи, что Алдуин снова здесь.", judge="termfix")
     assert P.decide(wide) == (False, "termfix:too_wide")
+
+
+def test_a_game_label_is_not_changed_on_the_judges_taste():
+    """«Вызов гаргульи» → «Призвать гаргулью»: конвенция игры сильнее живости."""
+    row = _row("Conjure Gargoyle", "Вызов гаргульи", "Призвать гаргулью")
+    row.update({"rec_type": "MESG", "field_type": "ITXT"})
+    assert P.decide(row) == (False, "label:convention")
+    line = _row("I have the best cats in Skyrim, take a look at them.",
+                "У меня лучшие кошки в Скайриме, взгляни.",
+                "У меня лучшие кошки во всём Скайриме, взгляни на них.")
+    line.update({"rec_type": "INFO", "field_type": "NAM1"})
+    assert P.decide(line)[0] is True

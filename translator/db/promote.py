@@ -146,6 +146,21 @@ def lost_names(original: str, stored: str, fresh: str) -> list:
     return lost
 
 
+# Подписи игры: названия (FULL), кнопки (ITXT), цели заданий (NNAM), реплики-кнопки
+# игрока (DIAL/FULL, RNAM) и описания эффектов (MGEF/DNAM). Здесь решают конвенции
+# игры, а не живость русского, и судья о них не знает. Замер на эталоне после первого
+# применения: из 13 подписей, где хранимое совпадало с официальным, судья заменил 11 —
+# «Вызов гаргульи» → «Призвать гаргулью», «Уйти» → «Уходи.», «Навык … увеличивается
+# на <mag> ед.» → «Увеличивает навык … на <mag> единиц», «Я хочу купить дом» → «Я хотел
+# бы купить дом» (род игрока, которого игра намеренно избегает).
+_LABEL_FIELDS = {"FULL", "ITXT", "NNAM", "RNAM"}
+
+
+def is_label(row) -> bool:
+    rt, ft = (row["rec_type"] or ""), (row["field_type"] or "")
+    return ft in _LABEL_FIELDS or (rt, ft) == ("MGEF", "DNAM")         or len((row["original"] or "").strip()) <= 25
+
+
 def _changed_share(a: str, b: str) -> float:
     """Доля слов, которые правка тронула."""
     import difflib
@@ -171,6 +186,12 @@ def decide(row, speaker_gender: str | None = None, speaker_pidgin: bool = False)
         return False, f"judge:{row['judge'] or 'none'}"
     if (row["rules_status"] or "") != "translated":
         return False, "rules"
+    # Подпись меняется только по явной причине: старый текст сломан по правилам
+    # (решается в plan, до этой проверки) или имя чинится по заданию. Вкус судьи
+    # против конвенции игры — не причина.
+    if (row["judge"] or "") == "fresh" and is_label(row) \
+            and not ("_stored_broken" in row.keys() and row["_stored_broken"]):
+        return False, "label:convention"
     stored = row["rival"] or row["stored_at_arrival"] or ""
     fresh = row["translation"] or ""
     original = row["original"] or ""
@@ -293,9 +314,10 @@ def plan(con, since: float = 0.0) -> list:
         # Судья не уверен, но хранимый текст сломан по правилам, а новый чист: «строго
         # лучше» здесь решают правила, а не вкус. Если судья прямо выбрал хранимый —
         # не спорим. Все фильтры (род, ломаная речь, имена) действуют и здесь.
-        if why == "judge:unsure" and r["rules_status"] == "translated"                 and stored_is_broken(r, terms):
+        if why in ("judge:unsure", "label:convention") and r["rules_status"] == "translated"                 and stored_is_broken(r, terms):
             patched = dict(r)
             patched["judge"] = "fresh"
+            patched["_stored_broken"] = True
             ok2, why2 = decide(patched, speaker_gender=g, speaker_pidgin=pidgin)
             if ok2:
                 ok, why, text = True, "promote:stored_broken", r["translation"]

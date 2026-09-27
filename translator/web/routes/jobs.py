@@ -1838,7 +1838,9 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
         if _req_map:
             where.append("id IN (" + ",".join(str(i) for i in _req_map) + ")")
         elif _ids:
-            where.append("id IN (" + ",".join(str(i) for i in _ids) + ")")
+            # Только этот список — без фильтров прохода (пустой перевод, донор, …):
+            # иначе часть выборки молча выпадала бы, и ветки опыта получали бы разное.
+            where = ["id IN (" + ",".join(str(i) for i in _ids) + ")"]
         elif not sweep:
             where.append("status='needs_review'" if (blind or fixing_terms)
                          else "status='translated'")

@@ -1,0 +1,4314 @@
+[
+{
+"id": 159903,
+"en": "Ahzidal's Ring of Necromancy",
+"off": "Азидалово кольцо некромантии",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 158987,
+"en": "Treasure Map III",
+"off": "Карта сокровищ III",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 158640,
+"en": "Bloodthorn",
+"off": "Кровавый шип",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 4058,
+"en": "Search",
+"off": "Осмотреть:",
+"rec_type": "ACTI",
+"field_type": "RNAM"
+},
+{
+"id": 158493,
+"en": "Steel Battleaxe of Fiery Souls",
+"off": "Стальная секира пылких душ",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 158155,
+"en": "Examine",
+"off": "Осмотреть",
+"rec_type": "ACTI",
+"field_type": "RNAM"
+},
+{
+"id": 158890,
+"en": "Balmora Blue",
+"off": "Балморская синь",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 158629,
+"en": "Ghostblade",
+"off": "Призрачный клинок",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 126193,
+"en": "Dagger Rack",
+"off": "Стойка для кинжалов",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 158739,
+"en": "Eduj",
+"off": "Эдуж",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 686603,
+"en": "Grain Mill",
+"off": "Зерновая мельница",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 158621,
+"en": "Ahzidal",
+"off": "Азидал",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 158654,
+"en": "Elder Scroll (Blood)",
+"off": "Древний свиток (Кровь)",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 159023,
+"en": "The Aetherium Forge",
+"off": "Кузница этерия",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 144076,
+"en": "Sapphire Geode",
+"off": "Месторождение сапфиров",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 158656,
+"en": "Elder Scroll (Sun)",
+"off": "Древний свиток (Солнце)",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 159742,
+"en": "Spiced Wine",
+"off": "Пряное вино",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 158432,
+"en": "The Legendary Scourge",
+"off": "Легендарный Бич",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 4073,
+"en": "Activate",
+"off": "Активировать:",
+"rec_type": "ACTI",
+"field_type": "RNAM"
+},
+{
+"id": 158931,
+"en": "Lycanthropic Legends of Skyrim",
+"off": "Легенды об оборотнях Скайрима",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 158212,
+"en": "Thieves Guild",
+"off": "Гильдия воров",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 158193,
+"en": "Meridia's Beacon",
+"off": "Путеводная звезда Меридии",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 343095,
+"en": "Iron Ore Vein",
+"off": "Железорудная жила",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 158658,
+"en": "Golden Ship Model",
+"off": "Золотая модель корабля",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 158450,
+"en": "Ancient Shrouded Armor",
+"off": "Древняя броня теней",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 159068,
+"en": "Switch",
+"off": "Переключатель",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 158477,
+"en": "Torygg's War Horn",
+"off": "Боевой рог Торуга",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 292274,
+"en": "Travel to",
+"off": "Переместиться -->",
+"rec_type": "ACTI",
+"field_type": "RNAM"
+},
+{
+"id": 159753,
+"en": "Enchantment",
+"off": "Зачарование",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 159113,
+"en": "Benefactor",
+"off": "Провизор",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 159875,
+"en": "Soul",
+"off": "Душа",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 159002,
+"en": "Alftand",
+"off": "Альфтанд",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 158686,
+"en": "Ahzidal's Helm of Vision",
+"off": "Азидалов шлем проницательности",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 52,
+"en": "Take",
+"off": "Взять:",
+"rec_type": "ACTI",
+"field_type": "RNAM"
+},
+{
+"id": 144134,
+"en": "Luna Moth",
+"off": "Лунный мотылек",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 159362,
+"en": "Boethiah's Glory",
+"off": "Слава Боэтии",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 158132,
+"en": "Red Eagle's Fury",
+"off": "Ярость Красного Орла",
+"rec_type": "ACTI",
+"field_type": "FULL"
+},
+{
+"id": 242,
+"en": "Chest",
+"off": "Сундук",
+"rec_type": "CONT",
+"field_type": "FULL"
+},
+{
+"id": 660839,
+"en": "Archmage Geirmund",
+"off": "Архимаг Гейрмунд",
+"rec_type": "CONT",
+"field_type": "FULL"
+},
+{
+"id": 130695,
+"en": "Gyldenhul Barrow",
+"off": "Курган Гильденхул",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 18997,
+"en": "Redoran's Retreat",
+"off": "Приют Редорана",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 16044,
+"en": "Cliffside Retreat",
+"off": "Горный приют",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 19034,
+"en": "Reachwind Eyrie",
+"off": "Гнездо Ветров Предела",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 9541,
+"en": "Mistveil Keep",
+"off": "Крепость Миствейл",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 130230,
+"en": "Niranye's Basement",
+"off": "Дом Нирании - Подвал",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 15064,
+"en": "Carlotta Valentia's House",
+"off": "Дом Карлотты Валентии",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 18922,
+"en": "Boulderfall Cave",
+"off": "Камнепадная пещера",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 130724,
+"en": "Twilight Sepulcher Inner Sanctum",
+"off": "Сумеречная гробница - Внутреннее святилище",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 130213,
+"en": "Clearspring Cave",
+"off": "Пещера Чистый Ручей",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 130182,
+"en": "Reeking Tower",
+"off": "Дымящаяся башня",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 15044,
+"en": "Half-Moon Mill",
+"off": "Полулунная лесопилка",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 18918,
+"en": "Fort Greenwall",
+"off": "Форт Гринвол",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 16875,
+"en": "Driftshade Cellar",
+"off": "Дрифтшейд - Подвал",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 130550,
+"en": "Windstad Manor, Cellar",
+"off": "Поместье Уиндстад - подвал",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 12654,
+"en": "Swindler's Den",
+"off": "Логово плута",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 19103,
+"en": "Fenn's Gulch Mine",
+"off": "Шахта Ущелье Фенна",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 18990,
+"en": "The White Phial",
+"off": "Белый флакон",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 18947,
+"en": "Purewater Run",
+"off": "Чистый ручей",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 377,
+"en": "The Bee and Barb",
+"off": "Пчела и жало",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 165104,
+"en": "Hall of Heroes",
+"off": "Зал героев",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 2112,
+"en": "Argonian Assemblage",
+"off": "Аргонианский блок",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 18905,
+"en": "Dragonsreach Dungeon",
+"off": "Драконий Предел - Подземелье",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 130377,
+"en": "Endon's House",
+"off": "Дом Эндона",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 130720,
+"en": "Tolvald's Cave",
+"off": "Пещера Толвальда",
+"rec_type": "CELL",
+"field_type": "FULL"
+},
+{
+"id": 252771,
+"en": "Fire Storm 65",
+"off": "Огненный шторм 65",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 7303,
+"en": "Fortify Shouts",
+"off": "Повышение искусства Крика",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 354369,
+"en": "50% chance for each element of fire, frost and shock to do <mag> points of damage.",
+"off": "50% шанс (для каждого из трех элементов: огня, холода и электричества) нанести <mag> ед. урона.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 125161,
+"en": "Frost breath",
+"off": "Морозное дыхание",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 279358,
+"en": "Target takes <mag> points of damage, and twice as much Stamina damage.",
+"off": "Наносит цели <mag> ед. урона и отнимает вдвое больше единиц запаса сил.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 181468,
+"en": "Icy Spear",
+"off": "Ледяное копье",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 279213,
+"en": "Ice Spike",
+"off": "Ледяной шип",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 7156,
+"en": "If target dies within <dur> seconds, fills a soul gem.",
+"off": "Если противник умирает в течение <dur> с, заполняет камень душ.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 125549,
+"en": "Summon Durnehviir",
+"off": "Вызов Дюрневира",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 339911,
+"en": "Sprint Effect 1",
+"off": "Эффект рывка 1",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 125229,
+"en": "Increases Light Armor skill by <mag> points.",
+"off": "Навык ношения легкой брони увеличивается на <mag> ед.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 279003,
+"en": "A Thunderbolt that does <mag> points of shock damage to Health and half that to Magicka.",
+"off": "Грозовой разряд, наносящий <mag> ед. урона электричеством здоровью и вдвое меньший урон магии.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 310637,
+"en": "Time between shouts is reduced 20%.",
+"off": "Время между Криками снижено на 20%.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 310890,
+"en": "Health is increased by <mag> points for <dur> seconds.",
+"off": "Запас здоровья увеличен на <mag> ед. в течение <dur> с.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 279666,
+"en": "Fortified Healing",
+"off": "Повышенное излечение",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 157812,
+"en": "Heals the target <mag> points, but not undead, atronachs or machines.",
+"off": "Восстанавливает <mag> ед. здоровья цели. Не действует на нежить, атронахов и машины.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 17642,
+"en": "Restore Health Area",
+"off": "Восстановление здоровья окружающих",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 2407,
+"en": "Grindstone",
+"off": "Точильный камень",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 3447,
+"en": "Soul Cloak",
+"off": "Плащ душ",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 385700,
+"en": "Does <mag> points of Magicka damage.",
+"off": "Отнимает <mag> ед. магии.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 235276,
+"en": "Cure Poison",
+"off": "Противоядие",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 12690,
+"en": "Fortify Pickpocket",
+"off": "Повышение навыка: карманные кражи",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 688353,
+"en": "You are <mag>% less effective with melee weapons.",
+"off": "Вы на <mag>% менее эффективно обращаетесь с холодным оружием.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 341983,
+"en": "Triggered by nearby enemies, the rune explodes for <mag> points of fire damage.",
+"off": "Задетая противником, руна взрывается, нанося <mag> ед. урона огнем.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 9282,
+"en": "Target takes <mag> points of shock damage, and half as much Magicka damage.",
+"off": "Наносит цели <mag> ед. урона электричеством и отнимает вдвое меньшее количество единиц магии.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 299987,
+"en": "Ward - Steadfast",
+"off": "Оберег - устойчивый",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 125591,
+"en": "Mist Form",
+"off": "Туманная форма",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 125173,
+"en": "Ethereal",
+"off": "Бестелесность",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 125632,
+"en": "Damage Health Regen",
+"off": "Повреждение регенерации здоровья",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 125544,
+"en": "[SURV=Swim unharmed in freezing cold water.]",
+"off": "[SURV=Можно безбоязненно плавать в ледяной воде.]",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 125574,
+"en": "Stendarr's Aura Light",
+"off": "Свет ауры Стендарра",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 310332,
+"en": "Armor - Oak",
+"off": "Броня - Дуб",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 252774,
+"en": "Summons Arvak in the Soul Cairn or Tamriel wilderness to act as your steed.",
+"off": "Призывает Арвака в Каирн Душ или в пустоши Тамриэля, где он будет служить вам - своему всаднику.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 280405,
+"en": "Drain Vitality - Magicka",
+"off": "Высасывание жизненной энергии - магия",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 17234,
+"en": "Sneaking is <mag>% better.",
+"off": "Скрытность повышается на <mag>%.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 339954,
+"en": "Marked for Death - Armor",
+"off": "Смертный приговор - Броня",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 125249,
+"en": "Stamina regenerates <mag>% faster.",
+"off": "Запас сил восстанавливается на <mag>% быстрее.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 16972,
+"en": "Conjure Gargoyle",
+"off": "Вызов гаргульи",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 17202,
+"en": "Created potions are <mag>% more powerful.",
+"off": "Созданные вами зелья на <mag>% сильнее.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 125155,
+"en": "Fire breath",
+"off": "Огненное дыхание",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 280406,
+"en": "Drains <mag> points of Magicka per second for <dur> seconds.",
+"off": "Высасывает <mag> ед. магии в секунду в течение <dur> с.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 332927,
+"en": "Magicka regenerates <mag>% more slowly.",
+"off": "Магия восстанавливается на <mag>% медленнее.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 310914,
+"en": "Stamina is increased by <mag> points for <dur> seconds.",
+"off": "Запас сил увеличен на <mag> ед. в течение <dur> с.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 3395,
+"en": "Sparks",
+"off": "Искры",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 299883,
+"en": "Elf Slayer",
+"off": "Убийца эльфов",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 125768,
+"en": "Reduced Magicka",
+"off": "Уменьшенная магия",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 125302,
+"en": "Absorb Stamina",
+"off": "Поглощение запаса сил",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 341753,
+"en": "Fenzy Rune - Master of the Mind",
+"off": "Руна бешенства - Мастер разума",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 125585,
+"en": "Summon Arvak",
+"off": "Вызов Арвака",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 125038,
+"en": "Increases Armor Rating by <mag> points.",
+"off": "Повышает класс брони на <mag>.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 125190,
+"en": "Ravage Stamina",
+"off": "Опустошение запаса сил",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 125111,
+"en": "Restoration spells are <mag>% stronger for <dur> seconds.",
+"off": "Заклинания восстановления сильнее на <mag>% в течение <dur> с.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 310590,
+"en": "Shield Charge Cloak Effect",
+"off": "Живой молот - плащ",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 125593,
+"en": "Restore Health to Undead",
+"off": "Восстановление здоровья нежити",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 228032,
+"en": "Peace",
+"off": "Мир",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 720419,
+"en": "See what others cannot.",
+"off": "Вы видите то, что недоступно остальным.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 341905,
+"en": "Vampire Mesmerize",
+"off": "Гипноз вампира",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 228720,
+"en": "Twin Souls",
+"off": "Парные души",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 125384,
+"en": "Sets even powerful undead on fire and makes them flee for <dur> seconds.",
+"off": "Поджигает даже могущественную нежить и заставляет ее бежать в течение <dur> с.",
+"rec_type": "MGEF",
+"field_type": "DNAM"
+},
+{
+"id": 125082,
+"en": "Frost Cloak",
+"off": "Морозный плащ",
+"rec_type": "MGEF",
+"field_type": "FULL"
+},
+{
+"id": 260115,
+"en": "Nordic Armor of Extreme Conjuring",
+"off": "Нордская броня великого колдовства",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 172781,
+"en": "Circlet of Alteration",
+"off": "Обруч изменения",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 259933,
+"en": "Stalhrim Armor of Regeneration",
+"off": "Сталгримовая броня регенерации",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 259750,
+"en": "Bonemold Gauntlets of Major Alchemy",
+"off": "Костяные перчатки настоящей алхимии",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 260144,
+"en": "Nordic Gauntlets of Eminent Sure Grip",
+"off": "Нордские перчатки истинной хватки",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 126489,
+"en": "Tumblerbane Gloves",
+"off": "Перчатки замочных дел мастера",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 172213,
+"en": "Steel Helmet of Alteration",
+"off": "Стальной шлем изменения",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 173426,
+"en": "Steel Plate Armor of Major Alteration",
+"off": "Стальная пластинчатая броня настоящего изменения",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 172782,
+"en": "Circlet of Major Alteration",
+"off": "Обруч настоящего изменения",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 4159,
+"en": "Hooded Red Robes",
+"off": "Красное одеяние с капюшоном",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 259503,
+"en": "Necklace of Minor Lockpicking",
+"off": "Ожерелье молодого взломщика",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 259039,
+"en": "Necklace of Fire Abatement",
+"off": "Ожерелье устранения огня",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 259057,
+"en": "Necklace of Extreme Stamina",
+"off": "Ожерелье великого запаса сил",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 126337,
+"en": "Shrouded Cowl Maskless",
+"off": "Капюшон теней",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 258684,
+"en": "Imperial Helmet of Major Illusion",
+"off": "Имперский шлем настоящей иллюзии",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 173347,
+"en": "Expert Robes of Destruction",
+"off": "Одеяние эксперта школы разрушения",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 172825,
+"en": "Necklace of Major Health",
+"off": "Ожерелье настоящего здоровья",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 172868,
+"en": "Ring of Stamina",
+"off": "Кольцо запаса сил",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 126527,
+"en": "Hooded Thalmor Robes",
+"off": "Талморское одеяние с капюшоном",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 259736,
+"en": "Bonemold Boots of Resist Shock",
+"off": "Костяные сапоги сопротивления электричеству",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 171666,
+"en": "Elven Helmet of Major Illusion",
+"off": "Эльфийский шлем настоящей иллюзии",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 260005,
+"en": "Stalhrim Shield of Frost Abatement",
+"off": "Сталгримовый щит устранения мороза",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 258733,
+"en": "Imperial Bracers of Major Archery",
+"off": "Имперские наручи настоящего лучника",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 171941,
+"en": "Imperial Helmet of Minor Restoration",
+"off": "Имперский шлем малого восстановления",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 126780,
+"en": "Miraak",
+"off": "Мирак",
+"rec_type": "ARMO",
+"field_type": "FULL"
+},
+{
+"id": 176547,
+"en": "Ebony Sword of Evoking",
+"off": "Эбонитовый меч изъятия",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 178137,
+"en": "Elven Warhammer of Ice",
+"off": "Эльфийский боевой молот льда",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 146078,
+"en": "Iron War Axe of Sapping",
+"off": "Железный боевой топор убавления",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 128690,
+"en": "Dwarven Bow of Arcing",
+"off": "Двемерский лук разряда",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 179183,
+"en": "Stalhrim Battleaxe of Debilitation",
+"off": "Сталгримовая секира бессилия",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 178714,
+"en": "Nordic Sword of Dread",
+"off": "Нордский меч ужаса",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 176736,
+"en": "Daedric Dagger of Harvesting",
+"off": "Даэдрический кинжал косьбы",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 261674,
+"en": "Dwarven Battleaxe of Harvesting",
+"off": "Двемерская секира косьбы",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 261773,
+"en": "Dwarven Mace of Harvesting",
+"off": "Двемерская булава косьбы",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 179025,
+"en": "Stalhrim Mace of Exhaustion",
+"off": "Сталгримовая булава изнурения",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 262974,
+"en": "Stalhrim Battleaxe of Thunderbolts",
+"off": "Сталгримовая секира грома",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 128784,
+"en": "Ebony Bow of Thunderbolts",
+"off": "Эбонитовый лук грома",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 177384,
+"en": "Reverent Orcish Dagger",
+"off": "Благословленный орочий кинжал",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 128662,
+"en": "Steel Warhammer of Ice",
+"off": "Стальной боевой молот льда",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 176545,
+"en": "Ebony Sword of the Vampire",
+"off": "Эбонитовый меч вампира",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 178379,
+"en": "Glass War Axe of Dread",
+"off": "Стеклянный боевой топор ужаса",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 261538,
+"en": "Orcish War Axe of Flames",
+"off": "Орочий боевой топор пламени",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 176769,
+"en": "Daedric Greatsword of Leeching",
+"off": "Даэдрический двуручный меч высасывания",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 128570,
+"en": "Honed Falmer War Axe",
+"off": "Хороший фалмерский боевой топор",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 128782,
+"en": "Ebony Bow of Immobilizing",
+"off": "Эбонитовый лук сковывания",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 262121,
+"en": "Elven War Axe of Harrowing",
+"off": "Эльфийский боевой топор отделения",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 179206,
+"en": "Stalhrim Battleaxe of Devouring",
+"off": "Сталгримовая секира пожирания",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 146021,
+"en": "Sanctified Iron Greatsword",
+"off": "Освященный железный двуручный меч",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 145987,
+"en": "Iron Dagger of Shocks",
+"off": "Железный кинжал электричества",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 261562,
+"en": "Orcish Warhammer of Despair",
+"off": "Орочий боевой молот отчаяния",
+"rec_type": "WEAP",
+"field_type": "FULL"
+},
+{
+"id": 7669,
+"en": "Repel Undead",
+"off": "Отталкивание нежити",
+"rec_type": "ENCH",
+"field_type": "FULL"
+},
+{
+"id": 7685,
+"en": "Shock Rune",
+"off": "Шоковая руна",
+"rec_type": "ENCH",
+"field_type": "FULL"
+},
+{
+"id": 7676,
+"en": "Turn Lesser Undead",
+"off": "Отпугивание младшей нежити",
+"rec_type": "ENCH",
+"field_type": "FULL"
+},
+{
+"id": 7702,
+"en": "Miasma",
+"off": "Миазмы",
+"rec_type": "ENCH",
+"field_type": "FULL"
+},
+{
+"id": 125800,
+"en": "Boethiah's Embrace",
+"off": "Объятия Боэтии",
+"rec_type": "ENCH",
+"field_type": "FULL"
+},
+{
+"id": 7720,
+"en": "Dead Thrall",
+"off": "Мертвый трэлл",
+"rec_type": "ENCH",
+"field_type": "FULL"
+},
+{
+"id": 7663,
+"en": "Revenant",
+"off": "Призрак",
+"rec_type": "ENCH",
+"field_type": "FULL"
+},
+{
+"id": 7706,
+"en": "Sun Fire",
+"off": "Огонь солнца",
+"rec_type": "ENCH",
+"field_type": "FULL"
+},
+{
+"id": 126028,
+"en": "Dragon Aspect",
+"off": "Воплощение дракона",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 301449,
+"en": "Blessing of Nocturnal",
+"off": "Благословение Ноктюрнал",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 7743,
+"en": "Fast Healing",
+"off": "Быстрое лечение",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 157968,
+"en": "Fire Breath",
+"off": "Огненное дыхание",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 280650,
+"en": "Gargoyle Abilities",
+"off": "Способности гаргульи",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 381987,
+"en": "Auriel's Shield Knockback",
+"off": "Эффект отталкивания щита Ауриэля",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 125892,
+"en": "Rattles",
+"off": "Хрипунец",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 126037,
+"en": "Summon Spectral Dragon",
+"off": "Призыв призрачного дракона",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 125829,
+"en": "Nightingale Armor Full Set",
+"off": "Полный комплект Соловьиных доспехов",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 669314,
+"en": "Awakening",
+"off": "Пробуждение",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 311526,
+"en": "Bash Disarm",
+"off": "Выбивание оружия",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 273485,
+"en": "Voice of the Sky",
+"off": "Глас небесный",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 340527,
+"en": "Marked for Death - Aus",
+"off": "Смертный приговор - Аус",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 126000,
+"en": "Necromantic Healing",
+"off": "Некромантское лечение",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 324177,
+"en": "Unrelenting Force - Fus Ro",
+"off": "Безжалостная сила - Фус Ро",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 280917,
+"en": "Ice Cloak",
+"off": "Ледяной плащ",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 17253,
+"en": "Apprentice Stone",
+"off": "Знак Ученика",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 281537,
+"en": "Ice Bite",
+"off": "Ледяной укус",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 314457,
+"en": "Clairvoyance",
+"off": "Ясновидение",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 301604,
+"en": "Blessing of Zenithar",
+"off": "Благословение Зенитара",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 126038,
+"en": "Secret Servant",
+"off": "Тайный слуга",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 281590,
+"en": "Chaurus effects",
+"off": "Эффекты коруса",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 280665,
+"en": "Ash Spray",
+"off": "Брызги пепла",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 228869,
+"en": "Quick Shot",
+"off": "Быстрая стрельба",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 7777,
+"en": "Frost",
+"off": "Мороз",
+"rec_type": "SPEL",
+"field_type": "FULL"
+},
+{
+"id": 126161,
+"en": "Scroll of Mayhem",
+"off": "Свиток: Катавасия",
+"rec_type": "SCRL",
+"field_type": "FULL"
+},
+{
+"id": 126176,
+"en": "Shalidor's Insights: Illusion",
+"off": "Работы Шалидора: Иллюзия",
+"rec_type": "SCRL",
+"field_type": "FULL"
+},
+{
+"id": 126149,
+"en": "Scroll of Conjure Frost Atronach",
+"off": "Свиток: Вызов ледяного атронаха",
+"rec_type": "SCRL",
+"field_type": "FULL"
+},
+{
+"id": 328586,
+"en": "Scroll of Lightning Bolt",
+"off": "Свиток: Молния",
+"rec_type": "SCRL",
+"field_type": "FULL"
+},
+{
+"id": 8099,
+"en": "Scroll of Repel Undead",
+"off": "Свиток: Отталкивание нежити",
+"rec_type": "SCRL",
+"field_type": "FULL"
+},
+{
+"id": 126175,
+"en": "Shalidor's Insights: Destruction",
+"off": "Работы Шалидора: Разрушение",
+"rec_type": "SCRL",
+"field_type": "FULL"
+},
+{
+"id": 126134,
+"en": "Scroll of Mass Paralysis",
+"off": "Свиток: Массовый паралич",
+"rec_type": "SCRL",
+"field_type": "FULL"
+},
+{
+"id": 143114,
+"en": "Harvest Blood",
+"off": "Собрать кровь",
+"rec_type": "PERK",
+"field_type": "EPF2"
+},
+{
+"id": 143166,
+"en": "Adept Destruction",
+"off": "Адепт школы разрушения",
+"rec_type": "PERK",
+"field_type": "FULL"
+},
+{
+"id": 8283,
+"en": "Steady Hand",
+"off": "Твердая рука",
+"rec_type": "PERK",
+"field_type": "FULL"
+},
+{
+"id": 267221,
+"en": "Silent Roll",
+"off": "Тихий кувырок",
+"rec_type": "PERK",
+"field_type": "FULL"
+},
+{
+"id": 8315,
+"en": "Investor",
+"off": "Вкладчик",
+"rec_type": "PERK",
+"field_type": "FULL"
+},
+{
+"id": 143250,
+"en": "Dual Savagery",
+"off": "Двойная мясорубка",
+"rec_type": "PERK",
+"field_type": "FULL"
+},
+{
+"id": 143196,
+"en": "Steel Smithing",
+"off": "Стальные доспехи",
+"rec_type": "PERK",
+"field_type": "FULL"
+},
+{
+"id": 342570,
+"en": "Hypnotic Gaze",
+"off": "Гипнотический взгляд",
+"rec_type": "PERK",
+"field_type": "FULL"
+},
+{
+"id": 8357,
+"en": "Barbarian",
+"off": "Варвар",
+"rec_type": "PERK",
+"field_type": "FULL"
+},
+{
+"id": 143154,
+"en": "Master Alteration",
+"off": "Мастер школы изменения",
+"rec_type": "PERK",
+"field_type": "FULL"
+},
+{
+"id": 362611,
+"en": "Unearthly Will",
+"off": "Неземные желания",
+"rec_type": "PERK",
+"field_type": "FULL"
+},
+{
+"id": 143234,
+"en": "Critical Shot",
+"off": "Критический выстрел",
+"rec_type": "PERK",
+"field_type": "FULL"
+},
+{
+"id": 8551,
+"en": "Mage Armor",
+"off": "Магическая броня",
+"rec_type": "PERK",
+"field_type": "FULL"
+},
+{
+"id": 676708,
+"en": "Totem of Terror",
+"off": "Тотем ужаса",
+"rec_type": "PERK",
+"field_type": "FULL"
+},
+{
+"id": 266911,
+"en": "Poisoner",
+"off": "Отравитель",
+"rec_type": "PERK",
+"field_type": "FULL"
+},
+{
+"id": 263723,
+"en": "Glass Smithing",
+"off": "Стеклянные доспехи",
+"rec_type": "PERK",
+"field_type": "FULL"
+},
+{
+"id": 312572,
+"en": "Loved",
+"off": "Ночь в объятиях",
+"rec_type": "PERK",
+"field_type": "FULL"
+},
+{
+"id": 9018,
+"en": "Enchanting",
+"off": "Зачарование",
+"rec_type": "AVIF",
+"field_type": "FULL"
+},
+{
+"id": 192980,
+"en": "Anger",
+"off": "Гнев",
+"rec_type": "NPC_",
+"field_type": "FULL"
+},
+{
+"id": 192909,
+"en": "Indolent Farmer",
+"off": "Праздный крестьянин",
+"rec_type": "NPC_",
+"field_type": "FULL"
+},
+{
+"id": 197601,
+"en": "Undead",
+"off": "Нежить",
+"rec_type": "NPC_",
+"field_type": "FULL"
+},
+{
+"id": 14750,
+"en": "Jora",
+"off": "Йора",
+"rec_type": "NPC_",
+"field_type": "FULL"
+},
+{
+"id": 14446,
+"en": "Endarie",
+"off": "Эндари",
+"rec_type": "NPC_",
+"field_type": "FULL"
+},
+{
+"id": 129366,
+"en": "Barbas",
+"off": "Барбас",
+"rec_type": "NPC_",
+"field_type": "FULL"
+},
+{
+"id": 14554,
+"en": "Hathrasil",
+"off": "Хатрасил",
+"rec_type": "NPC_",
+"field_type": "FULL"
+},
+{
+"id": 191864,
+"en": "Imedhnain",
+"off": "Имеднейн",
+"rec_type": "NPC_",
+"field_type": "FULL"
+},
+{
+"id": 192498,
+"en": "Augur of Dunlain",
+"off": "Авгур Данлейнский",
+"rec_type": "NPC_",
+"field_type": "FULL"
+},
+{
+"id": 193678,
+"en": "Riekling Scout",
+"off": "Риклинг-разведчик",
+"rec_type": "NPC_",
+"field_type": "FULL"
+},
+{
+"id": 192496,
+"en": "Sabjorn",
+"off": "Сабьорн",
+"rec_type": "NPC_",
+"field_type": "FULL"
+},
+{
+"id": 146581,
+"en": "Storm Mage",
+"off": "Грозовой маг",
+"rec_type": "NPC_",
+"field_type": "FULL"
+},
+{
+"id": 9670,
+"en": "Dravin Llanith",
+"off": "Дравин Лланит",
+"rec_type": "NPC_",
+"field_type": "FULL"
+},
+{
+"id": 129348,
+"en": "Mul gro-Largash",
+"off": "Мул гро-Ларгаш",
+"rec_type": "NPC_",
+"field_type": "FULL"
+},
+{
+"id": 129202,
+"en": "Murbul",
+"off": "Мурбул",
+"rec_type": "NPC_",
+"field_type": "FULL"
+},
+{
+"id": 14968,
+"en": "Dreyla Alor",
+"off": "Дрейла Алор",
+"rec_type": "NPC_",
+"field_type": "FULL"
+},
+{
+"id": 192418,
+"en": "Lu'ah",
+"off": "Лу'а",
+"rec_type": "NPC_",
+"field_type": "SHRT"
+},
+{
+"id": 129895,
+"en": "Neloth",
+"off": "Нелот",
+"rec_type": "NPC_",
+"field_type": "FULL"
+},
+{
+"id": 14564,
+"en": "Omluag",
+"off": "Омлаг",
+"rec_type": "NPC_",
+"field_type": "FULL"
+},
+{
+"id": 14859,
+"en": "Faralda",
+"off": "Фаральда",
+"rec_type": "NPC_",
+"field_type": "FULL"
+},
+{
+"id": 199955,
+"en": "Forsworn Warlord",
+"off": "Изгой-военачальник",
+"rec_type": "NPC_",
+"field_type": "FULL"
+},
+{
+"id": 191491,
+"en": "Nana Ildene",
+"off": "Бабушка Ильден",
+"rec_type": "NPC_",
+"field_type": "FULL"
+},
+{
+"id": 327678,
+"en": "Mahkel",
+"off": "Макел",
+"rec_type": "NPC_",
+"field_type": "SHRT"
+},
+{
+"id": 14978,
+"en": "Evul",
+"off": "Эвул",
+"rec_type": "NPC_",
+"field_type": "SHRT"
+},
+{
+"id": 146640,
+"en": "Boar",
+"off": "Кабан",
+"rec_type": "NPC_",
+"field_type": "FULL"
+},
+{
+"id": 15259,
+"en": "Dragon Race",
+"off": "Дракон",
+"rec_type": "RACE",
+"field_type": "FULL"
+},
+{
+"id": 13201,
+"en": "Orc",
+"off": "Орк",
+"rec_type": "RACE",
+"field_type": "FULL"
+},
+{
+"id": 373740,
+"en": "Dawnstar Docks",
+"off": "Доки Данстара",
+"rec_type": "REFR",
+"field_type": "FULL"
+},
+{
+"id": 339875,
+"en": "Pets of Skyrim",
+"off": "Питомцы Скайрима",
+"rec_type": "REFR",
+"field_type": "VMAD"
+},
+{
+"id": 713020,
+"en": "Narzulbur",
+"off": "Нарзулбур",
+"rec_type": "REFR",
+"field_type": "FULL"
+},
+{
+"id": 15364,
+"en": "Helgen",
+"off": "Хелген",
+"rec_type": "REFR",
+"field_type": "FULL"
+},
+{
+"id": 365245,
+"en": "Karthspire Camp",
+"off": "Лагерь Картспайр",
+"rec_type": "REFR",
+"field_type": "VMAD"
+},
+{
+"id": 373729,
+"en": "Hamvir's Rest",
+"off": "Привал Хамвира",
+"rec_type": "REFR",
+"field_type": "FULL"
+},
+{
+"id": 705441,
+"en": "Crabber's Shanty",
+"off": "Хибара краболова",
+"rec_type": "REFR",
+"field_type": "FULL"
+},
+{
+"id": 139004,
+"en": "Isran asked me to find you.",
+"off": "Изран попросил меня найти тебя.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 655871,
+"en": "No, a group called the \"Dawnguard\" sent me here.",
+"off": "Нет, меня сюда прислала группа под названием Стража Рассвета.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 135965,
+"en": "Are the people of Windhelm devout?",
+"off": "Народ в Виндхельме набожный?",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 232287,
+"en": "Where are we going?",
+"off": "Куда мы идем?",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 291957,
+"en": "I've collected some of the Edda for you.",
+"off": "Мне удалось собрать для тебя несколько строф Эдды.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 137341,
+"en": "You're not from Skyrim, are you?",
+"off": "Ты не из Скайрима, не так ли?",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 134371,
+"en": "What's the Hall of the Dead?",
+"off": "Что такое Зал мертвых?",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 135677,
+"en": "I pursue Alduin, the World-Eater.",
+"off": "Я преследую Алдуина, Пожирателя Мира.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 139277,
+"en": "You're no bard/merchant/pilgrim.",
+"off": "Ты не бард/торговец/пилигрим.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 135758,
+"en": "\"Long live the Emperor! Long live the Empire!\"",
+"off": "Да здравствует император! Да здравствует Империя!",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 131406,
+"en": "A priestess of Azura sent me. (Persuade)",
+"off": "Меня послала жрица Азуры. (Убеждение)",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 135555,
+"en": "What's your position on the war?",
+"off": "Кого ты поддерживаешь в этой войне?",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 130959,
+"en": "Actually, I'm looking for this old guy hiding out in Riften.",
+"off": "Вообще-то я ищу одного старика. Он прячется в Рифтене.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 137709,
+"en": "I could get your amulet back.",
+"off": "Я постараюсь вернуть тебе твой амулет.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 135368,
+"en": "Yes, I have.",
+"off": "Да.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 138160,
+"en": "Yes, they're real. I've seen them.",
+"off": "Да, они есть на самом деле. И мне довелось их видеть.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 656051,
+"en": "What about my reward?",
+"off": "Что насчет моей награды?",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 138529,
+"en": "Bedroom furnishings. (<Global=HDWindhelmBedroom> gold)",
+"off": "Мебель для спальни. (<Global=HDWindhelmBedroom> зол.)",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 53730,
+"en": "So what now?",
+"off": "И что теперь?",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 134860,
+"en": "Sorry. You'll have to find some other way to stroke your ego.",
+"off": "Прости, придется тебе поискать другой способ повысить самооценку.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 134824,
+"en": "This statue looks valuable.",
+"off": "Эта статуя, наверно, дорогая.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 386606,
+"en": "I want to quit that heist job.",
+"off": "Я хочу отказаться от той кражи.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 134977,
+"en": "Actually, Letrush wants me to steal the horse...",
+"off": "Вообще-то Летруш поручил мне украсть коня...",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 137738,
+"en": "Sorry Narfi, she's dead.",
+"off": "Прости, Нарфи, она мертва.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 132261,
+"en": "I know where she is, but I'm not telling you.",
+"off": "Я знаю, где она, но тебе не скажу.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 714512,
+"en": "What's your problem with Sven?",
+"off": "Что вы со Свеном не поделили?",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 386445,
+"en": "You think Gulum-Ei will give me trouble?",
+"off": "Думаешь, Гулум-Ая стоит остерегаться?",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 347632,
+"en": "Power",
+"off": "Особая способность",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 140342,
+"en": "Do you think this place has any connection with the Skaal?",
+"off": "Как ты думаешь, это место как-нибудь связано со скаалами?",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 131883,
+"en": "I'll pay. Don't worry.  (<CrimeGold> gold)",
+"off": "Я заплачу. Не волнуйся. (<CrimeGold> зол.)",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 329820,
+"en": "How do you know?",
+"off": "Откуда ты знаешь?",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 717456,
+"en": "Tell me about Peryite.",
+"off": "Расскажи мне о Периайте.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 138048,
+"en": "You guard the caravan?",
+"off": "Ты охраняешь караван?",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 131573,
+"en": "I submit. Take me to jail.",
+"off": "Я сдаюсь. Веди меня в тюрьму.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 131088,
+"en": "I'm sorry?",
+"off": "Прошу прощения?",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 135292,
+"en": "You're pretty dedicated to the Empire, then?",
+"off": "Ты, значит, предан Империи?",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 233035,
+"en": "What troubles you?",
+"off": "Что тебя беспокоит?",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 138557,
+"en": "Do you worship Talos?",
+"off": "Ты поклоняешься Талосу?",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 130948,
+"en": "Riften. (<Global=CarriageCost> gold)",
+"off": "Рифтен. (<Global=CarriageCost> зол.)",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 138506,
+"en": "How did you end up at the Guild?",
+"off": "Как ты оказался в Гильдии?",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 139479,
+"en": "I'd like to purchase a house.",
+"off": "Я хочу купить дом.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 136851,
+"en": "I think you may be right.",
+"off": "Думаю, возможно, ты прав.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 55116,
+"en": "What makes you say that?",
+"off": "Что ты имеешь в виду?",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 701315,
+"en": "The Blades want me to kill Paarthurnax.",
+"off": "Клинки хотят убить Партурнакса.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 389275,
+"en": "I'm afraid Yisra didn't survive.",
+"off": "Боюсь, Изра погибла.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 135327,
+"en": "I've discovered a skooma dealer in Riften.",
+"off": "В Рифтене есть торговец скумой.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 131841,
+"en": "You're making a mistake...",
+"off": "Ты делаешь ошибку...",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 67521,
+"en": "We're here to rescue you.",
+"off": "Мы пришли спасти тебя.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 135920,
+"en": "Falkreath. (<Global=CarriageCostSmall> gold)",
+"off": "Фолкрит. (<Global=CarriageCostSmall> зол.)",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 133865,
+"en": "I wanted to know more about Markarth.",
+"off": "Я хочу больше узнать о Маркарте.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 136957,
+"en": "Tell me how I got here and I'll pay for the damages. (<BribeCost> gold)",
+"off": "Напомни, что со мной было, и я заплачу за ущерб. (<BribeCost> зол.)",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 133658,
+"en": "You're obviously a thief. I kill thieves. (Intimidate)",
+"off": "Ты просто вор, а воров я убиваю. (Угроза)",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 136275,
+"en": "What have I done wrong?",
+"off": "В чем моя вина?",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 137792,
+"en": "Why did you join the Companions?",
+"off": "Что побудило тебя присоединиться к Соратникам?",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 131075,
+"en": "Here's your goat. Now can you help me retrace my steps?",
+"off": "Вот твоя коза. Теперь поможешь мне воссоздать события?",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 138528,
+"en": "Living room. (<Global=HDWindhelmLiving> gold)",
+"off": "Гостиная. (<Global=HDWindhelmLiving> зол.)",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 717462,
+"en": "What would I gain from this?",
+"off": "Что мне с этого будет?",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 135706,
+"en": "I've killed dozens like you. (Persuade)",
+"off": "Я трупы таких как ты дюжинами считаю. (Убеждение)",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 130955,
+"en": "Actually, I'm not sure. I need to think about it.",
+"off": "Вообще-то, пожалуй, мне еще нужно определиться.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 138806,
+"en": "Let me show you what I need.",
+"off": "Давай я покажу, что мне нужно.",
+"rec_type": "DIAL",
+"field_type": "FULL"
+},
+{
+"id": 36686,
+"en": "Tell me about Riften.",
+"off": "Расскажи мне о Рифтене.",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 139530,
+"en": "Replace my Alchemy Lab with a Child's Room. (<Global=HDWhiterunChildRoom> gold)",
+"off": "Заменить алхимическую лабораторию на детскую. (<Global=HDWhiterunChildRoom> зол.)",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 139462,
+"en": "Ready for some bloodshed, beast?",
+"off": "Готов к грызне, зверь?",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 201434,
+"en": "From who?",
+"off": "От кого?",
+"rec_type": "INFO",
+"field_type": "NAM1"
+},
+{
+"id": 133398,
+"en": "A sweetroll.",
+"off": "Сладкий рулет.",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 137159,
+"en": "Swap my Child's Room with an Enchanting Lab. (<Global=HDRiftenEnchanting> gold)",
+"off": "Поменять местами детскую и лабораторию зачарователя. (<Global=HDRiftenEnchanting> зол.)",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 139986,
+"en": "You know who Miraak is?",
+"off": "Ты знаешь, кто такой Мирак?",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 132936,
+"en": "I could return the ring for you.",
+"off": "Я могу попробовать вернуть кольцо.",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 288594,
+"en": "Can I make a request? (25 gold)",
+"off": "Могу я заказать песню? (25 золотых)",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 347857,
+"en": "I don't have time for this!",
+"off": "У меня нет времени на все эти церемонии!",
+"rec_type": "INFO",
+"field_type": "NAM1"
+},
+{
+"id": 182132,
+"en": "What do you think of him?",
+"off": "Что ты думаешь о нем?",
+"rec_type": "INFO",
+"field_type": "NAM1"
+},
+{
+"id": 133834,
+"en": "I talked to Loreius. He's agreed to fix your wagon wheel.",
+"off": "Мы поговорили, и Лорей согласился починить колесо.",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 131365,
+"en": "Sing me a song, bard. A song of fear, and death!",
+"off": "Спой мне песню, бард. Песню о страхе и смерти.",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 131155,
+"en": "Are there any more contracts available?",
+"off": "Есть еще контракты?",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 15389,
+"en": "You don't trust the Jarl?",
+"off": "Ты не доверяешь ярлу?",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 131411,
+"en": "Wait. What artifact?",
+"off": "Подожди. О каком артефакте речь?",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 139456,
+"en": "Let's sate our hunger together.",
+"off": "Давай-ка перекусим вместе.",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 186388,
+"en": "What about it?",
+"off": "И в чем дело?",
+"rec_type": "INFO",
+"field_type": "NAM1"
+},
+{
+"id": 132056,
+"en": "Tell me about the bedlam jobs.",
+"off": "Расскажи мне о чесе.",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 138455,
+"en": "Replace my Child's Room with an Alchemy Lab. (<Global=HDMarkarthAlchemy> gold)",
+"off": "Заменить детскую на алхимическую лабораторию. (<Global=HDMarkarthAlchemy> зол.)",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 63130,
+"en": "Good to see you.",
+"off": "Приятно тебя видеть.",
+"rec_type": "INFO",
+"field_type": "NAM1"
+},
+{
+"id": 183353,
+"en": "That hurt.",
+"off": "Малоприятно.",
+"rec_type": "INFO",
+"field_type": "NAM1"
+},
+{
+"id": 190747,
+"en": "Let's just get this over with.",
+"off": "Покончим с этим.",
+"rec_type": "INFO",
+"field_type": "NAM1"
+},
+{
+"id": 133271,
+"en": "Leave Omluag alone. This is my final warning.",
+"off": "Оставь Омлага в покое. Это мое последнее предупреждение.",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 151596,
+"en": "Your what?",
+"off": "Твоим кем?",
+"rec_type": "INFO",
+"field_type": "NAM1"
+},
+{
+"id": 132892,
+"en": "Here's Lod's letter.",
+"off": "Вот письмо Лода.",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 137256,
+"en": "He's an old man. Let it go. (Persuade)",
+"off": "Он старик. Прости ему. (Убеждение)",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 138303,
+"en": "Can you train me to better use Two-Handed weapons?",
+"off": "Поучи меня обращаться с двуручным оружием.",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 64336,
+"en": "Sure, I'll help you.",
+"off": "Я помогу тебе.",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 135729,
+"en": "Master bedroom. (3,000 gold)",
+"off": "Господская спальня. (3000 золотых)",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 133646,
+"en": "Tell me about your mother. What happened?",
+"off": "Расскажи мне о своей маме. Что случилось?",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 53338,
+"en": "Leave.",
+"off": "Уйти",
+"rec_type": "INFO",
+"field_type": "NAM1"
+},
+{
+"id": 132711,
+"en": "I ended up killing your enemy.",
+"off": "Пришлось убить твоего врага.",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 166378,
+"en": "To what end?",
+"off": "С какой целью?",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 135465,
+"en": "Are you selling any more Black-Briar Mead?",
+"off": "Есть у тебя еще черновересковый мед?",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 61695,
+"en": "What's on the menu?",
+"off": "Чем вы тут угощаете?",
+"rec_type": "INFO",
+"field_type": "NAM1"
+},
+{
+"id": 138646,
+"en": "Replace my Child's Room with an Alchemy Lab. (<Global=HDWhiterunAlchemy> gold)",
+"off": "Заменить детскую на алхимическую лабораторию. (<Global=HDWhiterunAlchemy> зол.)",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 133262,
+"en": "You ready to pay up now?",
+"off": "Ты готов заплатить сейчас?",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 29645,
+"en": "What do you need?",
+"off": "Что тебе нужно?",
+"rec_type": "INFO",
+"field_type": "NAM1"
+},
+{
+"id": 153377,
+"en": "What's happening?",
+"off": "Что происходит?",
+"rec_type": "INFO",
+"field_type": "NAM1"
+},
+{
+"id": 289987,
+"en": "I'm sorry, I can't help you.",
+"off": "Прости, ничем не могу помочь.",
+"rec_type": "INFO",
+"field_type": "NAM1"
+},
+{
+"id": 289100,
+"en": "I have gold ore to sell.",
+"off": "У меня есть золотая руда на продажу.",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 133264,
+"en": "You pay those Argonians fairly, or else.",
+"off": "Ты будешь сполна платить аргонианам, а не то...",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 139599,
+"en": "I found Varona dead on the road to Raven Rock.",
+"off": "Варона мертва. Она погибла по дороге в Воронью Скалу.",
+"rec_type": "INFO",
+"field_type": "RNAM"
+},
+{
+"id": 714708,
+"en": "Report back to Orthus",
+"off": "Вернуться к Орту",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 140943,
+"en": "Talk to Calcelmo",
+"off": "Поговорить с Колсельмо",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 302009,
+"en": "Find the priest of Boethiah",
+"off": "Найти жреца Боэтии",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 142313,
+"en": "Locate a Moth Priest",
+"off": "Найти жреца Мотылька",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 141807,
+"en": "Return to Erikur",
+"off": "Вернуться к Эрикуру",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 140666,
+"en": "Put witch head into fire",
+"off": "Бросить голову ведьмы в огонь",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 142503,
+"en": "Return to Jiub",
+"off": "Вернуться к Джиубу",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 141631,
+"en": "Find 5 Ice Wraith Teeth for Marise (<Global=FFR07TeethCount>/<Global=FFR07TeethTotal>)",
+"off": "Найти для Марисы 5 зубов ледяного привидения (<Global=FFR07TeethCount>/<Global=FFR07TeethTotal>)",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 701419,
+"en": "Rebuilding the Blades",
+"off": "Возрождение Клинков",
+"rec_type": "QUST",
+"field_type": "FULL"
+},
+{
+"id": 141842,
+"en": "The Battle for <Alias=Fort>",
+"off": "Битва за <Alias=Fort>",
+"rec_type": "QUST",
+"field_type": "FULL"
+},
+{
+"id": 655821,
+"en": "Talk to the Companions leaders for work",
+"off": "Поговорить с предводителями Соратников о заданиях",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 292112,
+"en": "Bring an Iron Dagger to <Alias=QuestGiver>",
+"off": "Отдать железный кинжал кузнецу по имени <Alias=QuestGiver>",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 142424,
+"en": "Find evidence linked to the vampire",
+"off": "Найти улики, свидетельствующие о том, что приезжий советник - вампир",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 141505,
+"en": "Call Odahviing to Dragonsreach",
+"off": "Призвать Одавинга в Драконий Предел",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 682606,
+"en": "Find Finn's Lute",
+"off": "Найти лютню Финна",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 671231,
+"en": "Locate the face sculptor in Riften",
+"off": "Найти скульптора лиц в Рифтене",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 141217,
+"en": "Liberate Winterhold Hold",
+"off": "Освободить Винтерхолд",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 141279,
+"en": "Learn the \"Clear Skies\" Shout",
+"off": "Изучить Крик Чистое небо",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 141772,
+"en": "Magic Student",
+"off": "Изучение магии",
+"rec_type": "QUST",
+"field_type": "FULL"
+},
+{
+"id": 339594,
+"en": "Spell Knight Armor",
+"off": "Броня рыцаря-мага",
+"rec_type": "QUST",
+"field_type": "VMAD"
+},
+{
+"id": 142567,
+"en": "Investigate the shrine",
+"off": "Осмотреть святилище",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 141903,
+"en": "Kill the Vampire",
+"off": "Убить вампира",
+"rec_type": "QUST",
+"field_type": "FULL"
+},
+{
+"id": 142745,
+"en": "Get the staff",
+"off": "Раздобыть посох",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 140945,
+"en": "Deliver poem",
+"off": "Отнести стихотворение",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 141044,
+"en": "Put out the fire in the Solitude Lighthouse",
+"off": "Потушить огонь на маяке Солитьюда",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 142101,
+"en": "Fit for a Jarl",
+"off": "Одежда, достойная ярла",
+"rec_type": "QUST",
+"field_type": "FULL"
+},
+{
+"id": 685625,
+"en": "The Dark Brotherhood Forever",
+"off": "Темное Братство вечно",
+"rec_type": "QUST",
+"field_type": "FULL"
+},
+{
+"id": 141867,
+"en": "Assist the people of Eastmarch (<Global=FriendsCountEastmarch>/<Global=FriendsTotalMajorHold>)",
+"off": "Помочь жителям Истмарка (<Global=FriendsCountEastmarch>/<Global=FriendsTotalMajorHold>)",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 685627,
+"en": "Approach the Night Mother",
+"off": "Приблизиться к Матери Ночи",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 365658,
+"en": "Dawnfang & Duskfang",
+"off": "Клык Рассвета и Клык Заката",
+"rec_type": "QUST",
+"field_type": "VMAD"
+},
+{
+"id": 141661,
+"en": "Visit the College of Winterhold",
+"off": "Посетить Коллегию Винтерхолда",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 140817,
+"en": "Good Intentions",
+"off": "Благие намерения",
+"rec_type": "QUST",
+"field_type": "FULL"
+},
+{
+"id": 141154,
+"en": "The Wolf Queen Awakened",
+"off": "Пробуждение Королевы-Волчицы",
+"rec_type": "QUST",
+"field_type": "FULL"
+},
+{
+"id": 338272,
+"en": "Alternative Armors - Orcish Scaled",
+"off": "Альтернативная броня - орочья ламеллярная",
+"rec_type": "QUST",
+"field_type": "VMAD"
+},
+{
+"id": 141679,
+"en": "Find 2 flawless sapphires for Madesi (<Global=FFR18GemCount>/<Global=FFR18GemTotal>)",
+"off": "Найти 2 безупречных сапфира для Мадези (<Global=FFR18GemCount>/<Global=FFR18GemTotal>)",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 142330,
+"en": "Command the Moth Priest to read the scroll",
+"off": "Повелеть жрецу Мотылька прочесть свиток",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 140568,
+"en": "Defeat the Guardian Sabre Cat",
+"off": "Победить саблезуба-стража",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 142218,
+"en": "Investigate the Gauldur legend",
+"off": "Разузнать о легенде о Голдуре",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 141746,
+"en": "Place the warped soul gem into another Convector",
+"off": "Положить измененный камень душ в другой конвектор",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 302404,
+"en": "(Optional) Retrieve Nystrom's Journal",
+"off": "(Дополнительно) Забрать дневник Нистрома",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 142698,
+"en": "Return to Crescius Caerellius",
+"off": "Вернуться к Кресцию Кареллию",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 330553,
+"en": "Goblins",
+"off": "Гоблины",
+"rec_type": "QUST",
+"field_type": "FULL"
+},
+{
+"id": 142083,
+"en": "The Lost Expedition",
+"off": "Пропавшая экспедиция",
+"rec_type": "QUST",
+"field_type": "FULL"
+},
+{
+"id": 140857,
+"en": "Find the Focusing Crystal",
+"off": "Найти фокусирующий кристалл",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 140948,
+"en": "Put on the Amulet of Mara",
+"off": "Надеть амулет Мары",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 141281,
+"en": "Talk to Paarthurnax",
+"off": "Поговорить с Партурнаксом",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 140892,
+"en": "(Optional) Use Talen-Jei to get to Keerava",
+"off": "(Дополнительно) Использовать Тален-Джея, чтобы добраться до Киравы",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 140615,
+"en": "Apologize to the priestesses of Dibella",
+"off": "Принести извинения жрицам Дибеллы",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 701420,
+"en": "Bring a follower to Delphine",
+"off": "Привести Дельфине кандидата в Клинки",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 692517,
+"en": "The Way of the Voice",
+"off": "Путь Голоса",
+"rec_type": "QUST",
+"field_type": "FULL"
+},
+{
+"id": 140864,
+"en": "Reach Ancano",
+"off": "Добраться до Анкано",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 720571,
+"en": "Retrieve the Black Book",
+"off": "Раздобыть Черную книгу",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 141540,
+"en": "Infiltration",
+"off": "Проникновение",
+"rec_type": "QUST",
+"field_type": "FULL"
+},
+{
+"id": 386853,
+"en": "The Numbers Job",
+"off": "Цифры",
+"rec_type": "QUST",
+"field_type": "FULL"
+},
+{
+"id": 140895,
+"en": "Collect Haelga's debt",
+"off": "Выбить долг из Хельги",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 365900,
+"en": "Vigil Enforcer Armor Set",
+"off": "Набор брони пристава Дозора",
+"rec_type": "QUST",
+"field_type": "VMAD"
+},
+{
+"id": 142323,
+"en": "Defeat the enthralled Moth Priest",
+"off": "Побороть околдованного жреца Мотылька",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 141683,
+"en": "Find gold ore for Madesi (<Global=FFR18OreCount>/<Global=FFR18OreTotal>)",
+"off": "Найти кусок золотой руды для Мадези (<Global=FFR18OreCount>/<Global=FFR18OreTotal>)",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 141189,
+"en": "Speak to Nelacar",
+"off": "Поговорить с Неласаром",
+"rec_type": "QUST",
+"field_type": "NNAM"
+},
+{
+"id": 140898,
+"en": "Blood on the Ice",
+"off": "Кровь на снегу",
+"rec_type": "QUST",
+"field_type": "FULL"
+},
+{
+"id": 71129,
+"en": "Hagraven Feathers",
+"off": "Перья ворожеи",
+"rec_type": "MESG",
+"field_type": "ITXT"
+},
+{
+"id": 338099,
+"en": "Absorb",
+"off": "Поглощение:",
+"rec_type": "MESG",
+"field_type": "ITXT"
+},
+{
+"id": 143494,
+"en": "Brain",
+"off": "Мозг",
+"rec_type": "MESG",
+"field_type": "ITXT"
+},
+{
+"id": 313106,
+"en": "Storm Call",
+"off": "Грозовой зов",
+"rec_type": "MESG",
+"field_type": "ITXT"
+},
+{
+"id": 143563,
+"en": "Cold",
+"off": "Холод",
+"rec_type": "MESG",
+"field_type": "FULL"
+},
+{
+"id": 725461,
+"en": "Ingredient",
+"off": "Ингредиент",
+"rec_type": "MESG",
+"field_type": "ITXT"
+},
+{
+"id": 273539,
+"en": "Sabotage?",
+"off": "Сломать?",
+"rec_type": "MESG",
+"field_type": "FULL"
+},
+{
+"id": 143508,
+"en": "Movement",
+"off": "Движение",
+"rec_type": "MESG",
+"field_type": "FULL"
+},
+{
+"id": 15704,
+"en": "Werebear",
+"off": "Медведь-оборотень",
+"rec_type": "MESG",
+"field_type": "ITXT"
+},
+{
+"id": 15699,
+"en": "Ralof",
+"off": "Ралоф",
+"rec_type": "MESG",
+"field_type": "ITXT"
+},
+{
+"id": 353950,
+"en": "Previous",
+"off": "Назад",
+"rec_type": "MESG",
+"field_type": "ITXT"
+},
+{
+"id": 273589,
+"en": "Servant of the Abstruse",
+"off": "Слуга таинственного господина",
+"rec_type": "MESG",
+"field_type": "FULL"
+},
+{
+"id": 209741,
+"en": "Bone Meal",
+"off": "Костная мука",
+"rec_type": "MESG",
+"field_type": "ITXT"
+},
+{
+"id": 273617,
+"en": "Log Coordinates",
+"off": "Записать координаты",
+"rec_type": "MESG",
+"field_type": "ITXT"
+},
+{
+"id": 17306,
+"en": "Accept Sign",
+"off": "Принять знак",
+"rec_type": "MESG",
+"field_type": "ITXT"
+},
+{
+"id": 273615,
+"en": "Face Target",
+"off": "Лицом к цели",
+"rec_type": "MESG",
+"field_type": "ITXT"
+},
+{
+"id": 143529,
+"en": "Accept",
+"off": "Принять",
+"rec_type": "MESG",
+"field_type": "ITXT"
+},
+{
+"id": 273713,
+"en": "Sleeping Tree Sap Failure",
+"off": "Не удалось собрать живицу Сонного дерева",
+"rec_type": "MESG",
+"field_type": "FULL"
+},
+{
+"id": 170643,
+"en": "Ruby",
+"off": "Рубин",
+"rec_type": "MESG",
+"field_type": "ITXT"
+},
+{
+"id": 143498,
+"en": "Rigel Strong-Arm",
+"off": "Ригель Сильная Рука",
+"rec_type": "MESG",
+"field_type": "FULL"
+},
+{
+"id": 378971,
+"en": "Crumbling Mortar",
+"off": "Крошащийся строительный раствор",
+"rec_type": "DOOR",
+"field_type": "FULL"
+},
+{
+"id": 15990,
+"en": "Wooden Door",
+"off": "Деревянная дверь",
+"rec_type": "DOOR",
+"field_type": "FULL"
+},
+{
+"id": 230673,
+"en": "Black Door",
+"off": "Черная дверь",
+"rec_type": "DOOR",
+"field_type": "FULL"
+},
+{
+"id": 17435,
+"en": "Student",
+"off": "Ученик",
+"rec_type": "FACT",
+"field_type": "MNAM"
+},
+{
+"id": 315188,
+"en": "Spell Tome: Magelight",
+"off": "Том заклинаний: Магический свет",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 127026,
+"en": "Palla, volume 1",
+"off": "Палла, книга 1",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 127016,
+"en": "Chimarvamidium",
+"off": "Каймервамидиум",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 160931,
+"en": "The Warmth of Mara",
+"off": "Благословение Мары",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 127256,
+"en": "Letter from Solitude",
+"off": "Письмо из Солитьюда",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 127462,
+"en": "Dwemer Inquiries Vol III",
+"off": "К вопросу о двемерах, том III",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 127380,
+"en": "The Legend of Red Eagle",
+"off": "Легенда о Красном Орле",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 126956,
+"en": "Heavy Armor Forging",
+"off": "Изготовление тяжелой брони",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 161988,
+"en": "Recipe - Exploding Flame Spider",
+"off": "Рецепт - Взрывающийся пламенный паук",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 127114,
+"en": "Charwich-Koniinge Letters, v3",
+"off": "Переписка Карвика и Конинга, т. 3",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 126942,
+"en": "Herbalist's Guide to Skyrim",
+"off": "Путеводитель по растениям Скайрима",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 160939,
+"en": "Letter of Credit",
+"off": "Расписка",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 126874,
+"en": "Mystery of Talara, v5",
+"off": "Тайна Талары, т. 5",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 315236,
+"en": "Spell Tome: Firebolt",
+"off": "Том заклинаний: Огненная стрела",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 126984,
+"en": "The Legendary Sancre Tor",
+"off": "Легендарный Санкр Тор",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 127878,
+"en": "Scribbles of a Madman",
+"off": "Каракули Безумца",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 126890,
+"en": "Glories and Laments",
+"off": "Слава и забвение",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 127608,
+"en": "Thalmor Dossier: Delphine",
+"off": "Талморское досье: Дельфина",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 126916,
+"en": "The Song of Pelinal, v5",
+"off": "Песнь о Пелинале, т. 5",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 127142,
+"en": "Suvaris Atheron's Logbook",
+"off": "Дневник Суварис Атерон",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 127234,
+"en": "Gissur's Note",
+"off": "Записка Гиссура",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 127374,
+"en": "Note from Agna",
+"off": "Записка от Агны",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 315198,
+"en": "Spell Tome: Detect Life",
+"off": "Том заклинаний: Обнаружение жизни",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 127888,
+"en": "Merilar's Journal",
+"off": "Дневник Мерилар",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 127338,
+"en": "Power of the Elements",
+"off": "Сила стихий",
+"rec_type": "BOOK",
+"field_type": "FULL"
+},
+{
+"id": 388410,
+"en": "Elves Ear",
+"off": "Эльфийское ухо",
+"rec_type": "INGR",
+"field_type": "FULL"
+},
+{
+"id": 128134,
+"en": "Mudcrab Chitin",
+"off": "Клешня грязевого краба",
+"rec_type": "INGR",
+"field_type": "FULL"
+},
+{
+"id": 388444,
+"en": "Spriggan Sap",
+"off": "Живица сприггана",
+"rec_type": "INGR",
+"field_type": "FULL"
+},
+{
+"id": 388427,
+"en": "Glow Dust",
+"off": "Светящаяся пыль",
+"rec_type": "INGR",
+"field_type": "FULL"
+},
+{
+"id": 235919,
+"en": "Hanging Rack",
+"off": "Вешалка",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 145459,
+"en": "Wolf Pelt",
+"off": "Волчья шкура",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 235949,
+"en": "Archery Target",
+"off": "Мишень",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 235936,
+"en": "Round Table and Chairs",
+"off": "Круглый стол и стулья",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 260602,
+"en": "Wooden Bowl",
+"off": "Деревянная миска",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 128154,
+"en": "Eldergleam Sap",
+"off": "Сок Великого Древа",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 260620,
+"en": "Sabre Cat Snow Pelt",
+"off": "Шкура снежного саблезуба",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 128170,
+"en": "Dwemer Dish",
+"off": "Двемерская миска",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 235973,
+"en": "Kitchen, Roof Framing",
+"off": "Кухня, Стропила",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 128176,
+"en": "Broken Azura's Star",
+"off": "Сломанная Звезда Азуры",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 260646,
+"en": "Silver Ingot",
+"off": "Серебряный слиток",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 260650,
+"en": "Orichalcum Ingot",
+"off": "Орихалковый слиток",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 235863,
+"en": "Wall Shelves (2)",
+"off": "Навесные полки (2)",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 260834,
+"en": "Girl's Red Dress",
+"off": "Красное платье для девочки",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 236035,
+"en": "Mounted Slaughterfish",
+"off": "Рыба-убийца, настенный трофей",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 235864,
+"en": "Low Table",
+"off": "Низкий стол",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 236023,
+"en": "Wardrobe, Small",
+"off": "Шкаф, малый",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 260830,
+"en": "Boy's Yellow Tunic",
+"off": "Желтая одежда для мальчика",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 236058,
+"en": "Armorer Workbench",
+"off": "Верстак бронника",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 128189,
+"en": "Lexicon",
+"off": "Словарь",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 260719,
+"en": "Nurelion's Mixture",
+"off": "Микстура Нурелиона",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 236002,
+"en": "Animal Pen",
+"off": "Загон для животных",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 260829,
+"en": "Boy's Grey Tunic",
+"off": "Серая одежда для мальчика",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 260639,
+"en": "Ebony Ore",
+"off": "Эбонитовая руда",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 236037,
+"en": "Weapon Racks (3)",
+"off": "Стойки для оружия (3)",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 128207,
+"en": "Flawless Amethyst",
+"off": "Безупречный аметист",
+"rec_type": "MISC",
+"field_type": "FULL"
+},
+{
+"id": 128347,
+"en": "Juniper",
+"off": "Можжевельник",
+"rec_type": "TREE",
+"field_type": "FULL"
+},
+{
+"id": 128367,
+"en": "Spiky Grass",
+"off": "Колючая трава",
+"rec_type": "TREE",
+"field_type": "FULL"
+},
+{
+"id": 128346,
+"en": "Jazbay",
+"off": "Джазби",
+"rec_type": "TREE",
+"field_type": "FULL"
+},
+{
+"id": 128365,
+"en": "Scaly Pholiota",
+"off": "Чешуйчатка",
+"rec_type": "TREE",
+"field_type": "FULL"
+},
+{
+"id": 128394,
+"en": "Hawks' Nest",
+"off": "Гнездо ястреба",
+"rec_type": "FLOR",
+"field_type": "FULL"
+},
+{
+"id": 390900,
+"en": "Charred Skeever",
+"off": "Злокрыс на вертеле",
+"rec_type": "FLOR",
+"field_type": "FULL"
+},
+{
+"id": 145830,
+"en": "Cot",
+"off": "Койка",
+"rec_type": "FURN",
+"field_type": "FULL"
+},
+{
+"id": 128416,
+"en": "Carpenter's Workbench",
+"off": "Плотницкий верстак",
+"rec_type": "FURN",
+"field_type": "FULL"
+},
+{
+"id": 145789,
+"en": "Bed Roll",
+"off": "Спальник",
+"rec_type": "FURN",
+"field_type": "FULL"
+},
+{
+"id": 129953,
+"en": "Key to Heimskr's House",
+"off": "Ключ от дома Хеймскра",
+"rec_type": "KEYM",
+"field_type": "FULL"
+},
+{
+"id": 129969,
+"en": "Windhelm Blacksmith Quarters Key",
+"off": "Ключ от дома кузнеца Виндхельма",
+"rec_type": "KEYM",
+"field_type": "FULL"
+},
+{
+"id": 129933,
+"en": "Whispering Door Key",
+"off": "Ключ от Шепчущей двери",
+"rec_type": "KEYM",
+"field_type": "FULL"
+},
+{
+"id": 129977,
+"en": "Hollyfrost Farmhouse Key",
+"off": "Ключ от фермы Остролист",
+"rec_type": "KEYM",
+"field_type": "FULL"
+},
+{
+"id": 130028,
+"en": "Lumber Camp Key",
+"off": "Ключ от лагеря лесорубов",
+"rec_type": "KEYM",
+"field_type": "FULL"
+},
+{
+"id": 129970,
+"en": "Clan Shatter-Shield Office Key",
+"off": "Ключ от конторы клана Расколотый Щит",
+"rec_type": "KEYM",
+"field_type": "FULL"
+},
+{
+"id": 130006,
+"en": "Key to Solitude Blacksmith",
+"off": "Ключ от кузницы Солитьюда",
+"rec_type": "KEYM",
+"field_type": "FULL"
+},
+{
+"id": 130090,
+"en": "Beef Stew",
+"off": "Говяжья похлебка",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 391009,
+"en": "Potato Bread",
+"off": "Картофельный хлеб",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 391017,
+"en": "Steamed Mudcrab Legs",
+"off": "Тушеные крабовые ноги",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 304273,
+"en": "Draught of Resist Magic",
+"off": "Микстура сопротивления магии",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 388780,
+"en": "Potion of Plunder",
+"off": "Зелье добытчика",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 130103,
+"en": "Gourd",
+"off": "Тыква",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 388604,
+"en": "Draught of Waterbreathing",
+"off": "Микстура водного дыхания",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 388766,
+"en": "Grand Elixir of Escape",
+"off": "Великий эликсир беглеца",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 388541,
+"en": "Draught of Destruction",
+"off": "Микстура разрушения",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 304272,
+"en": "Potion of Minor Healing",
+"off": "Слабое зелье лечения",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 388690,
+"en": "Lingering Poison",
+"off": "Отрава",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 263619,
+"en": "Solution of Extra Magicka",
+"off": "Напиток добавочной магии",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 304268,
+"en": "Elixir of Illusion",
+"off": "Эликсир иллюзии",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 388774,
+"en": "Potion of Keenshot",
+"off": "Зелье стрелка",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 130106,
+"en": "Potato Soup",
+"off": "Картофельный суп",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 388671,
+"en": "Stallion's Potion",
+"off": "Зелье лошадиной выносливости",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 388704,
+"en": "Virulent Stamina Poison",
+"off": "Вирулентный яд упадка сил",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 304294,
+"en": "Potion of Extreme Magicka",
+"off": "Наилучшее зелье магии",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 390966,
+"en": "Horker Loaf",
+"off": "Бифштекс из хоркера",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 130072,
+"en": "Horse Meat",
+"off": "Конина",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 263625,
+"en": "Potion of Extended Invisibility",
+"off": "Зелье невидимости",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 130079,
+"en": "Frenzy Poison",
+"off": "Яд бешенства",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 390983,
+"en": "Grilled Chicken Breast",
+"off": "Жареная куриная грудка",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 304265,
+"en": "Elixir of True Shot",
+"off": "Эликсир меткости",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 373176,
+"en": "Sliced Eidar Cheese",
+"off": "Початый круг эйдарского сыра",
+"rec_type": "ALCH",
+"field_type": "FULL"
+},
+{
+"id": 130145,
+"en": "Lesser Soul Gem",
+"off": "Маленький камень душ",
+"rec_type": "SLGM",
+"field_type": "FULL"
+},
+{
+"id": 674452,
+"en": "Black Soul Gem",
+"off": "Черный камень душ",
+"rec_type": "SLGM",
+"field_type": "FULL"
+},
+{
+"id": 130147,
+"en": "Greater Soul Gem",
+"off": "Большой камень душ",
+"rec_type": "SLGM",
+"field_type": "FULL"
+},
+{
+"id": 130797,
+"en": "Fallowstone Cave",
+"off": "Пещера Желтый Камень",
+"rec_type": "WRLD",
+"field_type": "FULL"
+},
+{
+"id": 130808,
+"en": "East Empire Company Warehouse",
+"off": "Склад Восточной имперской компании",
+"rec_type": "WRLD",
+"field_type": "FULL"
+},
+{
+"id": 657406,
+"en": "Dark elves, also known as Dunmer, are natives of Morrowind - a land many consider alien and inhospitable.",
+"off": "Темные эльфы, также известные как данмеры, родом из Морровинда - страны, которая многим кажется жестокой и негостеприимной.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657441,
+"en": "Wearing heavy armor or using heavy weapons will slow you down.",
+"off": "Тяжелые броня и оружие снижают вашу скорость.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657471,
+"en": "Nocturnal is the daedric mistress of stealth and shadow, and a patron to thieves.",
+"off": "Ноктюрнал - даэдрическая владычица скрытности и тени, покровительница воров.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657247,
+"en": "Inns are a great place to pick up rumors. The innkeeper can usually point you to local quests.",
+"off": "В тавернах можно узнать много полезных слухов. Кроме того, трактирщик обычно может подсказать вам, где найти работу.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657266,
+"en": "Cloak spells surround the caster with a dangerous aura that harms anyone that gets too close.",
+"off": "Заклинания-плащи окружают мага опасной аурой, которая наносит повреждения всякому, кто подойдет слишком близко.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657553,
+"en": "Reading one of Hermaeus Mora's Black Books may transport you into his realm. Read it again to escape.",
+"off": "Чтение Черных книг Хермеуса Моры может перенести вас в его царство. Прочтите книгу опять, чтобы вернуться назад.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657317,
+"en": "If you have too many quest targets, check your journal to see if you have more than one active quest. In the Miscellaneous category, you can turn each objective on or off.",
+"off": "Если на компасе слишком много целей, проверьте свой дневник - возможно, у вас более одного активного задания. В разделе Разное вы можете включать и выключать цели.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657393,
+"en": "Astrid is the leader of the Dark Brotherhood Sanctuary, and her word is law.",
+"off": "Астрид стоит во главе Убежища Темного Братства, ее слово - закон.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657314,
+"en": "When your Magicka or Stamina bar flashes, it means you cannot perform the action you just attempted. Power attacks become regular attacks, and spells fail.",
+"off": "Если индикатор магии или запаса сил мигает, это означает, что вы не сможете выполнить желаемое действие. Силовые атаки станут обычными, а заклинания не будут сотворены.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657527,
+"en": "Vampire Lord perks are earned by killing enemies with the Drain Life spell, or with the bite attack in melee mode. Each perk takes more feedings to earn than the previous one.",
+"off": "Вампиры-лорды получают новые способности, убивая врагов при помощи Высасывания жизни или укуса. Каждая следующая способность достается труднее, чем предыдущая, - убийств требуется все больше.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657351,
+"en": "Once the capital of Skyrim, Winterhold has been all but abandoned in the last few hundred years.",
+"off": "Когда-то Винтерхолд был столицей Скайрима, но за последние века почти все население покинуло его.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657457,
+"en": "The ancient and long-dead Dwemer built many devices and automatons that continue to function even today, thanks to their advanced magic and technology. The Dwarven Spider is one such construct.",
+"off": "Древние, давно вымершие двемеры создали множество устройств и автоматов, которые до сих пор работают, благодаря развитой магии и технологии. Двемерский паук - одна из таких конструкций.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657305,
+"en": "Moving while holding down Attack results in a power attack. Moving in different directions creates different power attacks.",
+"off": "Если вы будете удерживать кнопку атаки и двигаться, вы совершите силовую атаку. Двигаясь в разных направлениях, вы будете выполнять различные силовые атаки.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657511,
+"en": "Tamriel's Fighters Guild has no presence in Skyrim. Instead, warriors seeking adventure and kinship may join the Companions, in Whiterun.",
+"off": "У Гильдии бойцов Тамриэля нет представительства в Скайриме. Воины, жаждущие приключений в хорошей компании, могут присоединиться к Соратникам в Вайтране.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657503,
+"en": "Those with the blood of a werewolf can never gain resting bonuses from sleeping.",
+"off": "Тем, в чьих жилах течет кровь вервольфов, сон не несет отдыха.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657531,
+"en": "Revered and legendary dragons are more deadly than ancient dragons. They use a shout that can drain health, magicka and stamina from its victims.",
+"off": "Благородные и легендарные драконы еще опаснее, чем древние. Они используют Крик, вытягивающий здоровье, магию и запас сил противника.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657427,
+"en": "Namira is the daedric prince of darkness and revulsion, and is frequently associated with disease, spiders, insects, slugs and other repulsive creatures.",
+"off": "Намира - даэдрическая владычица тьмы и уродства, она часто ассоциируется с болезнями, пауками, насекомыми, личинками и другими отвратительными созданиями.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657374,
+"en": "There are nine Holds in Skyrim: Eastmarch, Falkreath, Haafingar, Hjaalmarch, the Pale, the Reach, the Rift, Whiterun, and Winterhold.",
+"off": "Скайрим состоит из девяти владений: Истмарк, Фолкрит, Хаафингар, Хьялмарк, Белый Берег, Предел, Рифт, Вайтран и Винтерхолд.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657421,
+"en": "Hermaeus Mora is the daedric prince of fate, knowledge and memory. In his rare dealings with mortals, he often chooses to appear as a grotesque mass of tentacles.",
+"off": "Хермеус Мора - даэдрический принц судьбы, знания и памяти. Он редко имеет дело со смертными, и, если и предстает перед ними, то в виде гротескной массы переплетенных щупалец.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657504,
+"en": "So long as there is a Listener to hear the Night Mother's voice, the Dark Brotherhood will endure...",
+"off": "Покуда есть Слышащий, который внимает голосу Матери Ночи, Темное Братство будет жить...",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657426,
+"en": "Meridia despises undead in any form, and is one of the few daedric princes not considered to be wholly evil.",
+"off": "Меридия презирает всякую нежить и принадлежит к числу немногих принцев даэдра, которые не считаются однозначно злыми.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 142972,
+"en": "Trading caravans sometimes pass through the ruins of Labyrinthian, but usually prefer safer, longer routes.",
+"off": "Торговые караваны иногда проходят через руины Лабиринтиана, но чаще предпочитают более длинные, но безопасные маршруты.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657321,
+"en": "Leveling up grants a bonus to your choice of Health, Magicka, or Stamina. Choosing Stamina also increases your carrying capacity.",
+"off": "Новый уровень даст вам бонус, с помощью которого можно повысить здоровье, магию или запас сил. Повысив запас сил, вы также улучшите свою способность нести тяжести.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657466,
+"en": "Any weapon or piece of armor can be improved at a smithy, regardless of the material type or the smith's skill or perks. Smithing perks increase how much the item is improved.",
+"off": "Любое оружие или доспех можно усовершенствовать в кузнице вне зависимости от типа материала или умений и способностей кузнеца. Способности кузнеца определяют, лишь насколько будет улучшен предмет.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657513,
+"en": "A successful power attack will always break an opponent's block, and cause a stagger.",
+"off": "Успешная силовая атака всегда пробивает блок противника и ошеломляет его.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657534,
+"en": "When a Chaurus reaches the end of its life, its body undergoes a dramatic transformation. After days of death-like stillness, the Chaurus Hunter bursts free from the husk of the Chaurus.",
+"off": "Когда срок жизни коруса подходит к концу, его тело претерпевает удивительные изменения. После нескольких дней оцепенения, подобного смерти, панцирь коруса разламывается, и на свет появляется корус-охотник.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657408,
+"en": "Khajiit are a feline race native to Elsweyr. It is infamous for producing Moon Sugar, which can be refined into Skooma.",
+"off": "Кошачья раса каджитов родом из Эльсвейра. Именно там производят лунный сахар, из которого можно гнать скуму.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657343,
+"en": "Dragonsreach earned its name when the ancient Nord hero Olaf One-Eye imprisoned his foe, the great dragon Numinex, within the palace.",
+"off": "Драконий Предел получил свое имя, когда древний нордский герой Олаф Одноглазый пленил во дворце своего врага - дракона Нуминекса.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657420,
+"en": "Clavicus Vile is the daedric prince of power. He is fond of enticing mortals with tempting pacts... which they later come to regret.",
+"off": "Клавикус Вайл - даэдрический принц власти. Он обожает связывать смертных соблазнительными договорами... о которых они вскорости жалеют.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 657447,
+"en": "Of all the automatons left behind by the ancient Dwemer, the Dwarven Centurions are among the most technologically impressive... and deadly. They guard Dwemer ruins as if their masters still walked the halls.",
+"off": "Из всех машин, сохранившихся со времен двемеров, центурионы - самые технически сложные... и опасные. Они охраняют двемерские руины так, словно их хозяева все еще живут там.",
+"rec_type": "LSCR",
+"field_type": "DESC"
+},
+{
+"id": 143294,
+"en": "Head",
+"off": "Голова",
+"rec_type": "BPTD",
+"field_type": "BPTN"
+},
+{
+"id": 143412,
+"en": "Aerin's House",
+"off": "Дом Эйрина",
+"rec_type": "LCTN",
+"field_type": "FULL"
+},
+{
+"id": 346622,
+"en": "Radiant Raiments",
+"off": "Сияющие одежды",
+"rec_type": "LCTN",
+"field_type": "FULL"
+},
+{
+"id": 143380,
+"en": "Tumble Arch Pass",
+"off": "Арочный перевал",
+"rec_type": "LCTN",
+"field_type": "FULL"
+},
+{
+"id": 143329,
+"en": "Bleak Falls Barrow",
+"off": "Ветреный пик",
+"rec_type": "LCTN",
+"field_type": "FULL"
+},
+{
+"id": 143337,
+"en": "Driftshade Sanctuary",
+"off": "Дрифтшейд - Святилище",
+"rec_type": "LCTN",
+"field_type": "FULL"
+},
+{
+"id": 688964,
+"en": "North Skybound Watch",
+"off": "Северная горная застава",
+"rec_type": "LCTN",
+"field_type": "FULL"
+},
+{
+"id": 143469,
+"en": "Ironback Hideout",
+"off": "Железное убежище",
+"rec_type": "LCTN",
+"field_type": "FULL"
+},
+{
+"id": 688959,
+"en": "Stonehill Bluff",
+"off": "Утес Каменный Холм",
+"rec_type": "LCTN",
+"field_type": "FULL"
+},
+{
+"id": 701962,
+"en": "Mara's Eye Pond",
+"off": "Пруд Глаз Мары",
+"rec_type": "LCTN",
+"field_type": "FULL"
+},
+{
+"id": 143366,
+"en": "Secunda's Kiss",
+"off": "Поцелуй Секунды",
+"rec_type": "LCTN",
+"field_type": "FULL"
+},
+{
+"id": 143491,
+"en": "The Reach",
+"off": "Предел",
+"rec_type": "LCTN",
+"field_type": "FULL"
+},
+{
+"id": 143299,
+"en": "The Rift",
+"off": "Рифт",
+"rec_type": "LCTN",
+"field_type": "FULL"
+},
+{
+"id": 386960,
+"en": "Ivarstead Fellstar Farm",
+"off": "Айварстед - Ферма Звездопад",
+"rec_type": "LCTN",
+"field_type": "FULL"
+},
+{
+"id": 272074,
+"en": "Animal Allegiance",
+"off": "Дружба со зверями",
+"rec_type": "SHOU",
+"field_type": "FULL"
+},
+{
+"id": 143581,
+"en": "Frost Breath",
+"off": "Морозное дыхание",
+"rec_type": "SHOU",
+"field_type": "FULL"
+},
+{
+"id": 341253,
+"en": "Finite",
+"off": "Ограниченный",
+"rec_type": "WOOP",
+"field_type": "TNAM"
+},
+{
+"id": 341394,
+"en": "Animal",
+"off": "Животное",
+"rec_type": "WOOP",
+"field_type": "TNAM"
+},
+{
+"id": 341303,
+"en": "Frul",
+"off": "FRUL",
+"rec_type": "WOOP",
+"field_type": "FULL"
+},
+{
+"id": 341248,
+"en": "Neh",
+"off": "NEH",
+"rec_type": "WOOP",
+"field_type": "FULL"
+},
+{
+"id": 341250,
+"en": "V3r",
+"off": "V3R",
+"rec_type": "WOOP",
+"field_type": "FULL"
+},
+{
+"id": 341312,
+"en": "Tear",
+"off": "Рвать",
+"rec_type": "WOOP",
+"field_type": "TNAM"
+},
+{
+"id": 278887,
+"en": "G1n",
+"off": "G1N",
+"rec_type": "WOOP",
+"field_type": "FULL"
+},
+{
+"id": 241020,
+"en": "Kr4",
+"off": "KR4",
+"rec_type": "WOOP",
+"field_type": "FULL"
+},
+{
+"id": 341244,
+"en": "Gol",
+"off": "GOL",
+"rec_type": "WOOP",
+"field_type": "FULL"
+},
+{
+"id": 341376,
+"en": "Summer",
+"off": "Лето",
+"rec_type": "WOOP",
+"field_type": "TNAM"
+},
+{
+"id": 341299,
+"en": "Kr3",
+"off": "KR3",
+"rec_type": "WOOP",
+"field_type": "FULL"
+},
+{
+"id": 281977,
+"en": "Bound Arrow",
+"off": "Призванная стрела",
+"rec_type": "AMMO",
+"field_type": "FULL"
+},
+{
+"id": 263607,
+"en": "Nordic Arrow",
+"off": "Нордская стрела",
+"rec_type": "AMMO",
+"field_type": "FULL"
+},
+{
+"id": 316363,
+"en": "Wine",
+"off": "Вино",
+"rec_type": "HDPT",
+"field_type": "FULL"
+},
+{
+"id": 680477,
+"en": "Menus",
+"off": "Меню",
+"rec_type": "SNCT",
+"field_type": "FULL"
+}
+]

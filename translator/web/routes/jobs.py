@@ -194,7 +194,8 @@ def create_job():
                                            judge      = bool(options.get("judge")),
                                            candidates = int(options.get("candidates") or 1),
                                            types      = options.get("types"),
-                                           skip_layered = options.get("skip_layered"))
+                                           skip_layered = options.get("skip_layered"),
+                                           from_assignments = options.get("from_assignments"))
         except ValueError as exc:
             return jsonify({"error": str(exc), "ok": False}), 400
     elif job_type == "validate" and mod_names:
@@ -1708,7 +1709,8 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                              judge: bool = False,
                              candidates: int = 1,
                              types: str | None = None,
-                             skip_layered=False):
+                             skip_layered=False,
+                             from_assignments=None):
     """Send stored translations back to the fleet to be checked and corrected.
 
     A review is a translation job with the answer already filled in: the package carries
@@ -1830,6 +1832,15 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
             if _t:
                 _safe = ",".join("'" + re.sub(r"[^A-Z_]", "", x) + "'" for x in _t)
                 where.append(f"rec_type IN ({_safe})")
+        if from_assignments:
+            # Ровно то, что осталось несделанным в названных назначениях. Нужно, чтобы
+            # вернуть в работу снятые пакеты машины, не задевая пакетов, которые
+            # держат другие: раздача с начала очереди пересеклась бы с ними.
+            _ids = ",".join("'" + re.sub(r"[^0-9a-f-]", "", str(a)) + "'"
+                            for a in from_assignments if a)
+            if _ids:
+                where.append("id IN (SELECT string_id FROM assignment_strings "
+                             f"WHERE assignment_id IN ({_ids}) AND delivered=0)")
         if skip_layered:
             # Строки, ответ на которые уже лежит в слое кандидатов. Переводить их снова
             # незачем: судить лежащий ответ можно и без генерации.

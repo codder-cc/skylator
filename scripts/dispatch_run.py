@@ -52,6 +52,8 @@ def main() -> None:
     ap.add_argument("--pattern", default="M5,M5,M1")
     ap.add_argument("--max-tokens", type=int, default=6144)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--from-assignments",
+                    help="JSON-файл со списком назначений: раздать их несделанный остаток")
     args = ap.parse_args()
 
     con = sqlite3.connect(str(ROOT / "cache" / "translations.db"), timeout=60)
@@ -62,6 +64,8 @@ def main() -> None:
         sys.exit("режим «только в слой» выключен — корпус менялся бы по ходу. Стоп.")
 
     cutoff = time.time()
+    from_aids = (json.loads(Path(args.from_assignments).read_text(encoding="utf-8"))
+                 if args.from_assignments else None)
     names = {"M5": M5, "M1": M1}
     pattern = [names[x.strip()] for x in args.pattern.split(",")]
     log_path = ROOT / "logs" / f"dispatch_{time.strftime('%Y%m%d_%H%M')}.json"
@@ -71,6 +75,8 @@ def main() -> None:
         opts = {"scope": "sweep", "machines": [label], "limit": args.chunk,
                 "offset": k * args.chunk, "types": args.types, "judge": True,
                 "skip_layered": cutoff, "max_tokens": args.max_tokens}
+        if from_aids:
+            opts["from_assignments"] = from_aids
         if args.dry_run:
             print(f"  {k:>2}  {label[-6:]}  строки {k * args.chunk}–"
                   f"{(k + 1) * args.chunk}", file=out)

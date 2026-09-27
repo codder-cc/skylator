@@ -15,13 +15,26 @@ log = logging.getLogger(__name__)
 _LINE_RE = re.compile(r"^\s*(\d+)[.)]\s*(.*)", re.MULTILINE)
 
 
+def strip_thinking(raw: str) -> str:
+    """Убрать рассуждения модели: всё до последнего </think>, и блоки <think>…</think>.
+
+    С включённым режимом размышления Qwen пишет рассуждение перед ответом, и в нём
+    бывают свои нумерованные строки («1. Сначала переведу…»). Разборщик брал бы их за
+    перевод: в автономном пути это не вырезалось нигде.
+    """
+    text = raw or ""
+    if "</think>" in text:
+        text = text.rsplit("</think>", 1)[1]
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.S)
+
+
 def parse_numbered_output(raw: str, expected: int) -> list[str]:
     """
     Parse a numbered list from model output.
     Returns a list of length `expected`.
     If parsing fails for any entry, the original position is filled with "".
     """
-    raw = raw.strip()
+    raw = strip_thinking(raw).strip()
     matches = _LINE_RE.findall(raw)
 
     parsed: dict[int, str] = {}

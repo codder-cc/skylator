@@ -428,3 +428,11 @@ def test_tm_is_untouched_without_a_rival(store):
     b = _Backend(["1. Вайтран"])
     _produce(store, meta, b)
     assert "Whiterun → Вайтран" in b.prompts[0]
+
+
+def test_reasoning_block_is_not_parsed_as_translation():
+    """С режимом размышления нумерованные строки рассуждения не становятся переводом."""
+    from prompt.parser import parse_numbered_output
+    raw = "<think>\n1. First I translate the name.\n2. Then the verb.\n</think>\n\n1. Привет.\n2. Пока."
+    assert parse_numbered_output(raw, 2) == ["Привет.", "Пока."]
+    assert parse_numbered_output("1. Привет.\n2. Пока.", 2) == ["Привет.", "Пока."]

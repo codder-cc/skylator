@@ -1217,6 +1217,13 @@ def _row_to_result(r: dict) -> dict:
         # ответ модели; решать, применять ли его, хосту.
         "judge":         r.get("judge") or "",
         "rival":         r.get("rival") or "",
+        # Почему кончилась генерация ЭТОЙ строки: "stop" или "length". Агент ставил
+        # обрубку needs_review, но мастер пересчитывал статус по тексту и принимал его
+        # как translated — сам факт упора в потолок до мастера не доезжал.
+        "finish_reason": r.get("finish_reason") or "",
+        # Модель, которая строку произвела. Мастер брал текущую модель агента из
+        # реестра, и работа, доставленная после смены модели, писалась на чужое имя.
+        "model":         r.get("model") or "",
     }
 
 
@@ -1353,8 +1360,21 @@ async def _produce_assignment(state, loop, aid: str, meta: dict) -> None:
     state.offline_job_runner = runner
     try:
         await runner.run(state, loop)
+        # «complete» — терминальное состояние: по нему deliver-цикл шлёт мастеру done, и
+        # назначение больше никогда не берётся в работу. Раньше его ставили всякий раз,
+        # когда бегунок вернулся, — в том числе после исчерпания повторов, когда в
+        # манифесте оставались строки done=0. Они пропадали: агент их не возобновлял,
+        # а мастер считал пакет законченным. Теперь complete — только при пустом
+        # остатке; иначе назначение остаётся открытым, и его подхватит следующий
+        # проход вычерпывателя (а тот отложит его как stalled, если прогресса нет).
         if not runner._stop and state.result_store is not None:
-            state.result_store.set_assignment_state(aid, "complete")
+            total, done = state.result_store.assignment_progress(aid)
+            if done >= total:
+                state.result_store.set_assignment_state(aid, "complete")
+            else:
+                log.warning("Offline produce: assignment %s has %d strings still pending "
+                            "— left open for a retry, not marked complete",
+                            aid[:8], total - done)
     except Exception as exc:
         log.error("Offline produce error (aid=%s): %s", aid[:8], exc)
     finally:

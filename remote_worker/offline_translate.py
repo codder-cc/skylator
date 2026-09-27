@@ -89,16 +89,229 @@ _REC_TYPE_HINT = {
 }
 
 
+# Уточнение по полю записи. Одна запись несёт строки разного рода: у книги FULL — это
+# заголовок, DESC — сам текст; у квеста FULL — название, NNAM — цель в журнале. Тип поля
+# хост всегда держал в ключе строки, но в пакет не клал, и подсказка строилась по одному
+# rec_type — «book titles or text» на заголовок и на трёхстраничный текст одинаково.
+_FIELD_TYPE_HINT = {
+    ("BOOK", "FULL"): "book titles",            ("BOOK", "DESC"): "book text",
+    ("INFO", "NAM1"): "spoken dialogue",        ("INFO", "RNAM"): "the player's dialogue choices",
+    ("MGEF", "FULL"): "magic effect names",     ("MGEF", "DNAM"): "magic effect descriptions",
+    ("PERK", "FULL"): "perk names",             ("PERK", "DESC"): "perk descriptions",
+    ("QUST", "FULL"): "quest names",            ("QUST", "NNAM"): "quest objectives",
+    ("QUST", "CNAM"): "quest journal entries",
+    ("WEAP", "DESC"): "weapon descriptions",    ("ARMO", "DESC"): "armour descriptions",
+    ("SPEL", "DESC"): "spell descriptions",     ("MESG", "ITXT"): "message box button labels",
+    ("LSCR", "DESC"): "loading screen tips",
+}
+
+
 def rec_type_hint(batch: list) -> str:
     """One line describing what this batch is, when the batch is homogeneous.
 
-    A mixed batch gets nothing: a wrong hint is worse than no hint.
+    A mixed batch gets nothing: a wrong hint is worse than no hint. Когда у всех строк
+    один и тот же известный field_type, подсказка точнее: «book text», а не «book
+    titles or text». Смешанные или пустые поля оставляют общую подсказку по записи.
     """
     kinds = {(b.get("rec_type") or "").strip() for b in batch}
     kinds.discard("")
     if len(kinds) != 1:
         return ""
-    return _REC_TYPE_HINT.get(next(iter(kinds)), "")
+    rec = next(iter(kinds))
+    fields = {(b.get("field_type") or "").strip() for b in batch
+              if (b.get("rec_type") or "").strip() == rec}
+    fields.discard("")
+    if len(fields) == 1:
+        precise = _FIELD_TYPE_HINT.get((rec, next(iter(fields))))
+        if precise:
+            return precise
+    return _REC_TYPE_HINT.get(rec, "")
+
+
+# Сколько контекста на строку помещается в один промпт. Раньше здесь были молчаливые
+# обрезания: из блоков имён брались первые четыре различных, из разговора — первые
+# шесть реплик, а всё, что дальше, выбрасывалось. Пятая строка батча уходила в модель
+# без своих имён, и об этом не знал никто. Теперь предел — повод РАЗБИТЬ батч: строка,
+# чей контекст не влезает, идёт в следующий вызов со всем своим контекстом. Одиночная
+# строка получает свой контекст целиком, каким бы длинным он ни был.
+_ENTITY_BLOCKS_PER_BATCH = 6
+_TALK_LINES_PER_BATCH    = 12
+
+
+def _talk_lines(b: dict) -> list[str]:
+    return [ln.strip() for ln in (b.get("talk") or "").splitlines() if ln.strip()]
+
+
+def batch_key(b: dict, split_mods: bool) -> tuple:
+    """Что должно совпадать у строк одного промпта.
+
+    Промпт на батч один, и всё, что в нём сказано про «эти строки», сказано про все
+    сразу: карточка говорящего, примеры стиля, подсказка о типе записи, описание мода.
+    Смешанный батч получал это от ПЕРВОЙ строки — так книга шла с примерами стиля
+    реплик, потому что первой в батче оказалась реплика. Хост раскладывает строки по
+    типу, но манифест читается ORDER BY string_id, и порядок хоста не доживает.
+    """
+    return ((b.get("mod_name") or "") if split_mods else "",
+            b.get("speaker") or "", b.get("style") or "",
+            (b.get("rec_type") or "").strip(), (b.get("field_type") or "").strip())
+
+
+def group_pending(pending: list, split_mods: bool) -> list:
+    """Переставить работу так, чтобы строки с одним batch_key шли подряд.
+
+    Порядок групп — по первому появлению, внутри группы — прежний. Иначе ведущий
+    отрезок одного ключа, которым режется батч, дробил бы перемешанный манифест на
+    батчи из одной строки.
+    """
+    groups: dict = {}
+    for b in pending:
+        groups.setdefault(batch_key(b, split_mods), []).append(b)
+    return [b for g in groups.values() for b in g]
+
+
+def fit_context(batch: list) -> list:
+    """Укоротить батч так, чтобы контекст КАЖДОЙ его строки поместился в промпт."""
+    ents: set = set()
+    talk = 0
+    for n, b in enumerate(batch):
+        e = b.get("entities") or ""
+        new_ents = ents | ({e} if e else set())
+        new_talk = talk + len(_talk_lines(b))
+        if n and (len(new_ents) > _ENTITY_BLOCKS_PER_BATCH
+                  or new_talk > _TALK_LINES_PER_BATCH):
+            return batch[:n]
+        ents, talk = new_ents, new_talk
+    return batch
+
+
+def _tm_block(batch: list, tm_pairs: dict) -> str:
+    """Translation memory для батча — без ответа, который оценивается вслепую.
+
+    Строка с `rival` переводится вслепую, чтобы судья сравнил новый ответ с хранимым.
+    Но хранимый перевод сам лежит в памяти переводов: «Whiterun → <хранимое>» попадал
+    в промпт, и модель переписывала соперника вместо того, чтобы перевести. Сравнение
+    выходило с самим собой. Поэтому из памяти для ВСЕГО батча убирается запись, чей
+    ключ — исходник такой строки, и любая запись со значением, равным её сопернику.
+    """
+    if not tm_pairs:
+        return ""
+    blind_keys = {(b.get("original") or "").strip() for b in batch if (b.get("rival") or "").strip()}
+    blind_vals = {(b.get("rival") or "").strip() for b in batch if (b.get("rival") or "").strip()}
+    tm_lines: list[str] = []
+    for b in batch:
+        for word in (b.get("original") or "").split():
+            if word in tm_pairs and len(tm_lines) < 8:
+                value = tm_pairs[word]
+                if word.strip() in blind_keys or (str(value or "").strip() in blind_vals):
+                    continue
+                entry = f"  {word} → {value}"
+                if entry not in tm_lines:
+                    tm_lines.append(entry)
+    return ("Translation memory:\n" + "\n".join(tm_lines) + "\n") if tm_lines else ""
+
+
+def build_batch_context(batch: list, *, context: str = "", mods_context: dict | None = None,
+                        tm_pairs: dict | None = None) -> str:
+    """Весь контекст промпта для ЭТИХ строк, пронумерованный по их месту в батче.
+
+    Одна функция на батч и на одиночный повтор. Раньше повтор брал готовый контекст
+    всего батча: строка становилась номером 1, а её разговор оставался под номером 2,
+    и рядом стоял разговор первой строки — модель переводила реплику по чужой беседе.
+    """
+    mods_context = mods_context or {}
+    originals = [b.get("original") or "" for b in batch]
+    # Per-mod context for multi-mod packages. Skipped when every string in the
+    # batch is a short name or label — a mod description says nothing useful
+    # about "Iron Sword" and is pure prompt cost on every call. Terminology and
+    # the translation memory stay: those are exactly what short names need.
+    all_short = all(len(o) <= _SHORT_STRING_CHARS for o in originals)
+    if mods_context and not all_short:
+        batch_mod = (batch[0].get("mod_name") or "") if batch else ""
+        batch_ctx = mods_context.get(batch_mod) or context
+    elif all_short:
+        batch_ctx = ""
+    else:
+        batch_ctx = context
+    hint = rec_type_hint(batch)
+    if hint:
+        batch_ctx = ("These strings are " + hint + ".\n" + batch_ctx).strip()
+    # Карточка говорящего идёт ПЕРВОЙ и не отбрасывается на коротких строках:
+    # описание мода про «Iron Sword» бесполезно, а пол говорящего — нет, и
+    # именно на коротких репликах род первого лица и выбирался наугад.
+    # Батч однороден по говорящему и стилю (batch_key), поэтому первая строка
+    # говорит за всех — это уже не допущение, а свойство сборки батча.
+    speaker_block = (batch[0].get("speaker") or "") if batch else ""
+    if speaker_block:
+        batch_ctx = (speaker_block + "\n" + batch_ctx).strip()
+    style_block = (batch[0].get("style") or "") if batch else ""
+    if style_block:
+        batch_ctx = (batch_ctx + "\n" + style_block).strip()
+    # Имена, которые игра уже назвала. Складываются по всему батчу: строки
+    # разные, а промпт один, и подсказка нужна каждой из них. Все — fit_context
+    # уже укоротил батч так, чтобы они поместились.
+    ent_lines, ent_seen = [], set()
+    for b in batch:
+        line = b.get("entities") or ""
+        if line and line not in ent_seen:
+            ent_seen.add(line)
+            ent_lines.append(line)
+    if ent_lines:
+        batch_ctx = (batch_ctx + "\n" + "\n".join(ent_lines)).strip()
+    # Разговор вокруг строки. У каждой строки он свой, поэтому каждая
+    # реплика помечена номером той строки, к которой относится: промпт на
+    # батч один, и без номера соседи приняли бы чужую беседу за свою.
+    # Без этого модель переводила фразу как отдельную — отсюда и «Ты
+    # грубиян» в обращении к женщине, и кальки вроде «вино растрачивается
+    # на твой язык»: сказано-то было в перепалке.
+    talk_lines = []
+    for n, b in enumerate(batch, 1):
+        for line in _talk_lines(b):
+            talk_lines.append(f"  ({n}) {line}")
+    if talk_lines:
+        batch_ctx = (batch_ctx + "\nConversation around these lines:\n"
+                     + "\n".join(talk_lines)).strip()
+    tm_block = _tm_block(batch, tm_pairs or {})
+    return (batch_ctx + "\n" + tm_block).strip() if tm_block else batch_ctx
+
+
+# Ответ судьи — одна буква. Всё прочее — не ответ. Раньше бралась первая A или B где
+# угодно в тексте: «Both translations are equally good.» читалось как B (первая буква
+# «B» в «Both»), и ничья превращалась в победу нового перевода.
+_JUDGE_ANSWER_RE = re.compile(r"^\s*([AB])\s*[.!]?\s*$", re.IGNORECASE)
+
+
+def parse_judge_answer(raw: str) -> str:
+    """'A' | 'B' | '?' — строго: ответ целиком, допускается точка или «!» в конце."""
+    m = _JUDGE_ANSWER_RE.match(raw or "")
+    return m.group(1).upper() if m else "?"
+
+
+def _producer_model(state) -> str | None:
+    """Имя модели, которая сейчас генерирует, — чтобы записать его рядом со строкой."""
+    label = getattr(state, "model_label", None)
+    if label:
+        return str(label)
+    label = getattr(getattr(state, "backend", None), "_label", None)
+    return str(label) if label else None
+
+
+def _line_reasons(translations: list, reason) -> list:
+    """Причина конца генерации для каждой строки одного нумерованного ответа.
+
+    Потолок рубит последнюю выданную строку; те, что до неё, закончены. Если бэкенд
+    причины не знает (generate() без потока), не знаем и мы — None, не «stop».
+    """
+    last_filled = max((k for k, t in enumerate(translations) if (t or "").strip()),
+                      default=-1)
+    out = []
+    for k in range(len(translations)):
+        if reason is None:
+            out.append(None)
+        elif reason == "length" and k == last_filled:
+            out.append("length")
+        else:
+            out.append("stop")
+    return out
 
 
 # How often a held runner looks up to see whether its window has opened. A minute is
@@ -214,47 +427,85 @@ class OfflineTranslateRunner:
     def cancel(self) -> None:
         self._stop = True
 
-    async def _judge(self, state, loop, source: str, stored: str, fresh: str,
-                     infer_params, names: str = "") -> str:
-        """Какой из двух переводов живее: 'fresh' | 'stored' | 'unsure'.
+    async def _infer_call(self, state, loop, prompt: str, params):
+        """Один вызов модели: (текст, причина конца генерации).
+
+        Причина читается В ТОМ ЖЕ потоке и сразу после вызова, а не потом из
+        `backend.last_finish_reason`. Раньше её читали после всего батча: при одиночных
+        повторах доживала причина последнего вызова, и обрезанная первая строка
+        становилась translated, потому что вторая закончилась штатно.
+        """
+        backend = state.backend
+        _self = self
+
+        def call():
+            raw = backend._infer(prompt, params=params, stop_check=lambda: _self._stop)
+            return raw, getattr(backend, "last_finish_reason", None)
+
+        return await loop.run_in_executor(None, call)
+
+    async def _judge_detail(self, state, loop, source: str, stored: str, fresh: str,
+                            infer_params, names: str = "") -> str:
+        """Вердикт судьи с отличием невалидного ответа: fresh | stored | unsure | invalid.
 
         Спрашивается ДВАЖДЫ, с перестановкой вариантов. Модель, выбирающая по месту,
         а не по существу, ответит одной и той же буквой и будет поймана; на замере из
         семи пар так поймалась одна. Несогласие двух ответов — это «не знаю», и тогда
         остаётся хранимый текст: менять его без уверенности не на что.
+
+        «invalid» — модель ответила не буквой («Both translations are equally good.»,
+        «A or B», мусор). Для решения это то же «не знаю», но записывается отдельно:
+        сломанный формат судьи и честная неуверенность — разные неисправности, и
+        считать их вместе значит не видеть ни одну.
         """
         from prompt.builder import build_judge_prompt
 
         params = _params_with(infer_params, temperature=0.0, top_k=1, max_tokens=8,
                               thinking=False)
+        _self = self
 
         async def once(a: str, b: str) -> str:
             raw = await loop.run_in_executor(
                 None,
                 lambda: state.backend._infer(build_judge_prompt(source, a, b, names),
                                              params=params,
-                                             stop_check=lambda: self._stop))
-            for ch in (raw or "").upper():
-                if ch in "AB":
-                    return ch
-            return "?"
+                                             stop_check=lambda: _self._stop))
+            return parse_judge_answer(raw)
 
         first = await once(stored, fresh)     # fresh побеждает, когда ответ B
         second = await once(fresh, stored)    # fresh побеждает, когда ответ A
+        if first == "?" or second == "?":
+            return "invalid"
         if first == "B" and second == "A":
             return "fresh"
         if first == "A" and second == "B":
             return "stored"
         return "unsure"
 
-    async def _retranslate_singly(self, originals, state, loop, infer_params, *,
-                                  src_lang, tgt_lang, context, system_prompt, thinking,
-                                  terminology, preserve_tokens, stored, req_terms):
-        """Перевести каждую строку батча отдельным запросом.
+    async def _judge(self, state, loop, source: str, stored: str, fresh: str,
+                     infer_params, names: str = "") -> str:
+        """Какой из двух переводов живее: 'fresh' | 'stored' | 'unsure'.
+
+        Невалидный ответ судьи здесь — «unsure»: для решения это не знание. Отличить
+        его можно через _judge_detail, которым пользуется запись вердикта.
+        """
+        v = await self._judge_detail(state, loop, source, stored, fresh, infer_params, names)
+        return "unsure" if v == "invalid" else v
+
+    async def _retranslate_singly(self, batch, state, loop, infer_params, *,
+                                  src_lang, tgt_lang, context, mods_context, tm_pairs,
+                                  system_prompt, thinking, terminology, preserve_tokens,
+                                  reviewing):
+        """Перевести каждую строку батча отдельным запросом: (переводы, причины).
 
         Нужно ровно там, где нумерованный ответ вернулся короче батча: разложить его по
         местам уже нельзя, потому что номера могли съехать. По одной строке номер
         единственный, и съезжать нечему.
+
+        Контекст собирается заново ДЛЯ ЭТОЙ строки: её разговор под номером (1), её
+        имена, её память переводов. Раньше повтор получал контекст всего батча, и
+        строка №2, ставшая единственной, видела свою беседу под номером 2, а под
+        номером 1 — беседу соседки.
 
         Стоит это одного вызова на строку вместо одного на батч — дорого, но случается
         редко, а альтернатива это молча записанный перевод соседней строки, которого не
@@ -263,32 +514,32 @@ class OfflineTranslateRunner:
         from prompt.builder import build_prompt
         from prompt.parser import parse_numbered_output
 
-        out = []
-        for i, text in enumerate(originals):
+        out: list = []
+        reasons: list = []
+        for b in batch:
             if self._stop:
-                out.extend([""] * (len(originals) - len(out)))
+                out.extend([""] * (len(batch) - len(out)))
+                reasons.extend([None] * (len(batch) - len(reasons)))
                 break
             prompt = build_prompt(
-                texts=[text], src_lang=src_lang, tgt_lang=tgt_lang, context=context,
+                texts=[b.get("original") or ""], src_lang=src_lang, tgt_lang=tgt_lang,
+                context=build_batch_context([b], context=context, mods_context=mods_context,
+                                            tm_pairs=tm_pairs),
                 system_prompt=system_prompt, thinking=thinking, terminology=terminology,
                 preserve_tokens=preserve_tokens,
-                current=[stored[i]] if stored else None,
-                terms=[req_terms[i]] if req_terms else None,
+                current=[b.get("current") or ""] if reviewing else None,
+                terms=[b.get("req_terms") or ""] if reviewing else None,
             )
             try:
-                _self = self
-                raw = await loop.run_in_executor(
-                    None,
-                    lambda p=prompt: state.backend._infer(
-                        p, params=infer_params, stop_check=lambda: _self._stop),
-                )
+                raw, reason = await self._infer_call(state, loop, prompt, infer_params)
             except Exception as exc:
                 log.error("OfflineTranslateRunner[%s]: одиночный перевод не удался: %s",
                           self._aid[:8], exc)
-                raw = ""
+                raw, reason = "", None
             got = parse_numbered_output(raw or "", 1)
             out.append(got[0] if got else "")
-        return out
+            reasons.append(reason)
+        return out, reasons
 
     async def run(self, state, loop: asyncio.AbstractEventLoop) -> None:
         """Produce translations for all pending manifest items, writing each durably.
@@ -331,6 +582,8 @@ class OfflineTranslateRunner:
             pending = self._store.pending_items(self._aid)
             if not pending:
                 break
+            # Строки с одним batch_key — подряд, чтобы каждый батч был однороден.
+            pending = group_pending(pending, bool(mods_context))
             passes += 1
             if passes > MAX_PASSES:
                 log.warning("OfflineTranslateRunner[%s]: giving up on %d strings after %d passes",
@@ -368,24 +621,20 @@ class OfflineTranslateRunner:
                              self._aid[:8])
 
                 batch     = pending[i: i + plan_batch(pending, i, batch_size_cap)]
-                # Never mix mods in one batch (from 2c9c1e4): truncate the batch to the leading
-                # run that shares the first item's mod, so every prompt gets its mod's context.
-                if mods_context and batch:
-                    lead_mod = batch[0].get("mod_name") or ""
-                    end = 1
-                    while end < len(batch) and (batch[end].get("mod_name") or "") == lead_mod:
-                        end += 1
-                    batch = batch[:end]
-                # То же и для говорящего: карточка персонажа описывает ОДНОГО, и батч,
-                # смешавший двоих, получил бы род и словарь первого на реплики второго.
-                # Хост раскладывает строки так, чтобы говорящий шёл подряд, поэтому
-                # обрезание ведущего отрезка ничего не дробит без нужды.
+                # Батч — ведущий отрезок строк с одним batch_key: один мод (from 2c9c1e4,
+                # когда в пакете несколько модов), один говорящий, один стиль, один тип
+                # записи и поля. Карточка персонажа описывает ОДНОГО, примеры стиля — ОДИН
+                # род записей, и батч, смешавший два, получил бы их от первой строки.
+                # group_pending выше поставил такие строки подряд, так что обрезание ничего
+                # не дробит без нужды.
                 if batch:
-                    lead_speaker = batch[0].get("speaker") or ""
+                    lead_key = batch_key(batch[0], bool(mods_context))
                     end = 1
-                    while end < len(batch) and (batch[end].get("speaker") or "") == lead_speaker:
+                    while end < len(batch) and batch_key(batch[end], bool(mods_context)) == lead_key:
                         end += 1
                     batch = batch[:end]
+                # И так, чтобы контекст каждой строки поместился целиком (fit_context).
+                batch = fit_context(batch)
                 originals = [b.get("original") or "" for b in batch]
                 # A review package carries the translation already stored. Present it and
                 # the model corrects rather than translates; absent, nothing changes.
@@ -396,71 +645,9 @@ class OfflineTranslateRunner:
                 # "review this" to "correct this one word".
                 req_terms = [b.get("req_terms") or "" for b in batch]
 
-                # TM block for this chunk
-                tm_lines = []
-                for orig in originals:
-                    for word in orig.split():
-                        if word in tm_pairs and len(tm_lines) < 8:
-                            entry = f"  {word} → {tm_pairs[word]}"
-                            if entry not in tm_lines:
-                                tm_lines.append(entry)
-                tm_block = ("Translation memory:\n" + "\n".join(tm_lines) + "\n") if tm_lines else ""
-
-                # Per-mod context for multi-mod packages. Skipped when every string in the
-                # batch is a short name or label — a mod description says nothing useful
-                # about "Iron Sword" and is pure prompt cost on every call. Terminology and
-                # the translation memory stay: those are exactly what short names need.
-                all_short = all(len(o) <= _SHORT_STRING_CHARS for o in originals)
-                if mods_context and not all_short:
-                    batch_mod = batch[0].get("mod_name") or "" if batch else ""
-                    batch_ctx = mods_context.get(batch_mod) or context
-                elif all_short:
-                    batch_ctx = ""
-                else:
-                    batch_ctx = context
-                hint = rec_type_hint(batch)
-                if hint:
-                    batch_ctx = ("These strings are " + hint + ".\n" + batch_ctx).strip()
-                # Карточка говорящего идёт ПЕРВОЙ и не отбрасывается на коротких строках:
-                # описание мода про «Iron Sword» бесполезно, а пол говорящего — нет, и
-                # именно на коротких репликах род первого лица и выбирался наугад.
-                speaker_block = (batch[0].get("speaker") or "") if batch else ""
-                if speaker_block:
-                    batch_ctx = (speaker_block + "\n" + batch_ctx).strip()
-                # Как игра формулирует записи этого типа. Берётся у первой строки: хост
-                # раскладывает батч по типу записи, поэтому у остальных он тот же.
-                style_block = (batch[0].get("style") or "") if batch else ""
-                if style_block:
-                    batch_ctx = (batch_ctx + "\n" + style_block).strip()
-                # Имена, которые игра уже назвала. Складываются по всему батчу: строки
-                # разные, а промпт один, и подсказка нужна каждой из них.
-                ent_lines, ent_seen = [], set()
-                for b in batch:
-                    line = b.get("entities") or ""
-                    if line and line not in ent_seen:
-                        ent_seen.add(line)
-                        ent_lines.append(line)
-                    if len(ent_lines) >= 4:
-                        break
-                if ent_lines:
-                    batch_ctx = (batch_ctx + "\n" + "\n".join(ent_lines)).strip()
-                # Разговор вокруг строки. У каждой строки он свой, поэтому каждая
-                # реплика помечена номером той строки, к которой относится: промпт на
-                # батч один, и без номера соседи приняли бы чужую беседу за свою.
-                # Без этого модель переводила фразу как отдельную — отсюда и «Ты
-                # грубиян» в обращении к женщине, и кальки вроде «вино растрачивается
-                # на твой язык»: сказано-то было в перепалке.
-                talk_lines = []
-                for n, b in enumerate(batch, 1):
-                    for line in (b.get("talk") or "").splitlines():
-                        if line.strip():
-                            talk_lines.append(f"  ({n}) {line.strip()}")
-                    if len(talk_lines) >= 6:
-                        break
-                if talk_lines:
-                    batch_ctx = (batch_ctx + "\nConversation around these lines:\n"
-                                 + "\n".join(talk_lines)).strip()
-                full_context = (batch_ctx + "\n" + tm_block).strip() if tm_block else batch_ctx
+                full_context = build_batch_context(batch, context=context,
+                                                   mods_context=mods_context,
+                                                   tm_pairs=tm_pairs)
 
                 prompt = build_prompt(
                     texts           = originals,
@@ -482,20 +669,15 @@ class OfflineTranslateRunner:
                 if self._stop:
                     break
 
+                # Модель, которая произвела этот батч, — записывается рядом с каждой
+                # строкой. Берётся здесь, у вызова: модель можно сменить посреди пакета.
+                producer = _producer_model(state)
                 _t0 = time.monotonic()
                 try:
-                    _p = prompt
-                    _self = self   # don't close over `self` inside the executor lambda
-                    raw = await loop.run_in_executor(
-                        None,
-                        lambda p=_p: state.backend._infer(
-                            p, params=infer_params,
-                            stop_check=lambda: _self._stop,
-                        ),
-                    )
+                    raw, reason = await self._infer_call(state, loop, prompt, infer_params)
                 except Exception as exc:
                     log.error("OfflineTranslateRunner[%s]: inference error: %s", self._aid[:8], exc)
-                    raw = ""
+                    raw, reason = "", None
                 # An offline package can be the ONLY thing an agent does for days, so without
                 # this its tok/s never updates and the master keeps splitting the next
                 # campaign evenly instead of by real speed.
@@ -506,6 +688,8 @@ class OfflineTranslateRunner:
                     pass
 
                 translations = parse_numbered_output(raw or "", len(batch))
+                # Почему кончилась генерация — ДЛЯ КАЖДОЙ строки, в момент её получения.
+                reasons = _line_reasons(translations, reason)
 
                 # Нумерованный список, вернувшийся короче, нельзя раскладывать по местам.
                 #
@@ -532,27 +716,25 @@ class OfflineTranslateRunner:
                         "нумерация ненадёжна, переперевод по одной",
                         self._aid[:8], sum(1 for t in translations if (t or "").strip()),
                         len(batch))
-                    translations = await self._retranslate_singly(
-                        originals, state, loop, infer_params,
-                        src_lang=src_lang, tgt_lang=tgt_lang, context=full_context,
+                    translations, reasons = await self._retranslate_singly(
+                        batch, state, loop, infer_params,
+                        src_lang=src_lang, tgt_lang=tgt_lang, context=context,
+                        mods_context=mods_context, tm_pairs=tm_pairs,
                         system_prompt=system_prompt, thinking=thinking,
                         terminology=terminology, preserve_tokens=preserve_tokens,
-                        stored=stored if reviewing else None,
-                        req_terms=req_terms if reviewing else None)
+                        reviewing=reviewing)
 
-                cut_by_length = getattr(state.backend, "last_finish_reason", None) == "length"
-                last_filled = max((k for k, t in enumerate(translations) if (t or "").strip()),
-                                  default=-1)
-                if cut_by_length:
+                cut = [k for k, r in enumerate(reasons) if r == "length"]
+                if cut:
                     log.warning("OfflineTranslateRunner[%s]: генерация упёрлась в потолок — "
-                                "строка %d из %d обрезана", self._aid[:8], last_filled + 1,
-                                len(batch))
+                                "обрезаны строки %s из %d", self._aid[:8],
+                                ", ".join(str(k + 1) for k in cut), len(batch))
 
                 # Несколько кандидатов на одну строку, выбор — судьёй. Первый ответ
                 # уже получен выше при своей температуре; остальные берутся с разбросом,
                 # иначе они повторят его слово в слово и выбирать будет не из чего.
                 if candidates > 1 and not reviewing:
-                    pools: list[list[str]] = [list(translations)]
+                    pools: list[tuple[list, list]] = [(list(translations), list(reasons))]
                     _base = _as_params(infer_params)
                     hot = _params_with(infer_params, top_k=40, temperature=max(
                         cand_temp, float(_base.get("temperature") or 0)))
@@ -560,21 +742,21 @@ class OfflineTranslateRunner:
                         if self._stop:
                             break
                         try:
-                            raw2 = await loop.run_in_executor(
-                                None,
-                                lambda p=prompt, h=hot: state.backend._infer(
-                                    p, params=h, stop_check=lambda: self._stop))
+                            raw2, reason2 = await self._infer_call(state, loop, prompt, hot)
                         except Exception as exc:                   # noqa: BLE001
                             log.warning("candidate pass failed: %s", exc)
                             break
-                        pools.append(parse_numbered_output(raw2 or "", len(batch)))
+                        got2 = parse_numbered_output(raw2 or "", len(batch))
+                        pools.append((got2, _line_reasons(got2, reason2)))
                     for j in range(len(batch)):
-                        pool = []
-                        for one in pools:
+                        pool: list[str] = []
+                        why: dict = {}
+                        for one, one_reasons in pools:
                             t = (one[j] if j < len(one) else "") or ""
                             t = t.strip()
                             if t and t not in pool:
                                 pool.append(t)
+                                why[t] = one_reasons[j] if j < len(one_reasons) else None
                         if len(pool) < 2:
                             continue
                         winner = pool[0]
@@ -589,6 +771,9 @@ class OfflineTranslateRunner:
                             if v == "fresh":
                                 winner = rival_text
                         translations[j] = winner
+                        # Причина — того вызова, который дал победителя.
+                        if j < len(reasons):
+                            reasons[j] = why.get(winner)
 
                 # Судья между переводом и воротами. Численная оценка отвечает на
                 # «не сломано ли», и это её работа; на «живее ли» она ответить не может
@@ -605,7 +790,7 @@ class OfflineTranslateRunner:
                             verdicts[j] = "same"
                             continue
                         try:
-                            verdict = await self._judge(
+                            verdict = await self._judge_detail(
                                 state, loop, b.get("original") or "", rival,
                                 fresh.strip(), infer_params,
                                 names=b.get("entities") or "")
@@ -624,10 +809,11 @@ class OfflineTranslateRunner:
                     if not translation:
                         continue   # leave manifest done=0 → retried next pass / next run
                     qs     = _inline_quality_score(original, translation)
-                    _cut_here = cut_by_length and j == last_filled
-                    # Генерация упёрлась в потолок — значит последняя выданная строка
-                    # оборвана на полуслове, а не закончена. Бэкенд знает это точно;
-                    # до сих пор мастер угадывал по тексту.
+                    finish = reasons[j] if j < len(reasons) else None
+                    _cut_here = finish == "length"
+                    # Генерация упёрлась в потолок — значит эта строка оборвана на
+                    # полуслове, а не закончена. Бэкенд знает это точно; до сих пор
+                    # мастер угадывал по тексту.
                     if _cut_here:
                         qs = min(qs, 60)
                     # Same gate as scripts/esp_engine.py:631 — anything the scorer is not
@@ -649,6 +835,8 @@ class OfflineTranslateRunner:
                         str_key       = b.get("str_key"),
                         judge         = verdicts.get(j) if judging else None,
                         rival         = (b.get("rival") or None) if judging else None,
+                        finish_reason = finish,
+                        model         = producer,
                     )
                     if seq is None:
                         # disk full — back off; this string stays pending for retry

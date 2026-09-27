@@ -53,6 +53,63 @@ def _find_cached_snapshot(repo_id: str, cache_dir) -> str | None:
     return None
 
 
+def _pick(override, default):
+    """Значение вызова, если оно задано, иначе из конфигурации модели."""
+    return override if override is not None else default
+
+
+def _sampling_kwargs(mcfg, params=None, temperature=None) -> dict:
+    """sampler и logits_processors для mlx_lm — ОДНА сборка на все пути инференса.
+
+    Раньше каждый путь собирал их сам, и `_infer`, через который идёт вся автономная
+    работа агентов, передавал в make_sampler только temp и top_p: top_k=1 у судьи
+    (детерминированный выбор буквы) и top_k=40 у кандидатов молча выбрасывались, а
+    repetition_penalty не применялся вовсе — ни из вызова, ни из конфигурации.
+    Аудит поймал это на границе mlx_lm: параметр доходил до бэкенда и там пропадал.
+
+    Старые mlx_lm не знают `top_k` в make_sampler и не имеют make_logits_processors;
+    тогда параметр опускается с предупреждением, а не роняет генерацию.
+    """
+    from mlx_lm.sample_utils import make_sampler
+    p = params
+    temp  = _pick(temperature, _pick(getattr(p, "temperature", None),
+                                     getattr(mcfg, "temperature", None)))
+    top_p = _pick(getattr(p, "top_p", None), getattr(mcfg, "top_p", None))
+    top_k = _pick(getattr(p, "top_k", None), getattr(mcfg, "top_k", None))
+    rep   = _pick(getattr(p, "repetition_penalty", None),
+                  getattr(mcfg, "repetition_penalty", None))
+
+    skw: dict = {}
+    if temp is not None:
+        skw["temp"] = temp
+    if top_p is not None:
+        skw["top_p"] = top_p
+    # top_k <= 0 в mlx_lm и llama.cpp значит «выключено» — тогда не передаём вовсе.
+    if top_k is not None and int(top_k) > 0:
+        skw["top_k"] = int(top_k)
+    try:
+        sampler = make_sampler(**skw)
+    except TypeError:
+        if "top_k" not in skw:
+            raise
+        log.warning("MlxBackend: installed mlx_lm has no top_k in make_sampler — "
+                    "top_k=%s ignored", skw["top_k"])
+        skw.pop("top_k")
+        sampler = make_sampler(**skw)
+
+    out: dict = {"sampler": sampler}
+    # 1.0 — это «без штрафа»; процессор тогда только тратит время на каждом токене.
+    if rep is not None and float(rep) != 1.0:
+        try:
+            from mlx_lm.sample_utils import make_logits_processors
+        except ImportError:
+            log.warning("MlxBackend: installed mlx_lm has no make_logits_processors — "
+                        "repetition_penalty=%s ignored", rep)
+        else:
+            out["logits_processors"] = make_logits_processors(repetition_penalty=rep)
+    return out
+
+
 class MlxBackend(BaseBackend):
     """BaseBackend implementation using mlx-lm for Apple Silicon."""
 
@@ -164,18 +221,12 @@ class MlxBackend(BaseBackend):
             self.load()
 
         import mlx_lm
-        from mlx_lm.sample_utils import make_sampler, make_logits_processors
         from prompt.builder import build_prompt
         from prompt.parser  import parse_numbered_output
 
-        temperature        = params.temperature        if params.temperature        is not None else self._mcfg.temperature
-        top_p              = params.top_p              if params.top_p              is not None else self._mcfg.top_p
-        repetition_penalty = params.repetition_penalty if params.repetition_penalty is not None else self._mcfg.repetition_penalty
         max_tokens         = params.max_tokens         if params.max_tokens         is not None else self._mcfg.max_new_tokens
         batch_size         = params.batch_size         if params.batch_size         is not None else self._mcfg.batch_size
-
-        sampler           = make_sampler(temp=temperature, top_p=top_p)
-        logits_processors = make_logits_processors(repetition_penalty=repetition_penalty)
+        sampling           = _sampling_kwargs(self._mcfg, params)
 
         results: list[str] = []
 
@@ -193,12 +244,7 @@ class MlxBackend(BaseBackend):
                     preserve_tokens = preserve_tokens,
                     model_type      = "qwen",
                 )
-                gen_kwargs: dict = dict(
-                    max_tokens        = max_tokens,
-                    sampler           = sampler,
-                    logits_processors = logits_processors,
-                    verbose           = False,
-                )
+                gen_kwargs: dict = dict(max_tokens=max_tokens, verbose=False, **sampling)
                 if self._draft_model is not None:
                     gen_kwargs["draft_model"]      = self._draft_model
                     gen_kwargs["num_draft_tokens"] = self._num_draft_tokens
@@ -222,12 +268,7 @@ class MlxBackend(BaseBackend):
         if not self.is_loaded:
             self.load()
         import mlx_lm
-        from mlx_lm.sample_utils import make_sampler, make_logits_processors
 
-        sampler = make_sampler(temp=temperature, top_p=self._mcfg.top_p)
-        logits_processors = make_logits_processors(
-            repetition_penalty=self._mcfg.repetition_penalty,
-        )
         messages = [{"role": "user", "content": prompt}]
         formatted = self._tokenizer.apply_chat_template(
             messages,
@@ -235,12 +276,8 @@ class MlxBackend(BaseBackend):
             tokenize=False,
         )
         formatted += "</think>\n\n"
-        gen_kwargs: dict = dict(
-            max_tokens        = self._mcfg.max_new_tokens,
-            sampler           = sampler,
-            logits_processors = logits_processors,
-            verbose           = False,
-        )
+        gen_kwargs: dict = dict(max_tokens=self._mcfg.max_new_tokens, verbose=False,
+                                **_sampling_kwargs(self._mcfg, None, temperature=temperature))
         if self._draft_model is not None:
             gen_kwargs["draft_model"]      = self._draft_model
             gen_kwargs["num_draft_tokens"] = self._num_draft_tokens
@@ -255,16 +292,12 @@ class MlxBackend(BaseBackend):
         if not self.is_loaded:
             self.load()
         import mlx_lm
-        from mlx_lm.sample_utils import make_sampler
 
         p = params
         gen_kwargs: dict = dict(
             max_tokens = p.max_tokens if p and p.max_tokens is not None else self._mcfg.max_new_tokens,
-            sampler    = make_sampler(
-                temp  = p.temperature if p and p.temperature is not None else self._mcfg.temperature,
-                top_p = p.top_p       if p and p.top_p       is not None else self._mcfg.top_p,
-            ),
-            verbose = False,
+            verbose    = False,
+            **_sampling_kwargs(self._mcfg, p),
         )
         if self._draft_model is not None:
             gen_kwargs["draft_model"]      = self._draft_model

@@ -30,7 +30,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Wire-protocol version negotiated with the master at registration. Over a months-long
 # run an OTA update may change payloads on one side; both ends carry this so a mismatch
@@ -66,6 +66,22 @@ _AGENT_MIGRATIONS: list[tuple[int, list[str]]] = [
     # исчезал, и узнать, прав ли был судья, было уже нельзя.
     (5, ["ALTER TABLE agent_results ADD COLUMN judge TEXT",
          "ALTER TABLE agent_results ADD COLUMN rival TEXT"]),
+    # Три факта, которые знал только агент и которые терялись по дороге.
+    #  * field_type — хост ставил его в ключ строки, но в пакет не клал, и инструкция о
+    #    типе строки строилась по одному rec_type: заголовок книги и её текст (BOOK FULL
+    #    и BOOK DESC) получали одну подсказку.
+    #  * finish_reason — бэкенд знал, что генерация упёрлась в потолок, агент ставил
+    #    строке needs_review, но саму причину не хранил и не отправлял: мастер
+    #    пересчитывал текст по своим правилам и принимал обрубок как translated.
+    #  * model — какая модель ПРОИЗВЕЛА строку. Мастер брал текущую модель агента из
+    #    реестра, и ночная работа, доставленная после смены модели, записывалась на
+    #    чужое имя.
+    # Колонки есть и в базовой схеме ниже: свежая база получает schema_version=6 сразу
+    # и миграций не проходит — однажды колонку добавили только миграцией, и на новых
+    # агентах её не было.
+    (6, ["ALTER TABLE agent_manifest ADD COLUMN field_type TEXT",
+         "ALTER TABLE agent_results ADD COLUMN finish_reason TEXT",
+         "ALTER TABLE agent_results ADD COLUMN model TEXT"]),
 ]
 
 _SCHEMA = """
@@ -99,6 +115,7 @@ CREATE TABLE IF NOT EXISTS agent_manifest (
     current       TEXT,                          -- set only for a review package
     req_terms     TEXT,                          -- set only for a terminology-fix package
     rec_type      TEXT,                          -- WEAP, INFO, MGEF: register differs
+    field_type    TEXT,                          -- FULL, DESC, NAM1: имя или текст записи
     speaker       TEXT,                          -- карточка того, кто говорит или к кому
     style         TEXT,                          -- как игра формулирует такие записи
     entities      TEXT,                          -- имена, которые игра уже назвала
@@ -124,7 +141,9 @@ CREATE TABLE IF NOT EXISTS agent_results (
     delivered     INTEGER NOT NULL DEFAULT 0,
     produced_at   REAL,
     judge         TEXT,
-    rival         TEXT
+    rival         TEXT,
+    finish_reason TEXT,                          -- stop | length: почему кончилась генерация
+    model         TEXT                           -- модель, которая произвела эту строку
 );
 CREATE INDEX IF NOT EXISTS idx_ares_assign  ON agent_results(assignment_id);
 CREATE INDEX IF NOT EXISTS idx_ares_undeliv ON agent_results(delivered, seq);
@@ -265,7 +284,7 @@ class ResultStore:
                 it.get("key") or it.get("str_key"),
                 it.get("current"),
                 it.get("req_terms"),
-                it.get("rec_type"),
+                it.get("rec_type"), it.get("field_type"),
                 it.get("speaker"), it.get("style"), it.get("entities"),
                 it.get("talk"), it.get("rival"),
             ))
@@ -274,9 +293,9 @@ class ResultStore:
             self._conn.executemany(
                 """INSERT OR IGNORE INTO agent_manifest
                    (assignment_id, string_id, string_hash, original, mod_name, esp_name,
-                    str_key, current, req_terms, rec_type, speaker, style, entities,
-                    talk, rival)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    str_key, current, req_terms, rec_type, field_type, speaker, style,
+                    entities, talk, rival)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 rows,
             )
 
@@ -293,8 +312,8 @@ class ResultStore:
         with self._lock:
             cur = self._conn.execute(
                 """SELECT string_id, string_hash, original, mod_name, esp_name, str_key,
-                          current, req_terms, rec_type, speaker, style, entities,
-                          talk, rival
+                          current, req_terms, rec_type, field_type, speaker, style,
+                          entities, talk, rival
                    FROM agent_manifest WHERE assignment_id=? AND done=0
                    ORDER BY string_id""",
                 (assignment_id,),
@@ -349,6 +368,8 @@ class ResultStore:
         str_key: str | None = None,
         judge: str | None = None,
         rival: str | None = None,
+        finish_reason: str | None = None,
+        model: str | None = None,
     ) -> int | None:
         """Durably record one produced translation and mark its manifest row done.
         Returns the new monotonic seq, or None if the disk is full (production pauses).
@@ -362,11 +383,11 @@ class ResultStore:
                     """INSERT INTO agent_results
                        (assignment_id, string_id, string_hash, original, translation,
                         quality_score, status, mod_name, esp_name, str_key, delivered,
-                        produced_at, judge, rival)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,0,?,?,?)""",
+                        produced_at, judge, rival, finish_reason, model)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?)""",
                     (assignment_id, string_id, h, original, translation,
                      quality_score, status, mod_name, esp_name, str_key, time.time(),
-                     judge, rival),
+                     judge, rival, finish_reason, model),
                 )
                 self._conn.execute(
                     "UPDATE agent_manifest SET done=1 WHERE assignment_id=? AND string_id=?",

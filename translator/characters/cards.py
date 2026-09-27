@@ -75,7 +75,7 @@ class Card:
     pidgin:     bool = False
     vocab:      dict = field(default_factory=dict)   # англ. слово → русское или ""
 
-    def prompt_block(self) -> str:
+    def prompt_block(self, vocab: bool = True) -> str:
         """Карточка в том виде, в каком она уходит в промпт. Пустая — пустая строка.
 
         Платится она за ЗАПРОС, а не за строку: если батч собран по говорящему, эти
@@ -95,7 +95,7 @@ class Card:
         if self.pidgin:
             bits.append("This speaker uses broken, ungrammatical speech on purpose. "
                         "Keep it broken in Russian — do not correct the grammar.")
-        if self.vocab:
+        if vocab and self.vocab:
             known = [f"{en} = {ru}" for en, ru in self.vocab.items() if ru]
             unknown = [en for en, ru in self.vocab.items() if not ru]
             if known:

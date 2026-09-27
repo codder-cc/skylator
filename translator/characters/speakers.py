@@ -104,9 +104,9 @@ def card_for(esp_name: str, form_id: str, state: dict):
     return (state.get("cards") or {}).get(next(iter(vts)))
 
 
-def block_for(esp_name: str, form_id: str, state: dict) -> str:
+def block_for(esp_name: str, form_id: str, state: dict, vocab: bool = True) -> str:
     card = card_for(esp_name, form_id, state)
-    return card.prompt_block() if card else ""
+    return card.prompt_block(vocab=vocab) if card else ""
 
 
 # -- пол говорящего для ворот записи ---------------------------------------------

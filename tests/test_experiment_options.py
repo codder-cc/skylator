@@ -56,7 +56,8 @@ def _dispatch(tmp_path, monkeypatch, options):
                       WORKER_REGISTRY=MagicMock())
     monkeypatch.setattr(J, "_resolve_backends", lambda *a: ([("bench", None)], []))
     monkeypatch.setattr(speakers, "load", lambda *a, **k: {"voice": {}, "cards": {}})
-    monkeypatch.setattr(speakers, "block_for", lambda *a: "SPEAKER_CARD")
+    monkeypatch.setattr(speakers, "block_for",
+                        lambda *a, vocab=True: "SPEAKER_CARD" + ("+VOCAB" if vocab else ""))
     monkeypatch.setattr(dialogue, "load", lambda *a, **k: {})
     monkeypatch.setattr(official_context, "build_examples", lambda *a: {"INFO": [("a", "б")]})
     monkeypatch.setattr(official_context, "style_block", lambda *a: "STYLE_BLOCK")
@@ -82,7 +83,7 @@ def test_exactly_the_named_strings_go_out_in_any_status(tmp_path, monkeypatch):
 
 def test_all_context_parts_by_default(tmp_path, monkeypatch):
     mods, items, extra = _dispatch(tmp_path, monkeypatch, {"string_ids": [1]})
-    assert items[0]["speaker"] == "SPEAKER_CARD" and items[0]["style"] == "STYLE_BLOCK"
+    assert items[0]["speaker"] == "SPEAKER_CARD+VOCAB" and items[0]["style"] == "STYLE_BLOCK"
     assert items[0]["entities"] == "ENTITY_BLOCK" and mods[0][2] == "MOD_SUMMARY"
     assert "terminology" not in extra and "tm_pairs" not in extra
 
@@ -91,7 +92,7 @@ def test_only_the_named_context_parts_survive(tmp_path, monkeypatch):
     mods, items, extra = _dispatch(tmp_path, monkeypatch,
                                    {"string_ids": [1], "context_parts": ["speaker"]})
     it = items[0]
-    assert it.get("speaker") == "SPEAKER_CARD"
+    assert it.get("speaker") == "SPEAKER_CARD", "словарь персонажа — отдельная часть"
     assert "style" not in it and "entities" not in it and "talk" not in it
     assert mods[0][2] == "", "сводка мода выключена"
     assert extra.get("terminology") == "" and extra.get("tm_pairs") == {}

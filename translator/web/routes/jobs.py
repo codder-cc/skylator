@@ -1981,7 +1981,10 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                     "key": r["key"], "original": r["original"],
                     "rec_type": r["rec_type"] or "", "field_type": r["field_type"] or ""}
             if speakers_state:
-                block = _sp.block_for(r["esp_name"], r["form_id"], speakers_state)
+                # «vocab» — отдельная часть для абляции: словарь персонажа собран из
+                # уже лежащих переводов, и трасса показала в нём мусор («olga = ольгу»).
+                block = _sp.block_for(r["esp_name"], r["form_id"], speakers_state,
+                                      vocab=context_parts is None or "vocab" in context_parts)
                 if block:
                     item["speaker"] = block
             if dlg_state:

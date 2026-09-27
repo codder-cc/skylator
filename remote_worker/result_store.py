@@ -6,10 +6,11 @@ written here the instant inference returns, BEFORE any network delivery is attem
 The store survives agent crashes, reboots, and power loss, so on relaunch the agent
 knows exactly what it has already done and resumes from where it stopped.
 
-Three tables:
+Four tables:
   agent_assignments — the durable work parcels this agent was given
   agent_manifest    — the per-string work list of each assignment (done flag)
   agent_results     — every produced translation, with a monotonic `seq`
+  agent_traces      — every model call: what reached MLX, with what params, and why it stopped
 
 Design notes:
   * WAL mode + synchronous=NORMAL: crash-safe without paying a full fsync per write.
@@ -22,6 +23,7 @@ Design notes:
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import sqlite3
 import threading
@@ -30,7 +32,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # Wire-protocol version negotiated with the master at registration. Over a months-long
 # run an OTA update may change payloads on one side; both ends carry this so a mismatch
@@ -82,6 +84,19 @@ _AGENT_MIGRATIONS: list[tuple[int, list[str]]] = [
     (6, ["ALTER TABLE agent_manifest ADD COLUMN field_type TEXT",
          "ALTER TABLE agent_results ADD COLUMN finish_reason TEXT",
          "ALTER TABLE agent_results ADD COLUMN model TEXT"]),
+    # Трасса каждого вызова модели. Аудит 27.09 не смог доказать, что именно видела
+    # модель: на мастере оставались только логи «карточка приложена», на агенте — ничего.
+    # Строка результата ссылается на вызов, который её дал (trace_id), и на два вызова
+    # судьи (judge_trace_ids, JSON-список). Таблица трасс создаётся и базовой схемой
+    # (CREATE IF NOT EXISTS проходит и по старой базе), и здесь — на случай, если
+    # базовую схему когда-нибудь перестанут прогонять по существующей базе.
+    (7, ["""CREATE TABLE IF NOT EXISTS agent_traces (
+            trace_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            assignment_id TEXT, kind TEXT, string_ids TEXT, prompt_sha TEXT, prompt TEXT,
+            params_json TEXT, finish_reason TEXT, tokens_in INTEGER, tokens_out INTEGER,
+            seconds REAL, model TEXT, code_rev TEXT, created_at REAL)""",
+         "ALTER TABLE agent_results ADD COLUMN trace_id INTEGER",
+         "ALTER TABLE agent_results ADD COLUMN judge_trace_ids TEXT"]),
 ]
 
 _SCHEMA = """
@@ -143,10 +158,33 @@ CREATE TABLE IF NOT EXISTS agent_results (
     judge         TEXT,
     rival         TEXT,
     finish_reason TEXT,                          -- stop | length: почему кончилась генерация
-    model         TEXT                           -- модель, которая произвела эту строку
+    model         TEXT,                          -- модель, которая произвела эту строку
+    trace_id      INTEGER,                       -- вызов модели, давший этот перевод
+    judge_trace_ids TEXT                         -- JSON: два вызова судьи, если судили
 );
 CREATE INDEX IF NOT EXISTS idx_ares_assign  ON agent_results(assignment_id);
 CREATE INDEX IF NOT EXISTS idx_ares_undeliv ON agent_results(delivered, seq);
+
+-- Один вызов модели. Промпт целиком — только в пакетах с trace_full (эксперименты):
+-- на ночном прогоне это сотни мегабайт, а хэш доказывает то же самое, если промпт
+-- можно пересобрать.
+CREATE TABLE IF NOT EXISTS agent_traces (
+    trace_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    assignment_id TEXT,
+    kind          TEXT,                          -- translate | retry | candidate | judge
+    string_ids    TEXT,                          -- JSON: какие строки были в промпте
+    prompt_sha    TEXT,                          -- sha256 промпта, всегда
+    prompt        TEXT,                          -- сам промпт, только при trace_full
+    params_json   TEXT,                          -- что ФАКТИЧЕСКИ получил mlx_lm
+    finish_reason TEXT,
+    tokens_in     INTEGER,
+    tokens_out    INTEGER,
+    seconds       REAL,
+    model         TEXT,
+    code_rev      TEXT,                          -- ревизия кода агента при запуске
+    created_at    REAL
+);
+CREATE INDEX IF NOT EXISTS idx_atrace_assign ON agent_traces(assignment_id);
 """
 
 
@@ -370,6 +408,8 @@ class ResultStore:
         rival: str | None = None,
         finish_reason: str | None = None,
         model: str | None = None,
+        trace_id: int | None = None,
+        judge_trace_ids: list[int] | None = None,
     ) -> int | None:
         """Durably record one produced translation and mark its manifest row done.
         Returns the new monotonic seq, or None if the disk is full (production pauses).
@@ -383,11 +423,13 @@ class ResultStore:
                     """INSERT INTO agent_results
                        (assignment_id, string_id, string_hash, original, translation,
                         quality_score, status, mod_name, esp_name, str_key, delivered,
-                        produced_at, judge, rival, finish_reason, model)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?)""",
+                        produced_at, judge, rival, finish_reason, model, trace_id,
+                        judge_trace_ids)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?)""",
                     (assignment_id, string_id, h, original, translation,
                      quality_score, status, mod_name, esp_name, str_key, time.time(),
-                     judge, rival, finish_reason, model),
+                     judge, rival, finish_reason, model, trace_id,
+                     json.dumps(list(judge_trace_ids)) if judge_trace_ids else None),
                 )
                 self._conn.execute(
                     "UPDATE agent_manifest SET done=1 WHERE assignment_id=? AND string_id=?",
@@ -405,6 +447,92 @@ class ResultStore:
                     return None
                 raise
 
+    # ── traces: one row per model call ──────────────────────────────────────────
+
+    def write_trace(
+        self,
+        assignment_id: str,
+        kind: str,
+        string_ids: list,
+        prompt: str,
+        params: dict | None,
+        finish_reason: str | None = None,
+        tokens_in: int | None = None,
+        tokens_out: int | None = None,
+        seconds: float | None = None,
+        model: str | None = None,
+        code_rev: str | None = None,
+        keep_prompt: bool = False,
+    ) -> int | None:
+        """Записать один вызов модели. Возвращает trace_id или None, если записать нельзя.
+
+        Трасса — доказательство, а не условие работы: сбой её записи (диск полон)
+        не останавливает перевод, строка просто уйдёт без ссылки на вызов.
+        """
+        sha = hashlib.sha256((prompt or "").encode("utf-8")).hexdigest()
+        with self._lock:
+            try:
+                cur = self._conn.execute(
+                    """INSERT INTO agent_traces
+                       (assignment_id, kind, string_ids, prompt_sha, prompt, params_json,
+                        finish_reason, tokens_in, tokens_out, seconds, model, code_rev,
+                        created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (assignment_id, kind, json.dumps(list(string_ids or [])), sha,
+                     prompt if keep_prompt else None,
+                     json.dumps(params or {}, ensure_ascii=False, default=str),
+                     finish_reason, tokens_in, tokens_out, seconds, model, code_rev or "",
+                     time.time()),
+                )
+                self._conn.commit()
+                return cur.lastrowid
+            except sqlite3.Error as exc:
+                log.warning("ResultStore: trace not recorded (%s)", exc)
+                return None
+
+    def get_traces(self, trace_ids) -> dict[int, dict]:
+        """Трассы по id: {trace_id: строка agent_traces с разобранным JSON}."""
+        ids = sorted({int(t) for t in (trace_ids or []) if t is not None})
+        if not ids:
+            return {}
+        out: dict[int, dict] = {}
+        with self._lock:
+            for k in range(0, len(ids), 500):
+                part = ids[k:k + 500]
+                ph = ",".join("?" * len(part))
+                for r in self._conn.execute(
+                        f"SELECT * FROM agent_traces WHERE trace_id IN ({ph})", part):
+                    d = dict(r)
+                    for col in ("params_json", "string_ids"):
+                        try:
+                            d[col] = json.loads(d[col]) if d[col] else None
+                        except (TypeError, ValueError):
+                            pass
+                    out[d["trace_id"]] = d
+        return out
+
+    def _attach_traces(self, rows: list[dict]) -> list[dict]:
+        """Приложить к строкам результата их трассы: `_trace` и `_judge_traces`.
+
+        Прикладывается при чтении, а не хранится копией в строке: трасса одного батча
+        общая для всех его строк, и дублировать промпт на каждую — это умножать базу.
+        """
+        wanted: list = []
+        for r in rows:
+            r["_judge_ids"] = []
+            if r.get("judge_trace_ids"):
+                try:
+                    r["_judge_ids"] = [int(x) for x in json.loads(r["judge_trace_ids"])]
+                except (TypeError, ValueError):
+                    pass
+            wanted.append(r.get("trace_id"))
+            wanted.extend(r["_judge_ids"])
+        traces = self.get_traces(wanted)
+        for r in rows:
+            r["_trace"] = traces.get(r.get("trace_id")) if r.get("trace_id") else None
+            r["_judge_traces"] = [traces[t] for t in r.pop("_judge_ids") if t in traces]
+        return rows
+
     # ── delivery (push) + reconciliation (pull) ─────────────────────────────────
 
     def undelivered(self, limit: int = 200) -> list[dict]:
@@ -414,7 +542,7 @@ class ResultStore:
                 "SELECT * FROM agent_results WHERE delivered=0 ORDER BY seq LIMIT ?",
                 (limit,),
             )
-            return [dict(r) for r in cur.fetchall()]
+            return self._attach_traces([dict(r) for r in cur.fetchall()])
 
     def results_since(self, since_seq: int, limit: int = 500) -> list[dict]:
         """Rows with seq > since_seq (master-pull path). Read-only, safe anytime."""
@@ -423,7 +551,7 @@ class ResultStore:
                 "SELECT * FROM agent_results WHERE seq > ? ORDER BY seq LIMIT ?",
                 (since_seq, limit),
             )
-            return [dict(r) for r in cur.fetchall()]
+            return self._attach_traces([dict(r) for r in cur.fetchall()])
 
     def mark_delivered_seqs(self, seqs: list[int]) -> int:
         """Mark a specific set of seqs delivered. Lets the deliver loop ack every row the
@@ -522,6 +650,15 @@ class ResultStore:
                 "DELETE FROM agent_results WHERE delivered=1 AND seq<=?", (cutoff,)
             )
             n = self._conn.execute("SELECT changes()").fetchone()[0]
+            # Трассы уходят вместе с последней строкой своего назначения, и только у
+            # назначения, которое уже не в работе: у открытого ещё будут вызовы, а
+            # трасса вызова, не давшего строки (пустой ответ), — тоже улика.
+            if n:
+                self._conn.execute(
+                    """DELETE FROM agent_traces WHERE assignment_id NOT IN
+                           (SELECT DISTINCT assignment_id FROM agent_results)
+                       AND assignment_id NOT IN
+                           (SELECT assignment_id FROM agent_assignments WHERE state='open')""")
             self._conn.commit()
         if n:
             self.checkpoint()

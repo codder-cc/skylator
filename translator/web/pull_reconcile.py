@@ -84,7 +84,9 @@ def apply_pulled_results(string_mgr, astore, agent_label: str, results: list[dic
                                 job_id=_cand.job_for(_repo, r.get("assignment_id")),
                                 produced_at=r.get("produced_at"),
                                 judge=r.get("judge"), rival=r.get("rival"),
-                                finish_reason=r.get("finish_reason"))
+                                finish_reason=r.get("finish_reason"),
+                                # Что видела модель: та же трасса, что и у отправки.
+                                trace=r.get("trace"), judge_trace=r.get("judge_trace"))
         except Exception as exc:                                   # noqa: BLE001
             log.warning("pull: candidate layer failed for %s/%s (%s) — not applied, "
                         "will be pulled again", mod, key, exc)

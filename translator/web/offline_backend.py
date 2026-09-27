@@ -263,9 +263,14 @@ def dispatch(
     jm: "JobManager",
     repo: "StringRepo",
     cfg,
+    extra: dict | None = None,
 ) -> None:
     """
     Package strings and dispatch to one or more remote workers.
+
+    ``extra`` — ключи пакета рядом со строками (judge, candidates, trace_full), как у
+    dispatch_multi: у одномодового пути их раньше не было вовсе, и трасса с полным
+    промптом здесь не включалась бы ничем.
 
     Transitions job.status to OFFLINE_DISPATCHED on success.
     Raises RuntimeError if any worker fails to ACK.
@@ -329,6 +334,7 @@ def dispatch(
             "terminology":     term_str,
             "preserve_tokens": [],
             "tm_pairs":        tm_pairs,
+            **(extra or {}),
         }
 
         log.info("offline_backend: dispatching %d strings to %s (offline_job_id=%s)",
@@ -461,9 +467,10 @@ def dispatch_multi(
             "terminology":     term_str,
             "preserve_tokens": [],
             "tm_pairs":        merged_tm,
-            # Ключи пакета, которые агент читает как настройки прохода (например
-            # judge). Кладутся рядом со строками, а не в params: params уходят в
-            # инференс как есть.
+            # Ключи пакета, которые агент читает как настройки прохода (judge,
+            # candidates, trace_full — полный промпт в трассе для экспериментов).
+            # Кладутся рядом со строками, а не в params: params уходят в инференс как
+            # есть, а агент хранит пакет целиком, кроме строк (_persist_offline_chunk).
             **(extra or {}),
         }
 

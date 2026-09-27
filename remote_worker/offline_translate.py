@@ -12,8 +12,28 @@ import asyncio
 import logging
 import time
 import re
+from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+
+def _code_revision() -> str:
+    """Полный git HEAD кода агента; "" — если узнать нельзя (не git, нет git).
+
+    Берётся ОДИН раз, при импорте, а не при первой трассе. OTA делает git pull и только
+    потом перезапускает процесс: ревизия, прочитанная лениво между этими шагами, была бы
+    ревизией нового кода на вызовах, которые делает ещё старый.
+    """
+    try:
+        import subprocess
+        r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(Path(__file__).parent),
+                           capture_output=True, text=True, timeout=5)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:                                              # noqa: BLE001
+        return ""
+
+
+CODE_REV = _code_revision()
 
 # Token patterns that must be preserved verbatim
 _TOKEN_RE = re.compile(r"<[^>]+>|%\d|⟨NL⟩|\[PlayerName\]|\{T\d+\}")
@@ -423,29 +443,76 @@ class OfflineTranslateRunner:
         # Held outside working hours — tracked only so the log says so once, not every
         # thirty seconds for the eight hours a night window is closed.
         self._off_hours  = False
+        # Промпт целиком в трассе — только для экспериментов: пакет несёт trace_full.
+        # Хэш пишется всегда.
+        self._trace_full = bool(self._meta.get("trace_full"))
 
     def cancel(self) -> None:
         self._stop = True
 
-    async def _infer_call(self, state, loop, prompt: str, params):
-        """Один вызов модели: (текст, причина конца генерации).
+    async def _infer_call(self, state, loop, prompt: str, params, *,
+                          kind: str = "translate", string_ids=()):
+        """Один вызов модели: (текст, причина конца генерации, trace_id).
 
         Причина читается В ТОМ ЖЕ потоке и сразу после вызова, а не потом из
         `backend.last_finish_reason`. Раньше её читали после всего батча: при одиночных
         повторах доживала причина последнего вызова, и обрезанная первая строка
         становилась translated, потому что вторая закончилась штатно.
+
+        Так же, в том же потоке, читается `backend.last_call` — что фактически ушло в
+        mlx_lm — и пишется трассой в хранилище. Аудит не мог доказать, что видела
+        модель: всё, что оставалось, — лог мастера «карточка приложена». Бэкенд без
+        `last_call` (llama.cpp, заглушки) даёт трассу с запрошенными параметрами под
+        ключом "requested": честно, что это не граница библиотеки.
         """
         backend = state.backend
         _self = self
 
         def call():
-            raw = backend._infer(prompt, params=params, stop_check=lambda: _self._stop)
-            return raw, getattr(backend, "last_finish_reason", None)
+            t0 = time.monotonic()
+            try:
+                raw = backend._infer(prompt, params=params, stop_check=lambda: _self._stop)
+            except Exception as exc:                               # noqa: BLE001
+                return None, None, None, time.monotonic() - t0, exc
+            return (raw, getattr(backend, "last_finish_reason", None),
+                    getattr(backend, "last_call", None), time.monotonic() - t0, None)
 
-        return await loop.run_in_executor(None, call)
+        raw, reason, info, seconds, error = await loop.run_in_executor(None, call)
+        trace_id = self._trace(state, kind, string_ids, prompt, params, info,
+                               reason if error is None else "error", seconds)
+        if error is not None:
+            raise error
+        return raw, reason, trace_id
+
+    def _trace(self, state, kind, string_ids, prompt, params, info, reason, seconds):
+        """Записать трассу одного вызова. Сбой записи — не сбой перевода."""
+        info = info if isinstance(info, dict) else {}
+        store = getattr(self, "_store", None)
+        if store is None or not hasattr(store, "write_trace"):
+            return None
+        aid = getattr(self, "_aid", "") or ""
+        try:
+            return store.write_trace(
+                assignment_id = aid,
+                kind          = kind,
+                string_ids    = list(string_ids or []),
+                prompt        = prompt,
+                params        = info.get("params") or {"requested": _as_params(params)},
+                finish_reason = info.get("finish_reason", reason) if reason != "error" else "error",
+                tokens_in     = info.get("tokens_in"),
+                tokens_out    = info.get("tokens_out"),
+                seconds       = info.get("seconds", round(seconds, 4)),
+                model         = _producer_model(state),
+                code_rev      = CODE_REV,
+                keep_prompt   = bool(getattr(self, "_trace_full", False)),
+            )
+        except Exception as exc:                                   # noqa: BLE001
+            log.warning("OfflineTranslateRunner[%s]: trace not recorded: %s", aid[:8], exc)
+            return None
 
     async def _judge_detail(self, state, loop, source: str, stored: str, fresh: str,
-                            infer_params, names: str = "") -> str:
+                            infer_params, names: str = "", *, string_ids=(),
+                            traces: list | None = None) -> str:
         """Вердикт судьи с отличием невалидного ответа: fresh | stored | unsure | invalid.
 
         Спрашивается ДВАЖДЫ, с перестановкой вариантов. Модель, выбирающая по месту,
@@ -457,19 +524,20 @@ class OfflineTranslateRunner:
         «A or B», мусор). Для решения это то же «не знаю», но записывается отдельно:
         сломанный формат судьи и честная неуверенность — разные неисправности, и
         считать их вместе значит не видеть ни одну.
+
+        `traces`, если передан, получает trace_id обоих вызовов — в порядке вызова.
         """
         from prompt.builder import build_judge_prompt
 
         params = _params_with(infer_params, temperature=0.0, top_k=1, max_tokens=8,
                               thinking=False)
-        _self = self
 
         async def once(a: str, b: str) -> str:
-            raw = await loop.run_in_executor(
-                None,
-                lambda: state.backend._infer(build_judge_prompt(source, a, b, names),
-                                             params=params,
-                                             stop_check=lambda: _self._stop))
+            raw, _reason, tid = await self._infer_call(
+                state, loop, build_judge_prompt(source, a, b, names), params,
+                kind="judge", string_ids=string_ids)
+            if traces is not None and tid is not None:
+                traces.append(tid)
             return parse_judge_answer(raw)
 
         first = await once(stored, fresh)     # fresh побеждает, когда ответ B
@@ -483,20 +551,21 @@ class OfflineTranslateRunner:
         return "unsure"
 
     async def _judge(self, state, loop, source: str, stored: str, fresh: str,
-                     infer_params, names: str = "") -> str:
+                     infer_params, names: str = "", *, string_ids=()) -> str:
         """Какой из двух переводов живее: 'fresh' | 'stored' | 'unsure'.
 
         Невалидный ответ судьи здесь — «unsure»: для решения это не знание. Отличить
         его можно через _judge_detail, которым пользуется запись вердикта.
         """
-        v = await self._judge_detail(state, loop, source, stored, fresh, infer_params, names)
+        v = await self._judge_detail(state, loop, source, stored, fresh, infer_params, names,
+                                     string_ids=string_ids)
         return "unsure" if v == "invalid" else v
 
     async def _retranslate_singly(self, batch, state, loop, infer_params, *,
                                   src_lang, tgt_lang, context, mods_context, tm_pairs,
                                   system_prompt, thinking, terminology, preserve_tokens,
                                   reviewing):
-        """Перевести каждую строку батча отдельным запросом: (переводы, причины).
+        """Перевести каждую строку батча отдельным запросом: (переводы, причины, трассы).
 
         Нужно ровно там, где нумерованный ответ вернулся короче батча: разложить его по
         местам уже нельзя, потому что номера могли съехать. По одной строке номер
@@ -516,10 +585,12 @@ class OfflineTranslateRunner:
 
         out: list = []
         reasons: list = []
+        traces: list = []
         for b in batch:
             if self._stop:
                 out.extend([""] * (len(batch) - len(out)))
                 reasons.extend([None] * (len(batch) - len(reasons)))
+                traces.extend([None] * (len(batch) - len(traces)))
                 break
             prompt = build_prompt(
                 texts=[b.get("original") or ""], src_lang=src_lang, tgt_lang=tgt_lang,
@@ -531,15 +602,18 @@ class OfflineTranslateRunner:
                 terms=[b.get("req_terms") or ""] if reviewing else None,
             )
             try:
-                raw, reason = await self._infer_call(state, loop, prompt, infer_params)
+                raw, reason, tid = await self._infer_call(state, loop, prompt, infer_params,
+                                                          kind="retry",
+                                                          string_ids=[b.get("string_id")])
             except Exception as exc:
                 log.error("OfflineTranslateRunner[%s]: одиночный перевод не удался: %s",
                           self._aid[:8], exc)
-                raw, reason = "", None
+                raw, reason, tid = "", None, None
             got = parse_numbered_output(raw or "", 1)
             out.append(got[0] if got else "")
             reasons.append(reason)
-        return out, reasons
+            traces.append(tid)
+        return out, reasons, traces
 
     async def run(self, state, loop: asyncio.AbstractEventLoop) -> None:
         """Produce translations for all pending manifest items, writing each durably.
@@ -672,12 +746,15 @@ class OfflineTranslateRunner:
                 # Модель, которая произвела этот батч, — записывается рядом с каждой
                 # строкой. Берётся здесь, у вызова: модель можно сменить посреди пакета.
                 producer = _producer_model(state)
+                batch_ids = [b.get("string_id") for b in batch]
                 _t0 = time.monotonic()
                 try:
-                    raw, reason = await self._infer_call(state, loop, prompt, infer_params)
+                    raw, reason, batch_trace = await self._infer_call(
+                        state, loop, prompt, infer_params, kind="translate",
+                        string_ids=batch_ids)
                 except Exception as exc:
                     log.error("OfflineTranslateRunner[%s]: inference error: %s", self._aid[:8], exc)
-                    raw, reason = "", None
+                    raw, reason, batch_trace = "", None, None
                 # An offline package can be the ONLY thing an agent does for days, so without
                 # this its tok/s never updates and the master keeps splitting the next
                 # campaign evenly instead of by real speed.
@@ -690,6 +767,8 @@ class OfflineTranslateRunner:
                 translations = parse_numbered_output(raw or "", len(batch))
                 # Почему кончилась генерация — ДЛЯ КАЖДОЙ строки, в момент её получения.
                 reasons = _line_reasons(translations, reason)
+                # Какой вызов дал каждую строку — чтобы её трасса была трассой ЕЁ вызова.
+                trace_ids = [batch_trace] * len(batch)
 
                 # Нумерованный список, вернувшийся короче, нельзя раскладывать по местам.
                 #
@@ -716,7 +795,7 @@ class OfflineTranslateRunner:
                         "нумерация ненадёжна, переперевод по одной",
                         self._aid[:8], sum(1 for t in translations if (t or "").strip()),
                         len(batch))
-                    translations, reasons = await self._retranslate_singly(
+                    translations, reasons, trace_ids = await self._retranslate_singly(
                         batch, state, loop, infer_params,
                         src_lang=src_lang, tgt_lang=tgt_lang, context=context,
                         mods_context=mods_context, tm_pairs=tm_pairs,
@@ -734,7 +813,8 @@ class OfflineTranslateRunner:
                 # уже получен выше при своей температуре; остальные берутся с разбросом,
                 # иначе они повторят его слово в слово и выбирать будет не из чего.
                 if candidates > 1 and not reviewing:
-                    pools: list[tuple[list, list]] = [(list(translations), list(reasons))]
+                    pools: list[tuple[list, list, list]] = [
+                        (list(translations), list(reasons), list(trace_ids))]
                     _base = _as_params(infer_params)
                     hot = _params_with(infer_params, top_k=40, temperature=max(
                         cand_temp, float(_base.get("temperature") or 0)))
@@ -742,21 +822,25 @@ class OfflineTranslateRunner:
                         if self._stop:
                             break
                         try:
-                            raw2, reason2 = await self._infer_call(state, loop, prompt, hot)
+                            raw2, reason2, tid2 = await self._infer_call(
+                                state, loop, prompt, hot, kind="candidate",
+                                string_ids=batch_ids)
                         except Exception as exc:                   # noqa: BLE001
                             log.warning("candidate pass failed: %s", exc)
                             break
                         got2 = parse_numbered_output(raw2 or "", len(batch))
-                        pools.append((got2, _line_reasons(got2, reason2)))
+                        pools.append((got2, _line_reasons(got2, reason2), [tid2] * len(batch)))
                     for j in range(len(batch)):
                         pool: list[str] = []
                         why: dict = {}
-                        for one, one_reasons in pools:
+                        from_call: dict = {}
+                        for one, one_reasons, one_traces in pools:
                             t = (one[j] if j < len(one) else "") or ""
                             t = t.strip()
                             if t and t not in pool:
                                 pool.append(t)
                                 why[t] = one_reasons[j] if j < len(one_reasons) else None
+                                from_call[t] = one_traces[j] if j < len(one_traces) else None
                         if len(pool) < 2:
                             continue
                         winner = pool[0]
@@ -764,7 +848,8 @@ class OfflineTranslateRunner:
                             try:
                                 v = await self._judge(state, loop,
                                                       batch[j].get("original") or "",
-                                                      winner, rival_text, infer_params)
+                                                      winner, rival_text, infer_params,
+                                                      string_ids=[batch_ids[j]])
                             except Exception as exc:               # noqa: BLE001
                                 log.warning("judge between candidates failed: %s", exc)
                                 v = "unsure"
@@ -774,12 +859,16 @@ class OfflineTranslateRunner:
                         # Причина — того вызова, который дал победителя.
                         if j < len(reasons):
                             reasons[j] = why.get(winner)
+                        # И трасса — того же вызова: кандидат, не первый проход.
+                        if j < len(trace_ids):
+                            trace_ids[j] = from_call.get(winner)
 
                 # Судья между переводом и воротами. Численная оценка отвечает на
                 # «не сломано ли», и это её работа; на «живее ли» она ответить не может
                 # и молча оставляла хранимый текст. Здесь спрашивается то, чего она не
                 # умеет, — и только там, где ответы РАЗНЫЕ: совпавшие спорить не о чем.
                 verdicts: dict = {}
+                judge_traces: dict = {}
                 if judging:
                     for j, b in enumerate(batch):
                         fresh = (translations[j] if j < len(translations) else "") or ""
@@ -789,11 +878,14 @@ class OfflineTranslateRunner:
                         if fresh.strip() == rival:
                             verdicts[j] = "same"
                             continue
+                        jt: list = []
+                        judge_traces[j] = jt
                         try:
                             verdict = await self._judge_detail(
                                 state, loop, b.get("original") or "", rival,
                                 fresh.strip(), infer_params,
-                                names=b.get("entities") or "")
+                                names=b.get("entities") or "",
+                                string_ids=[b.get("string_id")], traces=jt)
                         except Exception as exc:                       # noqa: BLE001
                             log.warning("judge failed (%s) — verdict unsure", exc)
                             verdict = "unsure"
@@ -837,6 +929,8 @@ class OfflineTranslateRunner:
                         rival         = (b.get("rival") or None) if judging else None,
                         finish_reason = finish,
                         model         = producer,
+                        trace_id      = trace_ids[j] if j < len(trace_ids) else None,
+                        judge_trace_ids = judge_traces.get(j) or None,
                     )
                     if seq is None:
                         # disk full — back off; this string stays pending for retry

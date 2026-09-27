@@ -58,7 +58,7 @@ def _pick(override, default):
     return override if override is not None else default
 
 
-def _sampling_kwargs(mcfg, params=None, temperature=None) -> dict:
+def _sampling_kwargs(mcfg, params=None, temperature=None, record: dict | None = None) -> dict:
     """sampler и logits_processors для mlx_lm — ОДНА сборка на все пути инференса.
 
     Раньше каждый путь собирал их сам, и `_infer`, через который идёт вся автономная
@@ -69,6 +69,11 @@ def _sampling_kwargs(mcfg, params=None, temperature=None) -> dict:
 
     Старые mlx_lm не знают `top_k` в make_sampler и не имеют make_logits_processors;
     тогда параметр опускается с предупреждением, а не роняет генерацию.
+
+    `record` — словарь, куда пишется РОВНО то, что ушло в make_sampler и
+    make_logits_processors, уже после отката на старый mlx_lm. Не то, что просили, а
+    то, что получила библиотека: трасса вызова строится из него, и расхождение
+    «попросили top_k=1, а он выпал» в ней видно, а не угадывается.
     """
     from mlx_lm.sample_utils import make_sampler
     p = params
@@ -96,6 +101,9 @@ def _sampling_kwargs(mcfg, params=None, temperature=None) -> dict:
                     "top_k=%s ignored", skw["top_k"])
         skw.pop("top_k")
         sampler = make_sampler(**skw)
+    if record is not None:
+        record["sampler"] = dict(skw)
+        record["logits_processors"] = None
 
     out: dict = {"sampler": sampler}
     # 1.0 — это «без штрафа»; процессор тогда только тратит время на каждом токене.
@@ -107,7 +115,24 @@ def _sampling_kwargs(mcfg, params=None, temperature=None) -> dict:
                         "repetition_penalty=%s ignored", rep)
         else:
             out["logits_processors"] = make_logits_processors(repetition_penalty=rep)
+            if record is not None:
+                record["logits_processors"] = {"repetition_penalty": rep}
     return out
+
+
+def _count_tokens(tokenizer, text: str) -> int | None:
+    """Число токенов текста по токенизатору модели; None, если посчитать нечем.
+
+    Дёшево по сравнению с генерацией (одно кодирование строки), и только там, где
+    mlx_lm сам числа не сообщил. Ошибка подсчёта — не ошибка вызова.
+    """
+    enc = getattr(tokenizer, "encode", None)
+    if not callable(enc):
+        return None
+    try:
+        return len(enc(text or ""))
+    except Exception:                                              # noqa: BLE001
+        return None
 
 
 class MlxBackend(BaseBackend):
@@ -293,15 +318,43 @@ class MlxBackend(BaseBackend):
             self.load()
         import mlx_lm
 
+        import time as _time
+
+        # Сведения о ПРОШЛОМ вызове не должны дожить до этого: если он упадёт, бегунок
+        # не прочтёт чужую трассу как свою.
+        self.last_call = None
         p = params
+        sampled: dict = {}
         gen_kwargs: dict = dict(
             max_tokens = p.max_tokens if p and p.max_tokens is not None else self._mcfg.max_new_tokens,
             verbose    = False,
-            **_sampling_kwargs(self._mcfg, p),
+            **_sampling_kwargs(self._mcfg, p, record=sampled),
         )
         if self._draft_model is not None:
             gen_kwargs["draft_model"]      = self._draft_model
             gen_kwargs["num_draft_tokens"] = self._num_draft_tokens
+        # Что фактически ушло в mlx_lm — сериализуемо. sampler и logits_processors сами
+        # по себе функции, поэтому записываются аргументы, из которых они собраны.
+        call_params: dict = {
+            "max_tokens":        gen_kwargs["max_tokens"],
+            "sampler":           sampled.get("sampler") or {},
+            "logits_processors": sampled.get("logits_processors"),
+            "num_draft_tokens":  gen_kwargs.get("num_draft_tokens"),
+        }
+        _t0 = _time.monotonic()
+
+        def _finish(text: str, finish_reason, tokens_in=None, tokens_out=None, stream=True):
+            # Одно присваивание в конце вызова: читающий в том же потоке видит либо
+            # None, либо целую запись ЭТОГО вызова, но никогда смесь двух.
+            self.last_call = {
+                "params":        dict(call_params, stream=stream),
+                "finish_reason": finish_reason,
+                "tokens_in":     tokens_in if tokens_in is not None
+                                 else _count_tokens(self._tokenizer, prompt),
+                "tokens_out":    tokens_out if tokens_out is not None
+                                 else _count_tokens(self._tokenizer, text),
+                "seconds":       round(_time.monotonic() - _t0, 4),
+            }
 
         if stop_check is not None and hasattr(mlx_lm, "stream_generate"):
             # stream_generate yields one segment at a time, so we can abort between
@@ -319,6 +372,7 @@ class MlxBackend(BaseBackend):
                 if stop_check():
                     log.info("MlxBackend._infer: stop requested — aborting after %d chars",
                              sum(len(x) for x in segments))
+                    _finish("", "aborted", tokens_out=len(segments))
                     return ""
             # Почему генерация кончилась. mlx_lm сообщает это сам, где умеет; где не
             # умеет — упор в потолок виден по числу выданных сегментов. Раньше обрыв
@@ -327,8 +381,16 @@ class MlxBackend(BaseBackend):
             if self.last_finish_reason is None:
                 cap = gen_kwargs.get("max_tokens") or 0
                 self.last_finish_reason = "length" if cap and len(segments) >= cap else "stop"
-            return "".join(segments).strip()
+            text = "".join(segments).strip()
+            # mlx_lm кладёт в каждый отклик prompt_tokens и generation_tokens; где их нет
+            # (старые версии), считается токенизатором и числом сегментов.
+            _finish(text, self.last_finish_reason,
+                    tokens_in=getattr(last_response, "prompt_tokens", None),
+                    tokens_out=getattr(last_response, "generation_tokens", None)
+                    or len(segments))
+            return text
 
         raw = mlx_lm.generate(self._model, self._tokenizer, prompt=prompt, **gen_kwargs)
         self.last_finish_reason = None      # generate() причину не возвращает
+        _finish(raw or "", None, stream=False)
         return raw.strip()

@@ -1197,7 +1197,7 @@ async def _register_and_heartbeat(host_url: str, mdns_host: str, mdns_port: int,
 
 def _row_to_result(r: dict) -> dict:
     """Map a ResultStore row to the /offline-results payload shape."""
-    return {
+    out = {
         "seq":           r["seq"],
         "assignment_id": r["assignment_id"],
         "string_id":     r["string_id"],
@@ -1225,6 +1225,37 @@ def _row_to_result(r: dict) -> dict:
         # реестра, и работа, доставленная после смены модели, писалась на чужое имя.
         "model":         r.get("model") or "",
     }
+    # Что именно увидела модель, когда давала эту строку, и что — судья. Ключи
+    # появляются только там, где трасса есть: старый хост их просто не читает, а строка
+    # из базы до трасс (v6) уходит как раньше.
+    trace = _trace_payload(r.get("_trace"))
+    if trace:
+        out["trace"] = trace
+    judge_trace = [t for t in (_trace_payload(x) for x in (r.get("_judge_traces") or [])) if t]
+    if judge_trace:
+        out["judge_trace"] = judge_trace
+    return out
+
+
+def _trace_payload(t: dict | None) -> dict | None:
+    """Строка agent_traces → форма в доставке. Промпт — только если он записан (trace_full)."""
+    if not t:
+        return None
+    out = {
+        "kind":          t.get("kind") or "",
+        "string_ids":    t.get("string_ids") or [],
+        "prompt_sha":    t.get("prompt_sha") or "",
+        "params":        t.get("params_json") or {},
+        "finish_reason": t.get("finish_reason"),
+        "tokens_in":     t.get("tokens_in"),
+        "tokens_out":    t.get("tokens_out"),
+        "seconds":       t.get("seconds"),
+        "model":         t.get("model") or "",
+        "code_rev":      t.get("code_rev") or "",
+    }
+    if t.get("prompt") is not None:
+        out["prompt"] = t["prompt"]
+    return out
 
 
 async def _post_offline_results(state, base, label, aid, results, done, batch_max_seq):

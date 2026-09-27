@@ -58,6 +58,17 @@ CREATE TABLE IF NOT EXISTS candidates (
     judge             TEXT,      -- вердикт судьи на агенте: fresh / stored / unsure / same
     rival             TEXT,      -- с чем судья сравнивал (хранимое на момент раздачи)
     finish_reason     TEXT,      -- почему модель остановилась: stop / length
+    -- Трасса вызова, давшего ответ (агент, agent_traces). Без неё эксперимент не мог
+    -- доказать, что видела модель: лог «карточка приложена» — не доказательство.
+    trace_kind        TEXT,      -- translate / retry / candidate
+    prompt_sha        TEXT,      -- sha256 промпта, всегда
+    prompt            TEXT,      -- промпт целиком, только из пакета с trace_full
+    params_json       TEXT,      -- что фактически получил mlx_lm (sampler, max_tokens…)
+    tokens_in         INTEGER,
+    tokens_out        INTEGER,
+    seconds           REAL,
+    code_rev          TEXT,      -- git HEAD агента
+    judge_trace_json  TEXT,      -- JSON: трассы двух вызовов судьи
     UNIQUE(string_id, machine, produced_at)
 );
 CREATE INDEX IF NOT EXISTS idx_cand_string ON candidates(string_id);
@@ -68,6 +79,44 @@ CREATE TABLE IF NOT EXISTS candidate_jobs (
     job_id        TEXT
 );
 """
+
+# Колонки, которых не было в первой версии таблицы, — в порядке появления.
+_ADDED_COLUMNS = (
+    ("judge", "TEXT"), ("rival", "TEXT"), ("finish_reason", "TEXT"),
+    ("trace_kind", "TEXT"), ("prompt_sha", "TEXT"), ("prompt", "TEXT"),
+    ("params_json", "TEXT"), ("tokens_in", "INTEGER"), ("tokens_out", "INTEGER"),
+    ("seconds", "REAL"), ("code_rev", "TEXT"), ("judge_trace_json", "TEXT"),
+)
+
+
+def _trace_fields(trace, judge_trace) -> tuple:
+    """Трасса из доставки → значения колонок. Кривая трасса — пустые колонки, не сбой.
+
+    Доставку от старого агента (без трасс) и мусор в поле нельзя превращать в отказ
+    записи: отказ здесь значит «не подтверждать приём», и агент слал бы строку вечно.
+    """
+    t = trace if isinstance(trace, dict) else {}
+
+    def num(v, cast):
+        try:
+            return cast(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    params = t.get("params")
+    jt = [x for x in judge_trace if isinstance(x, dict)] if isinstance(judge_trace, list) else []
+    return (
+        (t.get("kind") or None),
+        (t.get("prompt_sha") or None),
+        (t.get("prompt") if isinstance(t.get("prompt"), str) else None),
+        (json.dumps(params, ensure_ascii=False, sort_keys=True) if params is not None else None),
+        num(t.get("tokens_in"), int),
+        num(t.get("tokens_out"), int),
+        num(t.get("seconds"), float),
+        (t.get("code_rev") or None),
+        (json.dumps(jt, ensure_ascii=False) if jt else None),
+    )
+
 
 def ensure(db) -> None:
     """Создать таблицу, если её нет. Дёшево: один раз на объект базы.
@@ -84,11 +133,11 @@ def ensure(db) -> None:
     for stmt in (x.strip() for x in _SCHEMA.split(";")):
         if stmt:
             db.execute(stmt)
-    # Таблица, созданная до появления судьи, получает его колонки на месте.
+    # Таблица, созданная до появления судьи и трасс, получает их колонки на месте.
     have = {r[1] for r in db.execute("PRAGMA table_info(candidates)").fetchall()}
-    for col in ("judge", "rival", "finish_reason"):
+    for col, kind in _ADDED_COLUMNS:
         if col not in have:
-            db.execute(f"ALTER TABLE candidates ADD COLUMN {col} TEXT")
+            db.execute(f"ALTER TABLE candidates ADD COLUMN {col} {kind}")
     db.commit()
     try:
         db._candidates_ready = True
@@ -162,12 +211,16 @@ def _identity(key: str) -> tuple[str | None, str | None]:
 def record(repo, *, string_id, mod_name: str, esp_name: str, key: str,
            original: str, translation: str, machine: str, model: str,
            job_id: str, produced_at, terms=None, judge: str | None = None,
-           rival: str | None = None, finish_reason: str | None = None) -> int | None:
+           rival: str | None = None, finish_reason: str | None = None,
+           trace: dict | None = None, judge_trace: list | None = None) -> int | None:
     """Записать один ответ до всякого решения. Возвращает id кандидата или None.
 
     Вердикт правил считается здесь же и для ЭТОГО текста — тем же
     compute_string_status, что и на воротах, — чтобы потом можно было отделить
     «ворота отвергли порчу» от «ворота отвергли равноценное».
+
+    `trace` и `judge_trace` — что агент записал о вызовах модели (см. agent_traces):
+    хэш и параметры всегда, промпт — только из экспериментального пакета.
     """
     if repo is None or not translation:
         return None
@@ -220,13 +273,15 @@ def record(repo, *, string_id, mod_name: str, esp_name: str, key: str,
             "INSERT OR IGNORE INTO candidates (string_id, mod_name, esp_name, key, "
             "rec_type, field_type, original, translation, stored_at_arrival, "
             "same_as_stored, machine, model, job_id, produced_at, received_at, score, "
-            "rules_status, issues, gate, judge, rival, finish_reason) VALUES "
-            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "rules_status, issues, gate, judge, rival, finish_reason, trace_kind, "
+            "prompt_sha, prompt, params_json, tokens_in, tokens_out, seconds, code_rev, "
+            "judge_trace_json) VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (string_id, mod_name, esp_name, key, rec_type, field_type, original,
              translation, stored, int(translation.strip() == stored.strip()),
              machine, model, job_id, produced_at, time.time(), score, status,
              json.dumps(issues or [], ensure_ascii=False), None, judge or None,
-             rival or None, finish_reason or None))
+             rival or None, finish_reason or None) + _trace_fields(trace, judge_trace))
         db.commit()
         if cur.rowcount:
             return cur.lastrowid

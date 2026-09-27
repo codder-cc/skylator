@@ -2565,7 +2565,9 @@ def workers_offline_results(label: str):
                             model=r.get("model") or _model,
                             job_id=host_job_id, produced_at=produced_at,
                             judge=r.get("judge"), rival=r.get("rival"),
-                            finish_reason=r.get("finish_reason"))
+                            finish_reason=r.get("finish_reason"),
+                            # Трасса вызова модели — доказательство, что она видела.
+                            trace=r.get("trace"), judge_trace=r.get("judge_trace"))
         # Не записали в слой — не подтверждаем приём. Иначе агент сотрёт ответ у себя,
         # а у нас его нет нигде: ровно так за ночь пропали 14 тысяч ответов.
         if _cid is None:

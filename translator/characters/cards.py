@@ -60,6 +60,7 @@ MAX_VOCAB = 12
 # не заметить ломаную.
 PIDGIN_AUX_SHARE = 0.55
 PIDGIN_MIN_LINES = 8
+PIDGIN_MIN_MARKS = 3
 
 
 @dataclass
@@ -237,7 +238,16 @@ def build(index_by_voice: dict, lines_by_voice: dict, official: dict | None = No
         # Манера речи — по всему, что персонаж говорит, а не по одной строке.
         if len(rows) >= PIDGIN_MIN_LINES:
             with_aux = sum(1 for en, _ in rows if _AUX.search(en))
-            card.pidgin = (with_aux / len(rows)) < PIDGIN_AUX_SHARE
+            # Одной доли служебных глаголов мало: карточка строится на тип голоса, а в
+            # нём много коротких выкриков без глагола («Cave. Always good hunting
+            # inside.»). По одной доле ломаными выходили 63 персонажа, среди них
+            # Мельвин и Йорн с совершенно обычным английским — и переводчику для них
+            # велели «не исправлять грамматику». Нужны ещё и явные признаки ломаной
+            # речи: «Him use club», «he be'd ill», «moh'roktha no move».
+            from translator.db.promote import looks_pidgin
+            marks = sum(1 for en, _ in rows if looks_pidgin(en))
+            card.pidgin = ((with_aux / len(rows)) < PIDGIN_AUX_SHARE
+                           and marks >= PIDGIN_MIN_MARKS)
 
         # Собственный словарь: у общего голоса его быть не может — за ним стоят сотни
         # персонажей, и «своё» слово там принадлежит не говорящему, а моду.

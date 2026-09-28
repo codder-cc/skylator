@@ -64,6 +64,22 @@ def first_person_gender(text: str) -> set:
     return out
 
 
+def second_person_gender(text: str) -> set:
+    """Роды, в которых говорят с «ты»: «ты нашёл», «ты уверена»."""
+    out: set = set()
+    for chunk in _STOP.split(text or ""):
+        words = _CYR.findall(chunk)
+        for i, w in enumerate(words):
+            if w.lower() != "ты":
+                continue
+            for nxt in words[i + 1:i + 4]:
+                g = _word_gender(nxt)
+                if g:
+                    out.add(g)
+                    break
+    return out
+
+
 # ── ломаная речь ────────────────────────────────────────────────────────────
 
 # Признаки берутся только такие, каких в обычной речи не бывает. Первая версия ловила
@@ -135,6 +151,8 @@ def lost_names(original: str, stored: str, fresh: str) -> list:
         return lost
     from translator.validation.official_context import _mid_sentence_caps
     for w in set(_mid_sentence_caps(original or "")):
+        # «Whiterun's» — то же имя: без этого «Вайтрана» → «Уитеруна» проходило.
+        w = w[:-2] if w.endswith(("'s", "’s")) else w
         if len(w) < 4:
             continue
         ru = names.get(w)
@@ -253,6 +271,11 @@ def decide(row, speaker_gender: str | None = None, speaker_pidgin: bool = False)
 
     if address_form(stored) == "ty" and address_form(fresh) == "vy":
         return False, "address:ty_to_vy"
+
+    # Пол игрока неизвестен, и игра говорит с ним в мужском роде. Свежая выборка
+    # 28.09: из 16 ухудшений среди одобренных три — «ты нашёл» → «ты нашла».
+    if second_person_gender(stored) == {"m"} and "f" in second_person_gender(fresh):
+        return False, "gender:player_changed"
 
     if lost_names(original, stored, fresh):
         return False, "names:lost"

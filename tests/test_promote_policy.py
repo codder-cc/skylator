@@ -147,3 +147,24 @@ def test_a_label_changes_when_the_game_itself_writes_it_so(monkeypatch):
     row.update(original="Tear", rival="Рвать", translation="Слеза")
     assert P.decide(row) == (False, "label:convention")
     oc._analog_index.cache_clear()
+
+
+def test_the_player_does_not_turn_into_a_woman():
+    # Свежая выборка 28.09: «Ты очень проницателен, сера» → «проницательна». Пол игрока
+    # неизвестен, и игра говорит с ним в мужском роде.
+    from translator.db.promote import decide
+    row = {"judge": "fresh", "rules_status": "translated", "rec_type": "INFO",
+           "field_type": "NAM1", "original": "You are very astute, sera. Most would be quick to say so.",
+           "rival": "Ты очень проницателен, сера. Большинство поспешили бы так сказать.",
+           "stored_at_arrival": None,
+           "translation": "Ты очень проницательна, сера. Большинство поспешили бы так сказать."}
+    assert decide(row) == (False, "gender:player_changed")
+
+
+def test_a_possessive_name_is_still_a_name():
+    # «Whiterun's» — то же имя; «Вайтрана» → «Уитеруна» проходило мимо фильтра.
+    from translator.db.promote import lost_names
+    got = lost_names("Ah, then you will enjoy some of Whiterun's other slow features.",
+                     "Ах, тогда тебе понравятся и другие медленные черты Вайтрана.",
+                     "Ах, тогда тебе понравятся и другие медленные особенности Уитеруна.")
+    assert [w for w, _ru in got] == ["Whiterun"]

@@ -272,6 +272,20 @@ def test_generation_limit_survives_agent_to_candidate(repo, store, tmp_path):
     assert row["rules_status"] == "needs_review", "model stop evidence disappeared"
 
 
+def test_a_line_split_into_extra_items_is_not_a_finished_translation(repo, store, tmp_path):
+    # Проба с размышлением: одна реплика вернулась тремя пунктами, разборщик взял
+    # первый, правила приняли обрубок как translated. Лишний пункт — сбой формата.
+    from remote_server import _row_to_result
+    meta = seed(store, [item()])
+    rs = produce(store, meta, Backend([("1. Я помню это место.\n2. И старую дорогу.\n3. Да.",
+                                        "stop")]))
+    apply_pulled_results(mgr(repo, tmp_path), None, "audit-agent", [_row_to_result(r) for r in rs])
+    row = repo.db.execute("SELECT * FROM candidates").fetchone()
+    assert row["finish_reason"] == "format"
+    assert row["rules_status"] == "needs_review"
+    assert "output_format" in row["issues"]
+
+
 def test_pull_does_not_advance_past_failed_candidate(repo, tmp_path, monkeypatch):
     monkeypatch.setattr(C, "record", lambda *a, **k: None)
     _, _, cursor, _ = apply_pulled_results(mgr(repo, tmp_path), None, "audit-agent", [result(seq=42)])

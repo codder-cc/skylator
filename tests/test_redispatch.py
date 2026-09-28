@@ -109,3 +109,58 @@ def test_close_orphaned_helper(fakedb):
     _orphaned_assignment(fakedb, amgr, ["pending"])
     assert _close_orphaned(amgr) == 1
     assert amgr.store.get_assignment("orph")["state"] == "failed"
+
+
+# ── недоделанный слепой проход ────────────────────────────────────────────────
+
+
+def _sweep_app(fakedb, monkeypatch, params=None):
+    import contextlib
+    from translator.db import candidates as _cand
+    app, repo, amgr = _app(fakedb, active_workers=[SimpleNamespace(label="M5")])
+    app.app_context = contextlib.nullcontext
+    _cand.ensure(fakedb)
+    fakedb.set_setting(_cand.SETTING_LAYER_ONLY, True)
+    if params is not None:
+        fakedb.set_setting("production_params", params)
+    monkeypatch.setattr("translator.web.redispatch._resolve_active_backends",
+                        lambda app, cfg: [("M5", object())])
+    calls = []
+
+    def fake_create(jm, cfg, **kw):
+        calls.append(kw)
+        return SimpleNamespace(id="newjob-000", add_log=lambda m: None)
+    monkeypatch.setattr("translator.web.routes.jobs._create_review_fleet_job", fake_create)
+    return app, repo, amgr, calls
+
+
+def test_an_unfinished_sweep_is_reissued_not_dropped(fakedb, monkeypatch):
+    # Строки слепого прохода уже переведены, и раньше осиротевшее назначение с ними
+    # принималось за «сделано другими» и закрывалось — работа молча пропадала.
+    app, repo, amgr, calls = _sweep_app(fakedb, monkeypatch, {"temperature": 0.0})
+    _orphaned_assignment(fakedb, amgr, ["translated", "translated"])
+    assert auto_redispatch(app) == "newjob-000"
+    kw = calls[0]
+    assert kw["scope"] == "sweep" and kw["from_assignments"] == ["orph"]
+    assert kw["judge"] is True and kw["skip_layered"] is True
+    assert kw["base_params"] == {"temperature": 0.0}
+    assert amgr.store.get_assignment("orph")["state"] == "failed"
+
+
+def test_a_sweep_line_already_in_the_layer_is_not_reissued(fakedb, monkeypatch):
+    from translator.db import candidates as _cand
+    app, repo, amgr, calls = _sweep_app(fakedb, monkeypatch)
+    items = _orphaned_assignment(fakedb, amgr, ["translated"])
+    fakedb.execute("INSERT INTO candidates (string_id, translation) VALUES (?, 'y')",
+                   (items[0][0],))
+    fakedb.commit()
+    assert auto_redispatch(app) is None
+    assert calls == []
+    assert amgr.store.get_assignment("orph")["state"] == "failed"
+
+
+def test_production_params_default_to_empty(fakedb):
+    from translator.web.redispatch import production_params
+    assert production_params(StringRepo(fakedb)) == {}
+    fakedb.set_setting("production_params", {"temperature": 0.0})
+    assert production_params(StringRepo(fakedb)) == {"temperature": 0.0}

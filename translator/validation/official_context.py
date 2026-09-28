@@ -256,3 +256,85 @@ def entity_block(original: str) -> str:
     shown = "; ".join(f"{en} = {ru}" for en, ru in pairs)
     return ("Names the game already has — use exactly these, declined as Russian "
             f"grammar requires: {shown}")
+
+
+# ── аналоги ───────────────────────────────────────────────────────────────────
+#
+# Записи таблицы, похожие на строку по словам. Точного совпадения здесь нет по
+# определению — его закрывают ворота. Зато оборот игры почти всегда виден по соседям:
+# «Necklace of Major Health» в таблице нет, а «Bonemold Armor of Major Health = Костяная
+# броня настоящего здоровья» есть, и из неё ясно, что Major — «настоящего», а не
+# «великого». Замер, из которого это выросло: пакетный блок терминов подбирался по
+# словам ВСЕГО пакета, был одинаков для каждого батча и в диалогах не давал ничего,
+# а на отложенной выборке помог (31,0% против 29,2%, z=2,2) — ровно теми строками, где
+# в него случайно попала такая соседка. Здесь соседки подбираются к каждой строке.
+
+MAX_ANALOGS = 3
+MAX_ANALOG_SOURCE = 80
+# Слово, которое встречается в таблице чаще этого, ничего не различает, и считать его
+# дорого: пакет в сто тысяч строк прошёлся бы по его списку сто тысяч раз.
+_ANALOG_MAX_DF = 1500
+# Реплики — не записи: у фразы нет устойчивого оборота, и соседи по словам там шум.
+_ANALOG_SKIP_TYPES = frozenset({"INFO", "DIAL", "BOOK", "QUST", "NOTE"})
+
+
+@lru_cache(maxsize=1)
+def _analog_index():
+    idx: dict = collections.defaultdict(list)
+    for en, ru in _table().items():
+        if not (3 <= len(en) <= MAX_EXAMPLE_CHARS) or "<" in en or "\n" in en:
+            continue
+        if "<" in ru or not _RU.search(ru):
+            continue
+        for w in {w.lower() for w in _EN_WORD.findall(en)} - _COMMON_EN:
+            idx[w].append(en)
+    return dict(idx), max(1, len(_table()))
+
+
+def analogs_in(original: str, rec_type: str = "") -> list:
+    """До MAX_ANALOGS пар таблицы, разделяющих со строкой самые редкие слова."""
+    import math
+    text = (original or "").strip()
+    if not text or len(text) > MAX_ANALOG_SOURCE or (rec_type or "") in _ANALOG_SKIP_TYPES:
+        return []
+    idx, n_all = _analog_index()
+    words = {w.lower() for w in _EN_WORD.findall(text)} - _COMMON_EN
+    score: collections.Counter = collections.Counter()
+    for w in words:
+        lst = idx.get(w)
+        if not lst or len(lst) > _ANALOG_MAX_DF:
+            continue
+        weight = math.log(n_all / len(lst))
+        for en in lst:
+            score[en] += weight
+    low = text.lower()
+    table = _table()
+    # Запись учит записи: фраза в соседях у названия предмета учит не обороту, а
+    # пересказу. Слишком длинный сосед — тоже.
+    sentence = text[-1:] in ".!?"
+    limit = 2 * len(text) + 12
+    ranked = sorted((en for en in score if en.lower() != low
+                     and len(en) <= limit
+                     and (sentence or en.rstrip()[-1:] not in ".!?")),
+                    key=lambda en: (-score[en], len(en), en))
+    out, heads = [], set()
+    for en in ranked:
+        # Три варианта одной записи учат меньше, чем три разных.
+        head = en.split(" ", 1)[0].lower()
+        if head in heads and len(out) < len(ranked) - 1:
+            continue
+        heads.add(head)
+        out.append((en, table[en].strip()))
+        if len(out) >= MAX_ANALOGS:
+            break
+    return out
+
+
+def analog_block(original: str, rec_type: str = "") -> str:
+    """Строка промпта: похожие записи официального перевода."""
+    pairs = analogs_in(original, rec_type)
+    if not pairs:
+        return ""
+    shown = "; ".join(f"{en} = {ru}" for en, ru in pairs)
+    return ("Similar entries in the official game translation, follow their wording: "
+            f"{shown}")

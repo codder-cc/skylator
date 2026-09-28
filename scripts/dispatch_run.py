@@ -63,6 +63,12 @@ def main() -> None:
     if not layer_only:
         sys.exit("режим «только в слой» выключен — корпус менялся бы по ходу. Стоп.")
 
+    # Параметры вывода — те же, что у авто-передачи (translator/web/redispatch.py).
+    # Без них пакет шёл с настройками агента по умолчанию: t=0.3, top_k 20.
+    prow = con.execute("SELECT value FROM settings WHERE key='production_params'").fetchone()
+    params = json.loads(prow[0]) if prow else {}
+    print(f"параметры вывода: {params or 'по умолчанию агента'}", file=out)
+
     cutoff = time.time()
     from_aids = (json.loads(Path(args.from_assignments).read_text(encoding="utf-8"))
                  if args.from_assignments else None)
@@ -82,9 +88,10 @@ def main() -> None:
                   f"{(k + 1) * args.chunk}", file=out)
             continue
         t0 = time.time()
-        job = post("/jobs/create", {"type": "review_strings", "options": opts})
+        job = post("/jobs/create", {"type": "review_strings", "options": opts,
+                                    "params": params})
         issued.append({"k": k, "label": label, "job_id": job.get("job_id"),
-                       "options": opts, "ok": job.get("ok")})
+                       "options": opts, "params": params, "ok": job.get("ok")})
         log_path.write_text(json.dumps(issued, ensure_ascii=False, indent=1),
                             encoding="utf-8")
         print(f"  {k:>2}  {label[-6:]}  {job.get('job_id')}  "

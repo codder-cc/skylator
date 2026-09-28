@@ -368,6 +368,7 @@ def dispatch(
 
         log.info("offline_backend: dispatching %d strings to %s (offline_job_id=%s)",
                  len(remote_strings), label, offline_job_id[:8])
+        _snapshot(job, repo, package, label)
 
         # Persist + enqueue — no ACK wait. Offline jobs are fire-and-forget:
         # the remote picks up the package when it connects (could be hours/days).
@@ -398,6 +399,55 @@ def dispatch(
     job.progress.current = 0
     log.info("offline_backend: job %s → OFFLINE_DISPATCHED (%d workers, %d strings)",
              host_job_id[:8], len(offline_job_ids), len(strings))
+
+
+def _snapshot(job, repo, package: dict, label: str) -> None:
+    """Снимок пакета до постановки в очередь — повтор исполняет его, а не пересборку."""
+    from translator.jobs import snapshots
+    pid = snapshots.save(repo, package, label,
+                         context_parts=(getattr(job, "params", None) or {}).get("context_parts"))
+    if pid:
+        try:
+            job.params.setdefault("profile_ids", [])
+            if pid not in job.params["profile_ids"]:
+                job.params["profile_ids"].append(pid)
+                job.add_log(f"Profile {pid}: package snapshot kept for exact replay")
+        except Exception:                                          # noqa: BLE001
+            pass
+    else:
+        job.add_log("Package snapshot NOT saved — recovery of this package would rebuild "
+                    "its context with the code of that day")
+
+
+def replay_snapshot(job, repo, registry, assignment_id: str, label: str,
+                    keep_ids: set | None = None) -> str | None:
+    """Выдать сохранённый пакет назначения ещё раз — тот же контекст, те же параметры.
+
+    `keep_ids` — строки, которые ещё нужны; остальные из пакета убираются. Возвращает
+    номер нового назначения или None, если снимка нет или делать нечего.
+    """
+    from translator.jobs import snapshots
+    pkg = snapshots.load(repo, assignment_id)
+    if not pkg:
+        return None
+    strs = [s for s in (pkg.get("strings") or [])
+            if keep_ids is None or s.get("id") in keep_ids]
+    if not strs:
+        return None
+    new = dict(pkg)
+    new.update(strings=strs, offline_job_id=str(uuid.uuid4()), chunk_id=str(uuid.uuid4()),
+               host_job_id=job.id, replay_of=assignment_id)
+    snapshots.save(repo, new, label, profile_from=assignment_id)
+    registry.enqueue_chunk(label, new)
+    registry.register_offline_job(new["offline_job_id"], job.id, label, len(strs),
+                                  chunk_id=new["chunk_id"])
+    _persist_host_assignment(repo, new["offline_job_id"], job.id, label,
+                             pkg.get("mod_name") or "",
+                             [(s["id"], s.get("string_hash") or "") for s in strs
+                              if s.get("id") is not None])
+    job.add_log(f"Replayed package {assignment_id[:8]} as {new['offline_job_id'][:8]} → "
+                f"{label}: {len(strs)} string(s), same context and parameters")
+    return new["offline_job_id"]
 
 
 def dispatch_multi(
@@ -505,6 +555,7 @@ def dispatch_multi(
 
         log.info("offline_backend.dispatch_multi: dispatching %d strings to %s (offline_job_id=%s)",
                  len(remote_strings), label, offline_job_id[:8])
+        _snapshot(job, repo, package, label)
 
         registry.enqueue_chunk(label, package)
         # Fire-and-forget (see dispatch()): never block on an ACK; register with chunk_id for

@@ -782,7 +782,10 @@ class OfflineTranslateRunner:
                 raw, reason, tid = "", None, None
             got = parse_numbered_output(raw or "", 1)
             out.append(got[0] if got else "")
-            reasons.append(reason)
+            # Лишние пункты у одиночной строки — модель разбила её на части, и взят
+            # только первый кусок. Это сбой формата, а не перевод.
+            from prompt.parser import extra_items
+            reasons.append("format" if extra_items(raw or "", 1) else reason)
             traces.append(tid)
         return out, reasons, traces
 
@@ -990,7 +993,12 @@ class OfflineTranslateRunner:
                 # Поэтому недостача в ответе означает, что доверять нельзя всему батчу, а
                 # не одному месту. Батч переводится заново по одной строке: там номер
                 # всегда единственный и сдвинуться некуда.
-                if len(batch) > 1 and any(not (t or "").strip() for t in translations):
+                from prompt.parser import extra_items
+                _extra_items = extra_items(raw or "", len(batch))
+                if len(batch) == 1 and _extra_items:
+                    reasons = ["format"]
+                if len(batch) > 1 and (_extra_items
+                                       or any(not (t or "").strip() for t in translations)):
                     log.warning(
                         "OfflineTranslateRunner[%s]: ответ короче батча (%d из %d) — "
                         "нумерация ненадёжна, переперевод по одной",

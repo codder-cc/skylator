@@ -267,6 +267,11 @@ def record(repo, *, string_id, mod_name: str, esp_name: str, key: str,
         status = "needs_review"
         issues = list(issues or []) + [{"type": "generation_limit",
                                         "message": "generation limit reached: answer cut off"}]
+    if (finish_reason or "") == "format":
+        # Ответ пришёл не в том виде (лишние пункты): текст мог потерять часть.
+        status = "needs_review"
+        issues = list(issues or []) + [{"type": "output_format",
+                                        "message": "answer split into extra items: text may be lost"}]
     if stored_original is not None and (stored_original or "").strip() != (original or "").strip():
         status = "needs_review"
         issues = list(issues or []) + [{"type": "source_mismatch",

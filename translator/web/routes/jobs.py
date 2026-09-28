@@ -1710,6 +1710,16 @@ def _clean_current(original: str, stored: str) -> str:
     return stored
 
 
+# Состав контекста боевого прохода. Замер 28.09.2026 на стенде (t=0, 616 строк
+# отложенной официальной выборки H и 150 реплик D):
+#   аналоги вместо пакетного блока терминов   H 31,0% → 46,1%, брак 32 → 23, z=8,25
+#   D                                          chrF −0,22 (н.з.), имена 27 → 29 из 32
+#   сводка мода, пакетный блок терминов        поверх аналогов — ноль строк разницы
+#   подсказки имён / карточка / стиль          без них H −4,5 / D род −2 / H −1,6 п.п.
+# Реплики вокруг, память переводов и словарь говорящего не мешали и оставлены.
+PRODUCTION_PARTS = ("speaker", "vocab", "talk", "style", "entities", "analogs", "tm")
+
+
 def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                              scope: str = "all", limit: int | None = None,
                              offset: int = 0,
@@ -1782,6 +1792,13 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
     """
     repo     = current_app.config.get("STRING_REPO")
     registry = current_app.config.get("WORKER_REGISTRY")
+    # Боевой профиль: то, что не задано явно, берётся из замера, а не из умолчаний
+    # агента. Состав контекста — PRODUCTION_PARTS; параметры — production_params.
+    if context_parts is None:
+        context_parts = list(PRODUCTION_PARTS)
+    if base_params is None:
+        from translator.web.redispatch import production_params
+        base_params = production_params(repo) or None
     # A job whose whole purpose is "send this to the machines" should not have to be told
     # which machines. Omit them and it takes every live one, and says which in the log so
     # the answer is never guessed at.
@@ -2031,6 +2048,11 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                 if st:
                     item["style"] = st
                 ent = _oc.entity_block(r["original"] or "")
+                # Похожие записи игры — к той же строке и в то же поле: агент собирает
+                # его по батчу без повторов, так что менять агента не нужно.
+                if context_parts is None or "analogs" in context_parts:
+                    ana = _oc.analog_block(r["original"] or "", r["rec_type"] or "")
+                    ent = "\n".join(x for x in (ent, ana) if x)
                 if ent:
                     item["entities"] = ent
             # Абляция контекста: оставить только названные части. Всё остальное —
@@ -2240,6 +2262,8 @@ def _create_review_fleet_job(jm, cfg, machines: list | None = None,
                        if (min_chars or max_len) else "")),
         job_type = "translate_strings",
         params   = {"review": scope != "flagged", "scope": scope,
+                    "context_parts": list(context_parts),
+                    "inference_params": dict(base_params or {}),
                     "min_chars": min_chars, "max_len": max_len,
                     "max_tokens": max_tokens, "judge": bool(judge),
                     "candidates": int(candidates), "types": types,

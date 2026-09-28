@@ -96,11 +96,13 @@ class Card:
             bits.append("This speaker uses broken, ungrammatical speech on purpose. "
                         "Keep it broken in Russian — do not correct the grammar.")
         if vocab and self.vocab:
-            known = [f"{en} = {ru}" for en, ru in self.vocab.items() if ru]
+            cap = lambda w: w[:1].upper() + w[1:]
+            known = [f"{cap(en) if ru[:1].isupper() else en} = {ru}"
+                     for en, ru in self.vocab.items() if ru]
             unknown = [en for en, ru in self.vocab.items() if not ru]
             if known:
-                bits.append("This speaker's own words, render them exactly so: "
-                            + "; ".join(known))
+                bits.append("Names this speaker uses, spell them this way, declined as "
+                            "Russian grammar requires: " + "; ".join(known))
             if unknown:
                 bits.append("Proper names of this speaker's own language, transliterate "
                             "them consistently: " + ", ".join(unknown))
@@ -181,20 +183,49 @@ def _russian_for(en_word: str, lines: list[tuple[str, str]], official: dict) -> 
         return ""
     head = key[:max(3, len(key) - 2)]
     seen, found = 0, collections.Counter()
+    forms: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
     for en, ru in lines:
         if en_word.lower() not in en.lower():
             continue
         seen += 1
         for w in _RU_TOKEN.findall(ru):
             if len(w) >= 3 and _sound(w).startswith(head):
-                found[w.lower()] += 1
+                # Единодушие считается по основе, а не по словоформе: «Гейрмунд»,
+                # «Гейрмунда» и «Гейрмунду» — одно написание в трёх падежах.
+                found[_ru_stem(w)] += 1
+                forms[_ru_stem(w)][w] += 1
                 break
     if seen < 2 or not found:
         return ""
     top, n = found.most_common(1)[0]
     # Пишем только то, в чём коллекция единодушна: если имя встречается в десяти
     # репликах и узнано в трёх, единого написания у нас нет, и придумывать его нечего.
-    return top if n >= max(2, seen * 0.6) else ""
+    if n < max(2, seen * 0.6):
+        return ""
+    return _citation_form(forms[top])
+
+
+# Окончания косвенных падежей. Раньше в промпт шла самая частая словоформа в нижнем
+# регистре — «geirmund = гейрмунда», «darius = дариусу» — под заголовком «render them
+# exactly so», то есть модели прямо велели ставить имя в чужой падеж.
+_OBLIQUE = ("ого", "ему", "ой", "ом", "ем", "ым", "ью", "у", "ю", "е", "ы", "и")
+_ENDINGS = ("ого", "ему", "ой", "ом", "ем", "ым", "ью", "а", "я", "у", "ю", "е", "ы", "и")
+
+
+def _ru_stem(word: str) -> str:
+    w = word.lower()
+    for e in _ENDINGS:
+        if w.endswith(e) and len(w) - len(e) >= 3:
+            return w[:-len(e)]
+    return w
+
+
+def _citation_form(counts: collections.Counter) -> str:
+    """Словоформа для подсказки: похожая на именительный, затем самая частая."""
+    def rank(w: str):
+        oblique = any(w.lower().endswith(e) and len(w) - len(e) >= 3 for e in _OBLIQUE)
+        return (oblique, -counts[w], len(w))
+    return min(counts, key=rank)
 
 
 def _base(word: str) -> str:

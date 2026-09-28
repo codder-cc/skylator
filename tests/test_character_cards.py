@@ -129,6 +129,21 @@ def test_the_russian_spelling_is_recognised_by_sound_not_by_frequency():
     assert vocab.get("moh'roktha", "").startswith("мох")
 
 
+def test_the_hint_is_the_citation_form_not_a_random_case():
+    # Раньше в карточку шла самая частая словоформа строчными — «geirmund = гейрмунда»,
+    # «darius = дариусу» — с пометкой «render them exactly so»: модели велели ставить
+    # имя в чужой падеж. Единодушие считается по основе, а в подсказку идёт форма,
+    # похожая на именительный.
+    lines = [("Tell Geirmund I said so.", "Скажи Гейрмунду, что это я сказал."),
+             ("That is the axe of Geirmund.", "Это топор Гейрмунда."),
+             ("I fought beside Geirmund.", "Я сражался рядом с Гейрмундом."),
+             ("Only Geirmund knows.", "Только Гейрмунд знает.")]
+    card = C.build({"v": _meta(sex="m")}, {"v": lines})["v"]
+    assert card.vocab.get("geirmund") == "Гейрмунд"
+    block = card.prompt_block()
+    assert "Geirmund = Гейрмунд" in block and "declined as Russian grammar requires" in block
+
+
 def test_two_spellings_of_one_name_leave_it_undecided():
     # «Йотун» и «Джотун» — один и тот же Jo'tun двумя школами; такое сводится. А вот
     # когда коллекция пишет имя то так, то совсем иначе, писать в карточку нечего.

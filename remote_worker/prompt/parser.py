@@ -65,6 +65,18 @@ def parse_numbered_output(raw: str, expected: int) -> list[str]:
     return result
 
 
+def extra_items(raw: str, expected: int) -> bool:
+    """Есть ли в ответе пункты с номером БОЛЬШЕ числа строк.
+
+    parse_numbered_output их молча отбрасывает. Так пропадал текст: модель в режиме
+    размышления разбила одну реплику на «1. … 2. … 3. …», разборщик взял первый пункт,
+    а правила приняли обрубок как законченный перевод. Лишний пункт — неверный формат,
+    а не часть ответа, которую можно выбросить.
+    """
+    text = strip_thinking(raw or "")
+    return any(int(n) > expected for n in re.findall(r"^\s*(\d+)[.)]\s", text, re.M))
+
+
 def _multiline_parse(raw: str, expected: int) -> dict[int, str]:
     """Fallback: split on numbered lines, capture multi-line values."""
     split_re = re.compile(r"^\s*(\d+)[.)]\s*", re.MULTILINE)

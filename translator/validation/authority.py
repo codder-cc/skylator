@@ -76,6 +76,24 @@ def _in_holdout(source: str) -> bool:
     return int(digest[:8], 16) % _HOLDOUT_SHARE == 0
 
 
+@lru_cache(maxsize=1)
+def _holdout_sources() -> frozenset:
+    try:
+        table = json.loads(_TABLE_PATH.read_text(encoding="utf-8"))
+    except Exception:                                              # noqa: BLE001
+        return frozenset()
+    return frozenset(en for en in table if _in_holdout(en))
+
+
+def is_holdout_line(original: str) -> bool:
+    """Строка отложенной выборки — ответ на неё известен, и ею меряется всё остальное.
+
+    Ворота её не защищают (таблица без выборки), так что политика применения обязана
+    не трогать её сама: иначе замер H начал бы сравнивать систему с её же правками.
+    """
+    return (original or "") in _holdout_sources()
+
+
 def _holdout_allowed() -> bool:
     return os.environ.get("SKYLATOR_APPLY_HOLDOUT", "").strip() in ("1", "true", "yes")
 

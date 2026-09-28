@@ -212,12 +212,19 @@ def decide(row, speaker_gender: str | None = None, speaker_pidgin: bool = False)
     # Подпись меняется только по явной причине: старый текст сломан по правилам
     # (решается в plan, до этой проверки) или имя чинится по заданию. Вкус судьи
     # против конвенции игры — не причина.
-    if (row["judge"] or "") == "fresh" and is_label(row) \
-            and not ("_stored_broken" in row.keys() and row["_stored_broken"]):
-        return False, "label:convention"
     stored = row["rival"] or row["stored_at_arrival"] or ""
     fresh = row["translation"] or ""
     original = row["original"] or ""
+    evidenced = False
+    if (row["judge"] or "") == "fresh" and is_label(row) \
+            and not ("_stored_broken" in row.keys() and row["_stored_broken"]):
+        # Вкус судьи подпись не меняет, а сама игра — может: если её записи пишут эту
+        # подпись так же, как новый ответ, и ни одна — как хранимый текст.
+        from translator.validation.official_context import label_evidence, LABEL_EVIDENCE_MIN
+        if not (label_evidence(original, fresh) >= LABEL_EVIDENCE_MIN
+                and label_evidence(original, stored) == 0):
+            return False, "label:convention"
+        evidenced = True
 
     gf, gs = first_person_gender(fresh), first_person_gender(stored)
     if speaker_gender:
@@ -234,7 +241,7 @@ def decide(row, speaker_gender: str | None = None, speaker_pidgin: bool = False)
 
     if lost_names(original, stored, fresh):
         return False, "names:lost"
-    return True, "promote"
+    return True, ("promote:label_evidence" if evidenced else "promote")
 
 
 def repair_gender(row, speaker_gender: str | None) -> str | None:
@@ -299,7 +306,7 @@ def _speakers():
         return None, {}
 
 
-def plan(con, since: float = 0.0) -> list:
+def plan(con, since: float = 0.0, holdout_guard: bool = True) -> list:
     """[(row, ok, причина, текст)] по каждому рассуженному ответу слоя.
 
     Текст — то, что пойдёт в корпус: обычно ответ модели как есть, а для строки, где
@@ -327,6 +334,11 @@ def plan(con, since: float = 0.0) -> list:
             g = {"male": "m", "female": "f", "m": "m", "f": "f"}.get(
                 (getattr(card, "sex", "") or "").lower())
         pidgin = bool(card and getattr(card, "pidgin", False))
+        from translator.validation.authority import is_holdout_line
+        # holdout_guard=False — только для замера политики на самой выборке.
+        if holdout_guard and is_holdout_line(r["original"] or ""):
+            out.append((r, False, "holdout", r["translation"]))
+            continue
         ok, why = decide(r, speaker_gender=g, speaker_pidgin=pidgin)
         text = r["translation"]
         if why == "gender:contradicts_speaker":

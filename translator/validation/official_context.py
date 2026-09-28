@@ -338,3 +338,38 @@ def analog_block(original: str, rec_type: str = "") -> str:
     shown = "; ".join(f"{en} = {ru}" for en, ru in pairs)
     return ("Similar entries in the official game translation, follow their wording: "
             f"{shown}")
+
+
+# ── доказательство для подписи ────────────────────────────────────────────────
+#
+# Подпись (название, кнопка, эффект) меняется только по доказанной причине: вкус судьи
+# против конвенции игры — не причина (promote.is_label). Доказательство здесь —
+# сама игра: сколько её записей, содержащих эту подпись целиком в английском, пишут
+# её по-русски ровно так, как новый ответ. «Alftand» → «Альфтанд»: «Alftand Cathedral =
+# Собор Альфтанд», «Alftand Animonculory = Альфтанд - Аниматория» и ещё четыре.
+#
+# Замер на отложенной выборке H (616 строк, подписи, удержанные правилом): одна запись
+# — 10 улучшений против 3 ухудшений («Become Ethereal», «Summon Durnehviir in Tamriel» —
+# цель задания, а не эффект, «Orphan's Tear»); две и больше — 7 против 0.
+LABEL_EVIDENCE_MIN = 2
+
+
+def label_evidence(original: str, text: str) -> int:
+    """Сколько записей таблицы содержат `original` в английском и `text` — в русском."""
+    en = (original or "").strip().lower()
+    t = (text or "").strip().lower()
+    if not en or not t:
+        return 0
+    idx, _n = _analog_index()
+    words = [w.lower() for w in _EN_WORD.findall(original or "")]
+    lists = [idx.get(w) for w in words if w.lower() not in _COMMON_EN]
+    lists = [l for l in lists if l]
+    if not lists:
+        return 0
+    table = _table()
+    n = 0
+    for ae in min(lists, key=len):
+        a = ae.lower()
+        if a != en and en in a and t in (table.get(ae) or "").lower():
+            n += 1
+    return n

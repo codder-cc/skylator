@@ -72,8 +72,9 @@ def main() -> None:
     for why, k in tally.most_common():
         print(f"  {why:<34}{k:>7,}  {100 * k / n:5.1f}%", file=out)
     fresh = sum(v for k, v in tally.items() if not k.startswith(("judge:", "rules")))
+    applied = sum(v for k, v in tally.items() if k.startswith("promote"))
     print(f"\nсудья за новый и правила чисты: {fresh:,}; из них к применению "
-          f"{tally['promote']:,}, удержано фильтрами {fresh - tally['promote']:,}", file=out)
+          f"{applied:,}, удержано фильтрами {fresh - applied:,}", file=out)
 
     reasons = [args.reason] if args.reason else [k for k in tally
                                                  if not k.startswith(("judge:", "rules"))]

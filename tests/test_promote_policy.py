@@ -127,3 +127,23 @@ def test_ty_to_vy_is_held():
     assert decide(row) == (False, "address:ty_to_vy")
     row["translation"] = "Ты успешно помог Дар'Ракки разобраться с его вопросом."
     assert decide(row)[0] is True
+
+
+def test_a_label_changes_when_the_game_itself_writes_it_so(monkeypatch):
+    # «Alftand» хранилось как «Алфтан»; игра пишет «Собор Альфтанд», «Альфтанд -
+    # Аниматория». Две записи игры — основание сменить подпись без вкуса судьи.
+    from translator.db import promote as P
+    from translator.validation import official_context as oc
+    table = {"Alftand Cathedral": "Собор Альфтанд",
+             "Alftand Animonculory": "Альфтанд - Аниматория",
+             "Orphan's Tear": "Слеза Сироты"}
+    monkeypatch.setattr(oc, "_table", lambda: table)
+    oc._analog_index.cache_clear()
+    row = {"judge": "fresh", "rules_status": "translated", "rec_type": "ACTI",
+           "field_type": "FULL", "original": "Alftand", "rival": "Алфтан",
+           "stored_at_arrival": None, "translation": "Альфтанд"}
+    assert P.decide(row) == (True, "promote:label_evidence")
+    # Одной записи мало: «Tear» → «Слеза» по «Orphan's Tear» было ухудшением.
+    row.update(original="Tear", rival="Рвать", translation="Слеза")
+    assert P.decide(row) == (False, "label:convention")
+    oc._analog_index.cache_clear()

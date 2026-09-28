@@ -25,7 +25,7 @@ def finished() -> set:
         m = json.loads(f.read_text(encoding="utf-8"))
         n = con.execute("SELECT COUNT(DISTINCT string_id) FROM candidates WHERE job_id=?",
                         (m["job_id"],)).fetchone()[0]
-        if n >= sizes[m["set"]]:
+        if n >= (m.get("limit") or sizes[m["set"]]):
             got.add(m["name"])
     return got
 

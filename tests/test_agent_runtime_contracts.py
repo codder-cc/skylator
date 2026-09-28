@@ -288,7 +288,7 @@ def test_previous_schema_db_is_migrated_in_place(tmp_path):
     con.close()
     s = ResultStore(path)
     try:
-        assert s.get_meta("schema_version") == str(SCHEMA_VERSION) == "8"
+        assert s.get_meta("schema_version") == str(SCHEMA_VERSION) == "9"
         assert s.pending_items("old")[0]["original"] == "Old pending line."
         seq = s.write_result("old", 1, "Old pending line.", "Старая строка.", 100,
                              "translated", finish_reason="length", model="m-1")

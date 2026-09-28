@@ -1255,6 +1255,8 @@ def _trace_payload(t: dict | None) -> dict | None:
     }
     if t.get("prompt") is not None:
         out["prompt"] = t["prompt"]
+    if t.get("output") is not None:
+        out["output"] = t["output"]
     return out
 
 

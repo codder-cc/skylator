@@ -645,12 +645,13 @@ class OfflineTranslateRunner:
 
         raw, reason, info, seconds, error = await loop.run_in_executor(None, call)
         trace_id = self._trace(state, kind, string_ids, prompt, params, info,
-                               reason if error is None else "error", seconds)
+                               reason if error is None else "error", seconds, output=raw)
         if error is not None:
             raise error
         return raw, reason, trace_id
 
-    def _trace(self, state, kind, string_ids, prompt, params, info, reason, seconds):
+    def _trace(self, state, kind, string_ids, prompt, params, info, reason, seconds,
+               output=None):
         """Записать трассу одного вызова. Сбой записи — не сбой перевода."""
         info = info if isinstance(info, dict) else {}
         store = getattr(self, "_store", None)
@@ -671,6 +672,7 @@ class OfflineTranslateRunner:
                 model         = _producer_model(state),
                 code_rev      = CODE_REV,
                 keep_prompt   = bool(getattr(self, "_trace_full", False)),
+                output        = output if isinstance(output, str) else None,
             )
         except Exception as exc:                                   # noqa: BLE001
             log.warning("OfflineTranslateRunner[%s]: trace not recorded: %s", aid[:8], exc)

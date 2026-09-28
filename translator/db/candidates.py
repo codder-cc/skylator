@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS candidates (
     seconds           REAL,
     code_rev          TEXT,      -- git HEAD агента
     judge_trace_json  TEXT,      -- JSON: трассы двух вызовов судьи
+    raw_output        TEXT,      -- сырой ответ модели, только при trace_full
     UNIQUE(string_id, machine, produced_at)
 );
 CREATE INDEX IF NOT EXISTS idx_cand_string ON candidates(string_id);
@@ -86,6 +87,7 @@ _ADDED_COLUMNS = (
     ("trace_kind", "TEXT"), ("prompt_sha", "TEXT"), ("prompt", "TEXT"),
     ("params_json", "TEXT"), ("tokens_in", "INTEGER"), ("tokens_out", "INTEGER"),
     ("seconds", "REAL"), ("code_rev", "TEXT"), ("judge_trace_json", "TEXT"),
+    ("raw_output", "TEXT"),
 )
 
 
@@ -115,6 +117,7 @@ def _trace_fields(trace, judge_trace) -> tuple:
         num(t.get("seconds"), float),
         (t.get("code_rev") or None),
         (json.dumps(jt, ensure_ascii=False) if jt else None),
+        (t.get("output") if isinstance(t.get("output"), str) else None),
     )
 
 
@@ -275,8 +278,8 @@ def record(repo, *, string_id, mod_name: str, esp_name: str, key: str,
             "same_as_stored, machine, model, job_id, produced_at, received_at, score, "
             "rules_status, issues, gate, judge, rival, finish_reason, trace_kind, "
             "prompt_sha, prompt, params_json, tokens_in, tokens_out, seconds, code_rev, "
-            "judge_trace_json) VALUES "
-            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "judge_trace_json, raw_output) VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (string_id, mod_name, esp_name, key, rec_type, field_type, original,
              translation, stored, int(translation.strip() == stored.strip()),
              machine, model, job_id, produced_at, time.time(), score, status,

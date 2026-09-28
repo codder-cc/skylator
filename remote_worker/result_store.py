@@ -32,7 +32,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # Wire-protocol version negotiated with the master at registration. Over a months-long
 # run an OTA update may change payloads on one side; both ends carry this so a mismatch
@@ -103,6 +103,10 @@ _AGENT_MIGRATIONS: list[tuple[int, list[str]]] = [
     # набор отдельных реплик, и сказать об этом было бы некому.
     (8, ["ALTER TABLE agent_manifest ADD COLUMN scene TEXT",
          "ALTER TABLE agent_manifest ADD COLUMN scene_pos INTEGER"]),
+    # Сырой ответ модели — рядом с промптом, только при trace_full. Разобранный перевод
+    # не говорит, что произошло: «комментарий вместо перевода» у режима размышления мог
+    # быть и ответом модели, и рассуждением, которое обработчик не отделил.
+    (9, ["ALTER TABLE agent_traces ADD COLUMN output TEXT"]),
 ]
 
 _SCHEMA = """
@@ -183,6 +187,7 @@ CREATE TABLE IF NOT EXISTS agent_traces (
     string_ids    TEXT,                          -- JSON: какие строки были в промпте
     prompt_sha    TEXT,                          -- sha256 промпта, всегда
     prompt        TEXT,                          -- сам промпт, только при trace_full
+    output        TEXT,                          -- сырой ответ модели, только при trace_full
     params_json   TEXT,                          -- что ФАКТИЧЕСКИ получил mlx_lm
     finish_reason TEXT,
     tokens_in     INTEGER,
@@ -472,6 +477,7 @@ class ResultStore:
         model: str | None = None,
         code_rev: str | None = None,
         keep_prompt: bool = False,
+        output: str | None = None,
     ) -> int | None:
         """Записать один вызов модели. Возвращает trace_id или None, если записать нельзя.
 
@@ -483,12 +489,13 @@ class ResultStore:
             try:
                 cur = self._conn.execute(
                     """INSERT INTO agent_traces
-                       (assignment_id, kind, string_ids, prompt_sha, prompt, params_json,
-                        finish_reason, tokens_in, tokens_out, seconds, model, code_rev,
-                        created_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       (assignment_id, kind, string_ids, prompt_sha, prompt, output,
+                        params_json, finish_reason, tokens_in, tokens_out, seconds, model,
+                        code_rev, created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (assignment_id, kind, json.dumps(list(string_ids or [])), sha,
                      prompt if keep_prompt else None,
+                     output if keep_prompt else None,
                      json.dumps(params or {}, ensure_ascii=False, default=str),
                      finish_reason, tokens_in, tokens_out, seconds, model, code_rev or "",
                      time.time()),

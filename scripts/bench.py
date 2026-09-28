@@ -242,7 +242,23 @@ def compare(a: str, b: str) -> None:
         diffs = [pb[i]["chrf"] - pa[i]["chrf"] for i in ids]
         mean = sum(diffs) / max(len(diffs), 1)
         rnd = random.Random(0)
-        boots = sorted(sum(rnd.choice(diffs) for _ in diffs) / len(diffs) for _ in range(2000))
+        if set_a == "S":
+            # Реплики одной темы не независимы: пересэмплировать темы целиком.
+            scene_of = {it["id"]: it["scene"] for it in _load_set("S")}
+            groups = collections.defaultdict(list)
+            for i, d in zip(ids, diffs):
+                groups[scene_of[i]].append(d)
+            gl = list(groups.values())
+            boots = []
+            for _ in range(2000):
+                pick = [rnd.choice(gl) for _ in gl]
+                flat = [d for g in pick for d in g]
+                boots.append(sum(flat) / len(flat))
+            boots.sort()
+            print(f"   бутстреп по темам: {len(gl)} тем", file=out)
+        else:
+            boots = sorted(sum(rnd.choice(diffs) for _ in diffs) / len(diffs)
+                           for _ in range(2000))
         lo, hi = boots[50], boots[1949]
         print(f"   chrF {b} − {a}: {mean:+.2f}  (95% [{lo:+.2f}, {hi:+.2f}]) "
               f"{'значимо' if lo > 0 or hi < 0 else 'не значимо'}", file=out)

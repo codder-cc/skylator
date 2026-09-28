@@ -385,7 +385,7 @@ def test_v6_agent_db_migrates_in_place_keeping_pending_work(tmp_path, monkeypatc
 
     s = ResultStore(path)
     try:
-        assert s.get_meta("schema_version") == str(SCHEMA_VERSION) == "8"
+        assert s.get_meta("schema_version") == str(SCHEMA_VERSION) == "9"
         assert [p["string_id"] for p in s.pending_items(AID)] == [2]
         old = payload(s.undelivered())
         assert len(old) == 1 and "trace" not in old[0] and old[0]["model"] == "old-model"
@@ -437,3 +437,19 @@ def test_trace_full_reaches_runner_through_dispatch_disk_and_restart(tmp_path, m
     assert sent["trace"]["params"]["max_tokens"] == calls[0]["max_tokens"] == 222
     assert [t["prompt"] for t in sent["judge_trace"]] == [c["prompt"] for c in calls[1:]]
     db.close()
+
+
+def test_raw_model_output_is_kept_only_with_full_trace(tmp_path):
+    """Сырой ответ нужен, чтобы отличить ответ модели от неотделённого рассуждения."""
+    import sys as _s
+    from pathlib import Path as _P
+    _s.path.insert(0, str(_P(__file__).parent.parent / "remote_worker"))
+    from result_store import ResultStore
+    st = ResultStore(tmp_path / "a.db")
+    full = st.write_trace(assignment_id="a", kind="translate", string_ids=[1], prompt="P",
+                          params={}, keep_prompt=True, output="<think>x</think>1. Да")
+    lean = st.write_trace(assignment_id="a", kind="translate", string_ids=[1], prompt="P",
+                          params={}, keep_prompt=False, output="1. Да")
+    got = st.get_traces([full, lean])
+    assert got[full]["output"] == "<think>x</think>1. Да"
+    assert got[lean]["output"] is None

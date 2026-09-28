@@ -2714,7 +2714,7 @@ def workers_offline_results(label: str):
                     try:
                         _m = repo.apply_correction_to_duplicates(
                             r.get("string_hash") or "", stored_before, _dup_text,
-                            _dup_status, _dup_q)
+                            _dup_status, _dup_q, exclude_id=r.get("string_id"))
                         if _m:
                             dup_filled += _m
                     except Exception:

@@ -504,7 +504,8 @@ class StringRepo:
     def apply_correction_to_duplicates(self, string_hash: str, old_translation: str,
                                        new_translation: str, status: str,
                                        quality_score: Optional[int],
-                                       exclude_id: Optional[int] = None) -> int:
+                                       exclude_id: Optional[int] = None,
+                                       accept=None) -> int:
         """Carry a correction to every twin that holds the same wrong text.
 
         The dedup before dispatch is what makes a review affordable: 10 654 strings with
@@ -544,11 +545,22 @@ class StringRepo:
         if exclude_id is not None:
             where += " AND id != ?"
             params.append(exclude_id)
+            # Одинаковый английский — ещё не одинаковое задание. Слово на кнопке и в
+            # названии предмета, реплика и заголовок темы переводятся по-разному, так
+            # что копия получает ответ, только если это запись того же типа и поля.
+            where += (" AND COALESCE(rec_type,'') = (SELECT COALESCE(rec_type,'') FROM "
+                      "strings WHERE id=?) AND COALESCE(field_type,'') = (SELECT "
+                      "COALESCE(field_type,'') FROM strings WHERE id=?)")
+            params.extend([exclude_id, exclude_id])
         # История пишется и здесь: разнос прямым UPDATE не оставлял следа, и у копии
         # нельзя было узнать, откуда у неё текст и что стояло до него.
         with _write_lock:
-            ids = [r[0] for r in self.db.execute(
-                f"SELECT id FROM strings WHERE {where}", tuple(params)).fetchall()]
+            rows = self.db.execute(
+                f"SELECT id, esp_name, key, rec_type, field_type FROM strings WHERE {where}",
+                tuple(params)).fetchall()
+            # Контекст получателя, которого SQL не знает: например, пол говорящего,
+            # если в тексте род первого лица. «Я была готова» копии-мужчине не нужно.
+            ids = [r[0] for r in rows if accept is None or accept(r)]
             if not ids:
                 return 0
             now = time.time()

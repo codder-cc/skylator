@@ -130,7 +130,21 @@ def spread_to_twins(db_path) -> None:
     from translator.db.database import TranslationDB
     from translator.db.repo import StringRepo
     from translator.validation.authority import MACHINE_SOURCES
+    from translator.db.promote import _speakers, first_person_gender
+    from translator.data_manager.string_manager import _identity_from_key
+    sp, _state = _speakers()
     repo = StringRepo(TranslationDB(db_path))
+
+    def gender_of(esp, key):
+        ident = _identity_from_key(key or "")
+        return sp.gender_for(esp, ident[0] if ident else None) if sp else None
+
+    def accept_for(new_text):
+        """Копия с родом первого лица — только тому же полу; неизвестный пол — мимо."""
+        want = first_person_gender(new_text)
+        if not want:
+            return None
+        return lambda t: {gender_of(t["esp_name"], t["key"])} == set(want)
     rows = repo.db.execute(
         "SELECT c.string_id, COALESCE(c.rival, c.stored_at_arrival) AS old, "
         "s.translation AS new, s.status, s.quality_score, s.string_hash "
@@ -143,11 +157,16 @@ def spread_to_twins(db_path) -> None:
         old, new = (r["old"] or "").strip(), (r["new"] or "").strip()
         if not old or not new or old == new:
             continue
-        twins = repo.db.execute(
+        accept = accept_for(new)
+        twins = [t for t in repo.db.execute(
             f"SELECT mod_name, esp_name, key, translation, status, quality_score, source FROM strings "
             f"WHERE string_hash=? AND TRIM(translation)=TRIM(?) AND id<>? "
-            f"AND COALESCE(source,'') IN ({holes})",
-            (r["string_hash"], old, r["string_id"], *MACHINE_SOURCES)).fetchall()
+            f"AND COALESCE(source,'') IN ({holes}) "
+            f"AND COALESCE(rec_type,'') = (SELECT COALESCE(rec_type,'') FROM strings WHERE id=?) "
+            f"AND COALESCE(field_type,'') = (SELECT COALESCE(field_type,'') FROM strings WHERE id=?)",
+            (r["string_hash"], old, r["string_id"], *MACHINE_SOURCES,
+             r["string_id"], r["string_id"])).fetchall()
+            if accept is None or accept(t)]
         if not twins:
             continue
         snap.extend((cp, t["mod_name"], t["esp_name"], t["key"], t["translation"] or "",
@@ -158,7 +177,7 @@ def spread_to_twins(db_path) -> None:
             "VALUES (?,?,?,?,?,?,?,?)", snap[-len(twins):])
         n += repo.apply_correction_to_duplicates(
             r["string_hash"], old, new, r["status"] or "translated", r["quality_score"],
-            exclude_id=r["string_id"])
+            exclude_id=r["string_id"], accept=accept)
     repo.db.commit()
     print(f"копии: обновлено {n:,}" + (f"; checkpoint {cp} — откат: "
           f"POST /api/checkpoints/{cp}/restore" if n else ""), file=out)

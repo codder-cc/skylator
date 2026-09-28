@@ -38,7 +38,7 @@ _spec.loader.exec_module(scenario)
 GOLDEN = ROOT / "tests" / "data" / "scene_off_golden.json"
 
 TOPIC = "audit.esp:000001"
-NOTE = "These lines are one conversation in order"
+NOTE = "These lines belong to one dialogue topic"
 TALK = "Conversation around these lines"
 
 CARD_TO = ("The player is speaking TO: Eldawyn (female), High Elf\n"

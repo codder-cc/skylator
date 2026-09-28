@@ -200,13 +200,19 @@ def group_pending(pending: list, split_mods: bool) -> list:
 # и промпт с карточкой на каждую строку перестаёт помещаться в окно модели.
 _SCENE_MAX_LINES = 10
 
-_SCENE_NOTE = ("These lines are one conversation in order, as they are heard in the game.{who} "
-               "Keep names, forms of address and tone consistent across the whole "
-               "conversation; translate each line on its own number.")
+# Ответы одной темы — НЕ разговор по порядку, а варианты: разные персонажи или разные
+# условия отвечают на одну и ту же реплику игрока («Do you know anything about this
+# ring?» — пять жителей, пять ответов). Первая версия заметки говорила модели «это
+# один разговор по порядку», то есть врала о том, что перед ней.
+_SCENE_NOTE = ("These lines belong to one dialogue topic.{who} "
+               "Keep names, terms and forms of address consistent across all of them; "
+               "translate each line on its own number.")
 # Только когда первая строка окна — действительно реплика игрока. Второе окно длинной
 # сцены или разговор, чья тема не попала в корпус, начинаются с ответа, и сказать
 # «строка 1 — это игрок» значило бы соврать модели ровно о том, чей там род.
-_SCENE_WHO = " Line 1 is what the player says; the lines after it are the answers."
+_SCENE_WHO = (" Line 1 is what the player says; each line after it is a separate "
+              "possible answer to it — different characters or situations, not a "
+              "conversation in sequence.")
 
 
 def _scene_note(batch: list) -> str:

@@ -1,0 +1,467 @@
+[
+{
+"topic": "forgottencity.esp:09B03B",
+"mod": "The Forgotten City",
+"lines": [
+{
+"id": 322487,
+"en": "Like you I tried to fix what I didn't understand and made it worse. (Persuade)",
+"pos": 0
+},
+{
+"id": 322488,
+"en": "Choose your next words carefully, Dovahkiin. What is it that you 'made worse'?",
+"pos": 1
+},
+{
+"id": 322489,
+"en": "You compare yourself to me? I have no time for the ramblings of one so crude.",
+"pos": 2
+}
+]
+},
+{
+"topic": "3dnpc.esp:23746F",
+"mod": "Interesting NPCs 3DNPC - Update",
+"lines": [
+{
+"id": 60360,
+"en": "What happened at the Jarl's tournament?",
+"pos": 0
+},
+{
+"id": 60361,
+"en": "I was a girl not even flowered, and the crowd behind me laughed and jeered when I requested to enter my name in the archers' list.",
+"pos": 1
+},
+{
+"id": 60363,
+"en": "From his view atop the Sky-Forge, he'd seen me grow from a child who could barely nock an arrow to one who could bulls-eye a flea.",
+"pos": 2
+}
+]
+},
+{
+"topic": "citizenscomplete.esp:16D573",
+"mod": "Citizens of Tamriel",
+"lines": [
+{
+"id": 251507,
+"en": "Wait here, Strahg.",
+"pos": 0
+},
+{
+"id": 251508,
+"en": "No! No! No leaving, no leaving! Theys always wander off!",
+"pos": 1
+},
+{
+"id": 251509,
+"en": "Strahg will remember that!",
+"pos": 2
+},
+{
+"id": 251510,
+"en": "No surprises, no, no... Strahg on lookout!",
+"pos": 3
+}
+]
+},
+{
+"topic": "legacyofthedragonborn.esm:217CAD",
+"mod": "Legacy of the Dragonborn",
+"lines": [
+{
+"id": 166963,
+"en": "Ok, let's keep going.",
+"pos": 0
+},
+{
+"id": 166964,
+"en": "Good, lead the way.",
+"pos": 1
+},
+{
+"id": 166965,
+"en": "Already on the move.",
+"pos": 2
+},
+{
+"id": 166966,
+"en": "Glad to hear it.",
+"pos": 3
+},
+{
+"id": 166967,
+"en": "Right behind you.",
+"pos": 4
+},
+{
+"id": 166968,
+"en": "Ready when you are.",
+"pos": 5
+}
+]
+},
+{
+"topic": "katana.esp:C2F76A",
+"mod": "Katana And Megara",
+"lines": [
+{
+"id": 188950,
+"en": "After you get your revenge, what happens to us?",
+"pos": 0
+},
+{
+"id": 188951,
+"en": "That's not something I can answer right now.",
+"pos": 1
+},
+{
+"id": 188952,
+"en": "\"To us?\" What're you saying?",
+"pos": 2
+}
+]
+},
+{
+"topic": "3dnpc.esp:00B693",
+"mod": "Interesting NPCs 3DNPC - Update",
+"lines": [
+{
+"id": 20906,
+"en": "Do you seek alms like the others?",
+"pos": 0
+},
+{
+"id": 20907,
+"en": "I don't need your charity. Neither do the people. It only serves to delay their suffering.",
+"pos": 1
+},
+{
+"id": 20908,
+"en": "Yes. Take the sick one, Cairine. She lies all day in her own filth, gripping her stomach in pain.",
+"pos": 2
+}
+]
+},
+{
+"topic": "moonpath.esp:01ED56",
+"mod": "Moonpath to Elsweyr",
+"lines": [
+{
+"id": 383200,
+"en": " You Tojay-raht really don't take kindly to the Thalmor, do you?",
+"pos": 0
+},
+{
+"id": 383201,
+"en": "Ah, so the Thalmor found Dervar, yes? Mervar take it they are no more? Good work. Keep the key, perhaps Dervar will have need of you in the future.",
+"pos": 1
+},
+{
+"id": 692648,
+"en": "Ah, so the Thalmor found Dervar, yes? Mervar take it they are no more? Good work. Keep the key. Perhaps Dervar will have need of you in the future.",
+"pos": 2
+}
+]
+},
+{
+"topic": "alternateperspective.esp:201654",
+"mod": "Alternate Perspective - Alternate Start",
+"lines": [
+{
+"id": 15605,
+"en": "Depends on the price.",
+"pos": 0
+},
+{
+"id": 15606,
+"en": "Ha! Too cheap for how good it tastes!",
+"pos": 1
+},
+{
+"id": 15892,
+"en": "Good! I'll make you a good deal. You won't regret it.",
+"pos": 2
+}
+]
+},
+{
+"topic": "evgsirenroot.esm:084090",
+"mod": "SirenRoot - Deluge of Deceit",
+"lines": [
+{
+"id": 364429,
+"en": "This place is flooding, we have to get out now!",
+"pos": 0
+},
+{
+"id": 364430,
+"en": "What?! I need that necklace! Damn it, I'm going to find it, if it's the last thing I do!",
+"pos": 1
+},
+{
+"id": 364431,
+"en": "What? What am I supposed to do?",
+"pos": 2
+}
+]
+},
+{
+"topic": "wyrmstooth.esp:C694A8",
+"mod": "Wyrmstooth",
+"lines": [
+{
+"id": 295502,
+"en": "Can you give me the pants?",
+"pos": 0
+},
+{
+"id": 295503,
+"en": "Sorry, traveler. We need to learn the enchantment from these pants so we can transpose a new magical artifact.",
+"pos": 1
+},
+{
+"id": 295507,
+"en": "I...uhh... Don't know where I left them. I swore I had them a few moments ago.",
+"pos": 2
+},
+{
+"id": 295508,
+"en": "Sorry traveler, we already completed the ritual. The pants are dust. You can have the dust though.",
+"pos": 3
+}
+]
+},
+{
+"topic": "vigilant.esm:02853B",
+"mod": "Vigilant - English Voices Addon",
+"lines": [
+{
+"id": 232187,
+"en": "Altano is dead.",
+"pos": 0
+},
+{
+"id": 362927,
+"en": "No... Did you kill him?",
+"pos": 1
+},
+{
+"id": 232188,
+"en": "Did you... did you kill him?",
+"pos": 2
+}
+]
+},
+{
+"topic": "wyrmstooth.esp:C6F7BF",
+"mod": "Wyrmstooth",
+"lines": [
+{
+"id": 295579,
+"en": "I couldn't find an antidote. (Lie)",
+"pos": 0
+},
+{
+"id": 295580,
+"en": "*sigh* So these are my final days. May death greet me as an old friend.",
+"pos": 1
+},
+{
+"id": 295582,
+"en": "There has to be! Please look in every corner on Wyrmstooth! There got to be a cure!",
+"pos": 2
+}
+]
+},
+{
+"topic": "moonpath.esp:06E7D2",
+"mod": "Moonpath to Elsweyr",
+"lines": [
+{
+"id": 383465,
+"en": "How so?",
+"pos": 0
+},
+{
+"id": 383466,
+"en": " Khajiit are servants to the Thalmor now. Verina can see brightly in the darkness and it seems these servants have gone on strike.",
+"pos": 1
+},
+{
+"id": 692808,
+"en": "Khajiit are servants to the Thalmor now. Verina can see brightly in the darkness and it seems these servants have gone on strike.",
+"pos": 2
+}
+]
+},
+{
+"topic": "falskaar.esm:15E69A",
+"mod": "Falskaar",
+"lines": [
+{
+"id": 278067,
+"en": "What can you tell me about Amber Creek?",
+"pos": 0
+},
+{
+"id": 278068,
+"en": "Amber Creek is named after the small stream it was built next to. The stream was, at the time, full of a rich mineral called Amber.",
+"pos": 1
+},
+{
+"id": 278072,
+"en": "It was founded when the Borvaldurs left Borvald a few years after its construction. Olav wanted something more peaceful.",
+"pos": 2
+}
+]
+},
+{
+"topic": "inigo.esp:067EA5",
+"mod": "Inigo",
+"lines": [
+{
+"id": 214405,
+"en": "Actually, you should keep your current mount for now.",
+"pos": 0
+},
+{
+"id": 214406,
+"en": "OK. My current steed was getting worried there.",
+"pos": 1
+},
+{
+"id": 214407,
+"en": "Fair enough. My steed and I are quite happy to keep things as they are.",
+"pos": 2
+}
+]
+},
+{
+"topic": "hlioremi.esp:23CFE9",
+"mod": "Remiel",
+"lines": [
+{
+"id": 204007,
+"en": "Have you been working on anything new lately?",
+"pos": 0
+},
+{
+"id": 204008,
+"en": "Well, now that you mention it...",
+"pos": 1
+},
+{
+"id": 204012,
+"en": "Okay, what do you want to talk about?",
+"pos": 2
+}
+]
+},
+{
+"topic": "lucien.esp:244AA6",
+"mod": "Lucien",
+"lines": [
+{
+"id": 255337,
+"en": "Stop casting Frostbite.",
+"pos": 0
+},
+{
+"id": 255338,
+"en": "Too chilly for you? No problem, I can reign it in.",
+"pos": 1
+},
+{
+"id": 255339,
+"en": "Ah, splendid. I'll make sure our enemies get a... frosty reception.",
+"pos": 2
+}
+]
+},
+{
+"topic": "falskaar.esm:0E08AC",
+"mod": "Falskaar",
+"lines": [
+{
+"id": 276836,
+"en": "Do you know anything about this ring?",
+"pos": 0
+},
+{
+"id": 276837,
+"en": "By the gods, that's the ring from Svea's shop! You should bring that to her right away. She'll definitely be interested in it!",
+"pos": 1
+},
+{
+"id": 276838,
+"en": "A man came through here a few days ago asking about some ring. Some kind of lost treasure. That could certainly be it.",
+"pos": 2
+},
+{
+"id": 276840,
+"en": "I'm not too sure. A man briefly passed through here before heading to Amber Creek, said he was looking for something like that. You can ask him.",
+"pos": 3
+},
+{
+"id": 276841,
+"en": "That looks like the ring from the general store here in Amber Creek. If it really is, Svea would definitely want to see it. You should go show her!",
+"pos": 4
+}
+]
+},
+{
+"topic": "bsheartland.esm:086143",
+"mod": "Beyond Skyrim - Bruma",
+"lines": [
+{
+"id": 153240,
+"en": "Answer me or you'll lose more than your patrons. (Intimidate)",
+"pos": 0
+},
+{
+"id": 153241,
+"en": "Listen. You want me to tell you so badly? Make me.",
+"pos": 1
+},
+{
+"id": 153243,
+"en": "Not going to happen.",
+"pos": 2
+}
+]
+},
+{
+"topic": "bsheartland.esm:063B2B",
+"mod": "Beyond Skyrim - Bruma",
+"lines": [
+{
+"id": 149907,
+"en": "CYRPickpocketWarning",
+"pos": 0
+},
+{
+"id": 149908,
+"en": "Don't even think about it, footpad.",
+"pos": 1
+},
+{
+"id": 149909,
+"en": "I swear, if you even lay a finger on my pockets...",
+"pos": 2
+},
+{
+"id": 149910,
+"en": "I know you're there. I hope you're not trying to pickpocket me.",
+"pos": 3
+},
+{
+"id": 149911,
+"en": "Take a single septim from my pockets and you'll soon find yourself in a jail cell.",
+"pos": 4
+}
+]
+}
+]

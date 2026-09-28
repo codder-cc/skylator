@@ -180,6 +180,8 @@ def score_S(items, ans) -> dict:
 def score(name: str, quiet: bool = False) -> dict:
     meta = json.loads((EXP_DIR / f"{name}.json").read_text(encoding="utf-8"))
     items = _load_set(meta["set"])
+    if meta.get("limit"):
+        items = items[:meta["limit"]]
     ans = _answers(meta["job_id"])
     res = (score_H(items, ans) if meta["set"] == "H" else
            score_S(items, ans) if meta["set"] == "S" else score_D(items, ans))
@@ -270,6 +272,8 @@ def compare(a: str, b: str) -> None:
 
 def run(args) -> None:
     items = _load_set(args.set)
+    if args.limit:
+        items = items[:args.limit]
     opts = {"scope": "sweep", "machines": [BENCH], "string_ids": [x["id"] for x in items],
             "trace_full": True, "judge": bool(args.judge)}
     if args.context_parts is not None:
@@ -289,7 +293,7 @@ def run(args) -> None:
         sys.exit(f"задание не создано: {job}")
     EXP_DIR.mkdir(parents=True, exist_ok=True)
     meta = {"name": args.name, "set": args.set, "job_id": job["job_id"],
-            "created": time.time(), "config": {"params": params, "options": {
+            "created": time.time(), "limit": args.limit, "config": {"params": params, "options": {
                 k: v for k, v in opts.items() if k != "string_ids"}}}
     (EXP_DIR / f"{args.name}.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1),
                                                encoding="utf-8")
@@ -321,6 +325,7 @@ def main() -> None:
     r.add_argument("--max-tokens", type=int)
     r.add_argument("--judge", action="store_true")
     r.add_argument("--scene", action="store_true")
+    r.add_argument("--limit", type=int, help="только первые N строк набора (пробы)")
     r.add_argument("--timeout", type=int, default=6 * 3600)
     r.add_argument("--no-wait", action="store_true")
     s = sub.add_parser("score")

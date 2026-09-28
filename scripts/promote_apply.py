@@ -92,8 +92,12 @@ def main() -> None:
     print(f"checkpoint {cp} — {len(chosen):,} строк; откат: "
           f"POST /api/checkpoints/{cp}/restore", file=out, flush=True)
 
+    from translator.db.promote import policy_rev
+    prev = policy_rev()
+    print(f"версия политики {prev}", file=out)
     landed = refused = 0
     for r, _cur, text, _why in chosen:
+        decision = {"why": _why, "policy_rev": prev, "checkpoint": cp}
         res = mgr.save_string(
             mod_name=r["mod_name"], esp_name=r["esp_name"], key=r["key"],
             translation=text, original=r["original"],
@@ -109,10 +113,10 @@ def main() -> None:
             rec_type=r["rec_type"], field_type=r["field_type"])
         if (getattr(res, "translation", "") or "").strip() == text.strip():
             landed += 1
-            set_gate(repo, r["id"], "promoted")
+            set_gate(repo, r["id"], "promoted", decision)
         else:
             refused += 1
-            set_gate(repo, r["id"], "promote_refused")
+            set_gate(repo, r["id"], "promote_refused", decision)
     print(f"записано: {landed:,}; ворота записи отказали: {refused:,}", file=out)
     spread_to_twins(db_path)
 

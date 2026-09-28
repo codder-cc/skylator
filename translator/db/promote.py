@@ -194,6 +194,21 @@ def address_form(text: str) -> str | None:
     return "ty" if t and not v else "vy" if v and not t else None
 
 
+def policy_rev() -> str:
+    """Отпечаток правил применения: файлы, от которых зависит решение."""
+    import hashlib
+    from pathlib import Path as _P
+    root = _P(__file__).resolve().parents[2]
+    h = hashlib.sha1()
+    for rel in ("translator/db/promote.py", "translator/validation/official_context.py",
+                "translator/validation/authority.py", "translator/validation/quality.py"):
+        try:
+            h.update((root / rel).read_bytes())
+        except OSError:
+            h.update(rel.encode())
+    return h.hexdigest()[:12]
+
+
 def decide(row, speaker_gender: str | None = None, speaker_pidgin: bool = False):
     """(True, 'promote') или (False, причина). row — строка таблицы candidates.
 

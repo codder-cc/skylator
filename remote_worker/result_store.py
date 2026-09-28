@@ -495,7 +495,10 @@ class ResultStore:
                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (assignment_id, kind, json.dumps(list(string_ids or [])), sha,
                      prompt if keep_prompt else None,
-                     output if keep_prompt else None,
+                     # Ответ судьи — одна-две буквы, и хранится он всегда: без него
+                     # «не уверен» нельзя отличить от сбоя разбора, только предположить
+                     # по реализации.
+                     output if (keep_prompt or kind == "judge") else None,
                      json.dumps(params or {}, ensure_ascii=False, default=str),
                      finish_reason, tokens_in, tokens_out, seconds, model, code_rev or "",
                      time.time()),

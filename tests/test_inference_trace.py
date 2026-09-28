@@ -250,6 +250,8 @@ def test_trace_survives_agent_restart_and_reaches_payload(tmp_path, monkeypatch)
     assert "prompt" not in trace
     assert [t["kind"] for t in push[0]["judge_trace"]] == ["judge", "judge"]
     assert [t["prompt_sha"] for t in push[0]["judge_trace"]] == [sha(c["prompt"]) for c in calls[1:]]
+    # Ответ судьи хранится и без полной трассы: иначе «не уверен» не отличить от сбоя.
+    assert [t.get("output") for t in push[0]["judge_trace"]] == ["B", "A"]
 
 
 @pytest.mark.parametrize("full", [True, False])

@@ -88,6 +88,8 @@ _ADDED_COLUMNS = (
     ("params_json", "TEXT"), ("tokens_in", "INTEGER"), ("tokens_out", "INTEGER"),
     ("seconds", "REAL"), ("code_rev", "TEXT"), ("judge_trace_json", "TEXT"),
     ("raw_output", "TEXT"),
+    # Почему ответ применён или удержан: причина, версия политики, checkpoint.
+    ("decision_json", "TEXT"),
 )
 
 
@@ -313,12 +315,21 @@ def judge_forbids(judge: str | None) -> bool:
     return (judge or "") in ("stored", "unsure", "invalid")
 
 
-def set_gate(repo, cand_id: int | None, gate: str) -> None:
-    """Дописать, что сделали ворота. Рядом с ответом, а не вместо него."""
+def set_gate(repo, cand_id: int | None, gate: str, decision: dict | None = None) -> None:
+    """Дописать, что сделали ворота. Рядом с ответом, а не вместо него.
+
+    `decision` — основание: причина политики, её версия, checkpoint применения. Без
+    него «применено» нельзя было связать с правилами, по которым это решили.
+    """
     if repo is None or not cand_id:
         return
     try:
-        repo.db.execute("UPDATE candidates SET gate=? WHERE id=?", (gate, cand_id))
+        if decision is not None:
+            ensure(repo.db)
+            repo.db.execute("UPDATE candidates SET gate=?, decision_json=? WHERE id=?",
+                            (gate, json.dumps(decision, ensure_ascii=False), cand_id))
+        else:
+            repo.db.execute("UPDATE candidates SET gate=? WHERE id=?", (gate, cand_id))
         repo.db.commit()
     except Exception as exc:                                       # noqa: BLE001
         log.debug("candidates: gate not recorded for %s: %s", cand_id, exc)

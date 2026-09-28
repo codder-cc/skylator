@@ -177,6 +177,23 @@ def _changed_share(a: str, b: str) -> float:
 
 # ── решение ─────────────────────────────────────────────────────────────────
 
+_TY = re.compile(r"(?<![А-Яа-яЁё])(ты|тебя|тебе|тобой|тобою|твой|твоя|твоё|твое|твои|"
+                 r"твоего|твоей|твоему|твоим|твоих|твоими|твою)(?![А-Яа-яЁё])", re.I)
+_VY = re.compile(r"(?<![А-Яа-яЁё])(вы|вас|вам|вами|ваш|ваша|ваше|ваши|вашего|вашей|"
+                 r"вашему|вашим|ваших|вашими|вашу)(?![А-Яа-яЁё])", re.I)
+
+
+def address_form(text: str) -> str | None:
+    """«ty», «vy» или None — как текст обращается к собеседнику, если однозначно.
+
+    Промпт велит «ты» (так говорит официальная игра в 86% реплик, где форма видна), а
+    судья этого правила не знает: на контрольном пакете он принял «Ты успешно помог» →
+    «Вы успешно помогли». Смена «ты» на «вы» — не улучшение, а отказ от конвенции.
+    """
+    t, v = bool(_TY.search(text or "")), bool(_VY.search(text or ""))
+    return "ty" if t and not v else "vy" if v and not t else None
+
+
 def decide(row, speaker_gender: str | None = None, speaker_pidgin: bool = False):
     """(True, 'promote') или (False, причина). row — строка таблицы candidates.
 
@@ -211,6 +228,9 @@ def decide(row, speaker_gender: str | None = None, speaker_pidgin: bool = False)
 
     if speaker_pidgin or looks_pidgin(original):
         return False, "pidgin"
+
+    if address_form(stored) == "ty" and address_form(fresh) == "vy":
+        return False, "address:ty_to_vy"
 
     if lost_names(original, stored, fresh):
         return False, "names:lost"

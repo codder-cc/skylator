@@ -115,3 +115,15 @@ def test_a_game_label_is_not_changed_on_the_judges_taste():
                 "У меня лучшие кошки во всём Скайриме, взгляни на них.")
     line.update({"rec_type": "INFO", "field_type": "NAM1"})
     assert P.decide(line)[0] is True
+
+
+def test_ty_to_vy_is_held():
+    # Контрольный пакет 28.09: судья принял «Ты успешно помог» → «Вы успешно помогли».
+    from translator.db.promote import decide
+    row = {"judge": "fresh", "rules_status": "translated", "rec_type": "QUST",
+           "field_type": "CNAM", "original": "You successfully helped Dar'Rakki with his query.",
+           "rival": "Ты успешно помог Дар'Ракки с его вопросом.", "stored_at_arrival": None,
+           "translation": "Вы успешно помогли Дар'Ракки с его вопросом."}
+    assert decide(row) == (False, "address:ty_to_vy")
+    row["translation"] = "Ты успешно помог Дар'Ракки разобраться с его вопросом."
+    assert decide(row)[0] is True

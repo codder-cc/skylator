@@ -17,8 +17,9 @@ DONE = ROOT / "logs" / "bench_done.json"
 
 def finished() -> set:
     con = sqlite3.connect(str(ROOT / "cache" / "translations.db"), timeout=60)
-    sizes = {s: len(json.loads((ROOT / "logs" / f"eval_set_{s}.json").read_text(encoding="utf-8")))
-             for s in ("H", "D")}
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from bench import _load_set
+    sizes = {s: len(_load_set(s)) for s in ("H", "D", "S")}
     got = set()
     for f in (ROOT / "logs" / "experiments").glob("*.json"):
         m = json.loads(f.read_text(encoding="utf-8"))

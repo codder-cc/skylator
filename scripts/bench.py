@@ -59,7 +59,13 @@ def _post(url, payload, t=1800):
 
 
 def _load_set(name: str) -> list:
-    return json.loads((ROOT / "logs" / f"eval_set_{name}.json").read_text(encoding="utf-8"))
+    data = json.loads((ROOT / "logs" / f"eval_set_{name}.json").read_text(encoding="utf-8"))
+    if name != "S":
+        return data
+    # S — целые темы; для стенда это плоский список строк с номером темы и эталоном
+    refs = json.loads((ROOT / "logs" / "eval_set_S_ref.json").read_text(encoding="utf-8"))["refs"]
+    return [{"id": ln["id"], "en": ln["en"], "scene": si, "ref": refs[f"{si}.{ln['pos']}"]}
+            for si, sc in enumerate(data) for ln in sc["lines"]]
 
 
 # ── меры ────────────────────────────────────────────────────────────────────
@@ -138,11 +144,45 @@ def score_D(items, ans) -> dict:
     return {"per": per}
 
 
+def score_S(items, ans) -> dict:
+    """chrF к эталону и согласованность имён внутри темы.
+
+    Имя (слово с заглавной внутри фразы), встретившееся в двух и более репликах темы,
+    должно быть записано одинаково; разнобой считается по узнанным написаниям.
+    """
+    from translator.validation import inline_names as IN
+    from translator.validation.official_context import _mid_sentence_caps
+    per = {}
+    by_scene = collections.defaultdict(list)
+    for it in items:
+        a = ans.get(it["id"])
+        t = (a["translation"] if a else "") or ""
+        per[it["id"]] = {"answered": bool(a), "chrf": chrf(t, it["ref"]), "bucket": "scene",
+                         "defect": bool(a and a["rules_status"] != "translated"),
+                         "cut": bool(a and (a["finish_reason"] or "") == "length")}
+        by_scene[it["scene"]].append((it["en"], t))
+    names_total = names_mixed = 0
+    for lines in by_scene.values():
+        seen = collections.defaultdict(list)
+        for en, t in lines:
+            for w in set(_mid_sentence_caps(en)):
+                tok = IN.rendering_of(w, t)
+                if tok:
+                    seen[w].append(tok)
+        for w, toks in seen.items():
+            if len(toks) < 2:
+                continue
+            names_total += 1
+            names_mixed += any(not IN.same(x, toks[0]) and not IN.same(toks[0], x) for x in toks)
+    return {"per": per, "names_total": names_total, "names_mixed": names_mixed}
+
+
 def score(name: str, quiet: bool = False) -> dict:
     meta = json.loads((EXP_DIR / f"{name}.json").read_text(encoding="utf-8"))
     items = _load_set(meta["set"])
     ans = _answers(meta["job_id"])
-    res = score_H(items, ans) if meta["set"] == "H" else score_D(items, ans)
+    res = (score_H(items, ans) if meta["set"] == "H" else
+           score_S(items, ans) if meta["set"] == "S" else score_D(items, ans))
     per = res["per"]
     n = len(per)
     got = sum(v["answered"] for v in per.values())
@@ -152,6 +192,9 @@ def score(name: str, quiet: bool = False) -> dict:
     if meta["set"] == "H":
         for k in ("exact", "clean", "lemma"):
             summ[k] = round(100 * sum(v[k] for v in per.values()) / max(n, 1), 1)
+    elif meta["set"] == "S":
+        summ["chrf"] = round(sum(v["chrf"] for v in per.values()) / max(n, 1), 2)
+        summ["names_mixed"] = f"{res['names_mixed']}/{res['names_total']}"
     else:
         summ["chrf"] = round(sum(v["chrf"] for v in per.values()) / max(n, 1), 2)
         g = [v["gender_ok"] for v in per.values() if v["gender_ok"] is not None]
@@ -255,7 +298,7 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run")
     r.add_argument("--name", required=True)
-    r.add_argument("--set", choices=("H", "D"), required=True)
+    r.add_argument("--set", choices=("H", "D", "S"), required=True)
     r.add_argument("--params")
     r.add_argument("--context-parts")
     r.add_argument("--batch-size", type=int)

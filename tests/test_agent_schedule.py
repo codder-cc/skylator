@@ -177,3 +177,16 @@ def test_busy_describes_itself_the_right_way_round():
 def test_busy_next_change_is_when_it_is_handed_back():
     assert next_change(BUSY, at(2026, 8, 31, 13)) == at(2026, 8, 31, 18)
     assert next_change(BUSY, at(2026, 8, 31, 20)) == at(2026, 9, 1, 9)
+
+
+def test_a_free_day_lifts_the_busy_hours_for_that_date_only():
+    # 29.09 свободный день сделали режимом «always» и забыли вернуть — M5 проработал
+    # рабочий день 30.09. Дата в расписании возвращается сама.
+    import datetime as dt
+    from remote_worker.work_schedule import is_working, normalize
+    s = {"mode": "busy", "windows": [{"days": [0, 1, 2, 3, 4], "start": "09:00", "end": "18:00"}],
+         "free_dates": ["2026-09-29", "not-a-date"]}
+    assert normalize(s)["free_dates"] == ["2026-09-29"]
+    assert is_working(s, dt.datetime(2026, 9, 29, 11, 0)) is True     # свободный вторник
+    assert is_working(s, dt.datetime(2026, 9, 30, 11, 0)) is False    # среда — снова занят
+    assert is_working(s, dt.datetime(2026, 9, 30, 19, 0)) is True     # вечер как обычно

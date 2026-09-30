@@ -82,7 +82,21 @@ def normalize(raw: Any) -> dict:
         # windows is just 'always'. Neither is worth honouring: the first is what 'paused'
         # is for and is far more likely to be a mistake than an intention.
         return default_schedule()
-    return {"mode": mode, "windows": windows}
+    out = {"mode": mode, "windows": windows}
+    free = sorted({d for d in (raw.get("free_dates") or []) if _is_iso_date(d)})
+    if free:
+        out["free_dates"] = free
+    return out
+
+
+def _is_iso_date(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        _dt.date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _window_covers(window: dict, now: _dt.datetime) -> bool:
@@ -118,6 +132,12 @@ def is_working(schedule: Any, now: _dt.datetime | None = None) -> bool:
     if s["mode"] == MODE_ALWAYS:
         return True
     now = now or _dt.datetime.now()
+    # Свободный день: окна в этот день не действуют. Раньше свободный день делали режимом
+    # «always», и расписание надо было вернуть руками; 29.09 возврат не случился, и M5
+    # проработал рабочий день 30.09. Дата в самом расписании возвращается сама — в
+    # полночь по часам машины, даже когда мастер выключен.
+    if now.date().isoformat() in s.get("free_dates", ()):
+        return True
     covered = any(_window_covers(w, now) for w in s["windows"])
     # A shared machine is easier to describe by when it is NOT available: "busy weekdays
     # 09:00–18:00" needs one window and no reasoning about midnight, where the same rule
@@ -136,6 +156,8 @@ def describe(schedule: Any, now: _dt.datetime | None = None) -> str:
     parts = [f"{','.join(names[d] for d in w['days'])} {w['start']}–{w['end']}"
              for w in s["windows"]]
     lead = "busy " if s["mode"] == MODE_BUSY else ""
+    if s.get("free_dates"):
+        parts.append("free " + ", ".join(s["free_dates"]))
     if is_working(s, now):
         state = "working"
     else:

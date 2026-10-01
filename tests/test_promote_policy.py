@@ -168,3 +168,28 @@ def test_a_possessive_name_is_still_a_name():
                      "Ах, тогда тебе понравятся и другие медленные черты Вайтрана.",
                      "Ах, тогда тебе понравятся и другие медленные особенности Уитеруна.")
     assert [w for w, _ru in got] == ["Whiterun"]
+
+
+def test_a_garbled_name_is_repaired_not_held():
+    # Новый ответ лучше старого во всём, кроме имени. Удерживать — терять улучшение.
+    from translator.db.promote import repair_names
+    o = "If you are with the Thalmor, then I am no longer with you."
+    assert repair_names(o, "Если ты с Талморами, то я больше не с тобой.",
+                        "Если ты с Тальмором, то я больше не с тобой.") == \
+        "Если ты с Талмором, то я больше не с тобой."
+
+
+def test_a_name_that_declines_its_stem_is_not_touched():
+    from translator.db.promote import repair_names
+    o = "While you were unable to save Savos and Mirabelle, you may have saved the world."
+    assert repair_names(o, "Тебе не удалось спасти Савоса и Мирабеллу, но ты спас мир.",
+                        "Ты не смог спасти Савоса и Мириабель, но ты спас мир.") is None
+
+
+def test_a_fleeting_vowel_is_not_a_lost_name(monkeypatch):
+    # «Древний свиток» — «Древнего свитка». Это не потеря имени, и чинить тут нечего:
+    # иначе починка делала «свитока».
+    from translator.db import promote as P
+    monkeypatch.setattr(P, "_names", lambda: {"Scroll": "Свиток"})
+    o = "It is often said to originate in an Elder Scroll, sometimes attributed to Akaviri."
+    assert P.lost_names(o, "Говорят, она из Древнего Свитка.", "Говорят, она из Древнего свитка.") == []

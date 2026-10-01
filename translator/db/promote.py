@@ -159,7 +159,12 @@ def lost_names(original: str, stored: str, fresh: str) -> list:
         if not ru:
             continue
         st = _stem(ru)
-        if st in s_low and st not in f_low:
+        # Беглая гласная: «свиток» — «свитка», «Солитьюд» не склоняется так, а «конец» —
+        # «конца». Без этого правильная словоформа считалась потерей имени, а починка
+        # делала из «Древнего свитка» «свитока».
+        low = ru.lower().replace("ё", "е")
+        alt = low[:-2] + low[-1] if len(low) > 4 and low[-2] in "ое" else None
+        if st in s_low and st not in f_low and not (alt and alt in f_low):
             lost.append((w, ru))
     return lost
 
@@ -387,6 +392,15 @@ def plan(con, since: float = 0.0, holdout_guard: bool = True) -> list:
                 ok2, why2 = decide(patched, speaker_gender=g, speaker_pidgin=pidgin)
                 if ok2:
                     ok, why, text = True, "promote:gender_repaired", fixed
+        if why == "names:lost":
+            fixed = repair_names(r["original"] or "", r["rival"] or r["stored_at_arrival"] or "",
+                                 r["translation"] or "")
+            if fixed:
+                patched = dict(r)
+                patched["translation"] = fixed
+                ok2, why2 = decide(patched, speaker_gender=g, speaker_pidgin=pidgin)
+                if ok2:
+                    ok, why, text = True, "promote:names_repaired", fixed
         # Судья не уверен, но хранимый текст сломан по правилам, а новый чист: «строго
         # лучше» здесь решают правила, а не вкус. Если судья прямо выбрал хранимый —
         # не спорим. Все фильтры (род, ломаная речь, имена) действуют и здесь.
@@ -410,3 +424,60 @@ def plan(con, since: float = 0.0, holdout_guard: bool = True) -> list:
                 out[prev] = (pr, False, "superseded", pt)
             latest[r["string_id"]] = i
     return out
+
+
+# ── починка имени ───────────────────────────────────────────────────────────
+#
+# Новый ответ бывает лучше старого во всём, кроме имени: «Тальмор» вместо «Талмор»,
+# «Мейвен» вместо «Мавен». Удерживать такую правку целиком — терять улучшение (на
+# выборке 3 из 6 удержанных фильтром имён). Здесь имя чинится, а решение принимается
+# заново: если после починки правка проходит все фильтры, в корпус идёт починенный
+# текст. Чинится только имя на согласную: основа «Талмор» в «Талмором», «Талморский»
+# видна целиком, а у «Мирабелла» склонение меняет саму основу, и такие остаются
+# удержанными.
+_NAME_ENDINGS = ("", "а", "у", "ом", "е", "ы", "ов", "ам", "ами", "ах", "ий", "ия", "ию",
+                 "ский", "ского", "скому", "ским", "ском", "ская", "ской", "скую", "ские",
+                 "ских", "скими", "цы", "цев", "цам", "цами", "цах", "ец", "ца", "цу",
+                 "цем", "це", "ец", "овский", "овского")
+_RU_WORD = re.compile(r"[А-Яа-яЁё]+")
+_NAME_MIN_SOUND = 0.7
+
+
+def _sound_ratio(a: str, b: str) -> float:
+    import difflib
+    from translator.characters.cards import _sound
+    x, y = _sound(a), _sound(b)
+    return difflib.SequenceMatcher(a=x, b=y).ratio()
+
+
+def repair_names(original: str, stored: str, fresh: str) -> str | None:
+    """Новый текст с исправленными официальными именами, или None, если нечего или
+    нельзя чинить. Чинится каждое потерянное имя; если хоть одно не чинится — None."""
+    lost = lost_names(original, stored, fresh)
+    if not lost:
+        return None
+    text = fresh or ""
+    for _en, ru in lost:
+        ru = ru.strip()
+        if not ru or ru[-1].lower() in "аяоеёиыуюэь" or " " in ru:
+            return None
+        best = None
+        for m in _RU_WORD.finditer(text):
+            tok = m.group(0)
+            if tok[:1].lower() != ru[:1].lower():
+                continue
+            for end in _NAME_ENDINGS:
+                if end and not tok.lower().endswith(end):
+                    continue
+                stem = tok[:len(tok) - len(end)] if end else tok
+                if len(stem) < 3:
+                    continue
+                r = _sound_ratio(stem, ru)
+                if r >= _NAME_MIN_SOUND and (best is None or r > best[0]):
+                    best = (r, m.start(), m.end(), end, tok[:1].isupper())
+        if best is None:
+            return None
+        _r, a, b, end, upper = best
+        new = (ru if upper else ru[:1].lower() + ru[1:]) + end
+        text = text[:a] + new + text[b:]
+    return text if not lost_names(original, stored, text) else None

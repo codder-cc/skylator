@@ -6,6 +6,7 @@ Dumb executor: terminology, system_prompt, preserve_tokens all come from the cal
 """
 from __future__ import annotations
 import logging
+import re
 
 from models.base import BaseBackend, ModelState
 
@@ -52,6 +53,35 @@ def _find_cached_snapshot(repo_id: str, cache_dir) -> str | None:
 
     return None
 
+
+
+_CHATML = re.compile(r"^<\|im_start\|>system\n(.*?)<\|im_end\|>\n<\|im_start\|>user\n(.*?)"
+                     r"<\|im_end\|>\n<\|im_start\|>assistant\n(.*)$", re.S)
+
+
+def native_prompt(tokenizer, prompt: str) -> str:
+    """Промпт сборщика (ChatML Qwen) — в родной шаблон загруженной модели.
+
+    Сборщик пишет ChatML вручную. Для Qwen это и есть её шаблон, и промпт уходит как
+    есть. Другая модель (Hy-MT2, Gemma) получила бы чужие служебные токены, и сравнение
+    мерило бы ошибку подключения, а не перевод. Содержимое — система, правила, контекст,
+    строки — не меняется ни на символ; меняется только обёртка.
+    """
+    tmpl = getattr(tokenizer, "chat_template", None) or ""
+    if not tmpl or "<|im_start|>" in tmpl:
+        return prompt
+    m = _CHATML.match(prompt or "")
+    if not m:
+        return prompt
+    system, user, _prefix = m.group(1), m.group(2), m.group(3)
+    for messages in ([{"role": "system", "content": system}, {"role": "user", "content": user}],
+                     [{"role": "user", "content": system + "\n\n" + user}]):
+        try:
+            return tokenizer.apply_chat_template(messages, add_generation_prompt=True,
+                                                 tokenize=False, enable_thinking=False)
+        except Exception as exc:                                   # noqa: BLE001
+            log.debug("native_prompt: template refused %s (%s)", [x["role"] for x in messages], exc)
+    return prompt
 
 def _pick(override, default):
     """Значение вызова, если оно задано, иначе из конфигурации модели."""
@@ -319,6 +349,8 @@ class MlxBackend(BaseBackend):
         import mlx_lm
 
         import time as _time
+
+        prompt = native_prompt(self._tokenizer, prompt)
 
         # Сведения о ПРОШЛОМ вызове не должны дожить до этого: если он упадёт, бегунок
         # не прочтёт чужую трассу как свою.

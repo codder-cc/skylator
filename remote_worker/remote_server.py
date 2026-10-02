@@ -1937,6 +1937,15 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                                        "model": req.gguf_filename or req.repo_id or path,
                                        "path": path}
                     else:
+                        # Старую модель — выгрузить ДО загрузки новой. Иначе в памяти на время
+                        # загрузки (а при живых ссылках и дольше) лежат обе: 27B + 30B на M5
+                        # с 48 ГБ — и агент перестаёт отвечать.
+                        if state.backend is not None:
+                            _old = state.backend
+                            state.backend = None
+                            await loop.run_in_executor(None, _old.unload)
+                            del _old
+                            state.refresh_free_memory()
                         backend, bt = await loop.run_in_executor(None, lambda: _build_backend(req))
                         await loop.run_in_executor(None, backend.load)
                         state.backend      = backend

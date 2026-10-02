@@ -250,6 +250,11 @@ class MlxBackend(BaseBackend):
         self._model       = None
         self._tokenizer   = None
         self._draft_model = None
+        # Сперва сборка мусора, потом кэш MLX: веса держатся и в циклических ссылках, и
+        # clear_cache, вызванный раньше gc, отдаёт системе только то, что уже свободно.
+        # В обратном порядке M1 (32 ГБ) после выгрузки держал обе модели и встал.
+        import gc
+        gc.collect()
         try:
             import mlx.core as mx
             mx.clear_cache()

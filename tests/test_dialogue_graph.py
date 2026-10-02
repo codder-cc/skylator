@@ -109,3 +109,14 @@ def test_the_rule_stands_at_the_write_gate():
     src = inspect.getsource(StringManager.save_string)
     assert "enforce_addressee" in src
     assert "addressee_gender_for" in src
+
+
+def test_pnam_is_list_order_not_the_previous_line():
+    # Ответы одной темы — альтернативы. PNAM задаёт их порядок в списке, и подавать
+    # его как «just before, they said» значит выдумывать разговор.
+    from translator.characters import dialogue as D
+    state = {"topics": {"mod.esp:000001": ["mod.esp:00000A", "mod.esp:00000B"]},
+             "of_topic": {"mod.esp:00000B": "mod.esp:000001"},
+             "prev": {"mod.esp:00000B": "mod.esp:00000A"}, "alias": {}}
+    got = D.neighbours("mod.esp", "00000B", "INFO", "NAM1", state)
+    assert got == [("topic", "mod.esp:000001")]

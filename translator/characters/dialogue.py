@@ -18,7 +18,7 @@
 
     GRUP типа 7   «дети темы»: в заголовке группы стоит FormID своей DIAL, то есть
                   связь «ваша реплика → чьи ответы» записана прямо там;
-    INFO/PNAM     предыдущая реплика — цепочка разговора;
+    INFO/PNAM     порядок ответа в списке темы (НЕ предыдущая реплика: ответы — альтернативы);
     порядок       записи INFO внутри группы идут в порядке проигрывания.
 
 Отсюда берутся обе вещи, которых не хватало: адресат вашей реплики (кто отвечает на
@@ -312,9 +312,12 @@ def neighbours(esp_name: str, form_id: str, rec_type: str | None,
         topic = (st.get("of_topic") or {}).get(key)
         if topic:
             out.append(("topic", topic))
-        before = (st.get("prev") or {}).get(key)
-        if before and before != key:
-            out.append(("prev", before))
+        # INFO/PNAM — не «что сказано перед этой репликой», а порядок ответов в списке
+        # темы: ответы одной темы — альтернативы под разные условия. В промпт он шёл
+        # как «just before, they said» и подкладывал строке реплику из другой ветки
+        # («People like you are why the Synod…» ← «Stop toying with those magical
+        # powers…»). Связи продолжения разговора в INFO лежат в других полях (TCLT);
+        # пока они не разобраны, соседа «перед» нет.
     return out
 
 

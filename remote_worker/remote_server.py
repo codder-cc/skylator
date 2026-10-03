@@ -1962,6 +1962,24 @@ async def _pull_worker_loop(host_url: str, mdns_host: str, mdns_port: int,
                 except Exception as exc:
                     log.error("Pull worker: load_model failed: %s", exc)
                     result_data = {"ok": False, "error": str(exc)}
+                    # Старую модель выгрузили ДО загрузки новой; новая не встала — без
+                    # возврата агент остаётся вообще без модели (03.10 M1: «gemma4 not
+                    # supported», и машина простаивала). Возвращаем прежнюю.
+                    _prev = getattr(state, "model_spec", None)
+                    if state.backend is None and _prev and _prev.get("repo_id") != payload.get("repo_id"):
+                        try:
+                            _preq = ModelLoadRequest(**{k: v for k, v in _prev.items()
+                                                        if k in ModelLoadRequest.model_fields})
+                            _pb, _pbt = await loop.run_in_executor(None, lambda: _build_backend(_preq))
+                            await loop.run_in_executor(None, _pb.load)
+                            state.backend, state.backend_type = _pb, _pbt
+                            state.model_label = _preq.gguf_filename or _preq.repo_id or "unknown"
+                            state.refresh_free_memory()
+                            result_data["restored"] = state.model_label
+                            log.warning("Pull worker: new model failed, previous restored — %s",
+                                        state.model_label)
+                        except Exception as exc2:
+                            log.error("Pull worker: could not restore previous model: %s", exc2)
                 finally:
                     if _watcher:
                         _watcher.cancel()

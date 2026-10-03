@@ -47,8 +47,11 @@ def call(path: str, body: dict | None = None, timeout: int = 1800):
 
 
 def worker() -> dict:
-    for w in call("/api/workers") or []:
-        if w.get("label") == M5:
+    ws = call("/api/workers")
+    # Занятый мастер может ответить ошибкой ({"error": ...}) — тогда агента «нет», и
+    # вызывающий подождёт, а не упадёт посреди возврата (03.10 так M5 остался без работы).
+    for w in ws if isinstance(ws, list) else []:
+        if isinstance(w, dict) and w.get("label") == M5:
             return w
     return {}
 
@@ -80,8 +83,12 @@ def swap(repo: str) -> bool:
     if free_mb() < MIN_FREE_MB:
         log(f"после выгрузки свободно {free_mb()} МБ < {MIN_FREE_MB} — {repo} не гружу")
         return False
+    if worker().get("model") == repo:
+        return True
+    # Ответ на загрузку однажды не дошёл до клиента, хотя мастер его отправил, и сценарий
+    # провисел полчаса. Готовность проверяется по агенту, ответ — только для журнала.
     r = call(f"/api/workers/{M5}/model/load", {"backend_type": "mlx", "repo_id": repo,
-                                               "delivery": "agent"}, timeout=1800)
+                                               "delivery": "agent"}, timeout=300)
     ok = wait_model(repo)
     log(f"load {repo}: {r} → {'ok' if ok else 'НЕ ЗАГРУЗИЛАСЬ'}")
     return ok
@@ -141,9 +148,14 @@ def bench(name: str, set_name: str) -> str:
 
 def main() -> None:
     repos = sys.argv[1:]
-    log(f"=== испытание: {repos}")
+    import os
+    resume = os.environ.get("TRIAL_RESUME")
+    log(f"=== испытание: {repos}" + (f" (продолжение, пауза из {resume})" if resume else ""))
     # Свежий код агента (выгрузка до загрузки) и чистая память: обновление перезапускает
     # процесс, а агент сам поднимает модель по умолчанию.
+    if resume:
+        parked = json.loads((ROOT / "logs" / resume).read_text(encoding="utf-8"))
+        return run_models(repos, parked)
     head = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True,
                           text=True).stdout.strip()
     call(f"/api/workers/{M5}/ota-update", {}, timeout=60)
@@ -154,6 +166,10 @@ def main() -> None:
     log(f"агент: commit {worker().get('commit')} (нужен {head}), модель {worker().get('model')}, "
         f"свободно {free_mb()} МБ")
     parked = park()
+    run_models(repos, parked)
+
+
+def run_models(repos: list, parked: list) -> None:
     for repo in repos:
         short = repo.split("/")[-1].lower().replace(".", "")[:24]
         if not swap(repo):
